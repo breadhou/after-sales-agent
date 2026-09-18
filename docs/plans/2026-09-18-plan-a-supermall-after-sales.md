@@ -12,6 +12,15 @@
 
 **前置:** supermall 当前处于干净状态，`main` 已推送。开工前先 `git checkout -b feat/after-sales-capability`。
 
+**命令约定**：本计划多处需要查库。先定义这个函数，后续步骤直接复用（不要依赖外部脚本，临时目录会被系统清理）：
+
+```bash
+mysql_q() {
+  "/d/MySQL/MySQL Server 8.0/bin/mysql" -uroot -p123456 -N -B \
+    --default-character-set=utf8mb4 -e "$1" 2>/dev/null
+}
+```
+
 ---
 
 ## 背景：为什么这些改动是必要的
@@ -75,7 +84,6 @@ ALTER TABLE refund ADD UNIQUE KEY uk_refund_order (order_id);
 - [ ] **Step 3: 在现有数据库上执行迁移**
 
 ```bash
-source /c/Users/hou16/AppData/Local/Temp/mall-itest/env.sh
 mysql_q "ALTER TABLE mall.refund ADD UNIQUE KEY uk_refund_order (order_id);"
 ```
 

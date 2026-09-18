@@ -12,6 +12,15 @@
 
 **前置:** **Plan B 必须已完成**（MCP server 可被拉起），且 supermall 运行中。
 
+**命令约定**：Task 6 需要查库核对退款是否真的落库，先定义：
+
+```bash
+mysql_q() {
+  "/d/MySQL/MySQL Server 8.0/bin/mysql" -uroot -p123456 -N -B \
+    --default-character-set=utf8mb4 -e "$1" 2>/dev/null
+}
+```
+
 ---
 
 ## 关键设计：为什么决策 Agent 不持有 submit_refund

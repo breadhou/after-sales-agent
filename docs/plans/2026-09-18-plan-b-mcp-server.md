@@ -12,6 +12,15 @@
 
 **前置:** **Plan A 必须已完成**——本计划调用的三个新端点（`refund-eligibility`、`refund/execute`、`after-sales/policies`）由 A 提供。
 
+**命令约定**：Task 6 需要查库核对状态，先定义：
+
+```bash
+mysql_q() {
+  "/d/MySQL/MySQL Server 8.0/bin/mysql" -uroot -p123456 -N -B \
+    --default-character-set=utf8mb4 -e "$1" 2>/dev/null
+}
+```
+
 ---
 
 ## 为什么用官方 SDK 而不是 Spring AI

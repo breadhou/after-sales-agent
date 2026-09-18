@@ -50,10 +50,13 @@
 - Java 17+（本机用 `D:\jdks\openjdk-22.0.2`）
 - supermall 运行在 `localhost:8081`，且需要**三个环境变量**才能启动：
   `MERCHANT_JWT_SECRET`、`MALL_WORKER_ID`、`MALL_DATACENTER_ID`（缺一个就起不来）
-- MySQL / Redis / RabbitMQ 需先启动
+- MySQL / Redis / RabbitMQ 需先启动（Redis 与 RabbitMQ 跑在 WSL 容器里）
 - 模型：任意 **OpenAI 兼容**端点（DeepSeek、OpenRouter 均可），通过 `MODEL_BASE_URL` / `MODEL_API_KEY` / `MODEL_NAME` 配置
 
 **凭据不入库**：用户口令、模型密钥一律走环境变量。这条是本项目的硬约定。
+
+> **执行三份计划时 supermall 必须在运行**，而它的启动流程有些繁琐（三个环境变量 + 两套服务机制 + WSL 会自动关闭）。
+> 已记录要做成项目 skill，见 supermall 仓库 `AGENTS.md` 的「待办」第 2 项。在此之前，按那个文件的「本地测试环境启动」手工启动。
 
 ---
 
