@@ -166,6 +166,25 @@ escalate_to_human(orderId, summary)     升级人工
 
 **只对敏感动作复核**（`submit_refund`），查询类不经过复核——否则延迟和成本白白翻倍。
 
+#### 复核是**结构上不可绕过**的，不是流程约定
+
+写实现计划时改进了这里的做法：**决策 Agent 的工具集里根本没有 `submit_refund`**。
+
+它的 MCP 工具被过滤为 5 个只读工具，退款走一个本地的 `request_refund(orderId, reason)`，而该工具的实现内部才去调复核与执行：
+
+```
+决策 Agent 可见：get_order / list_user_orders / get_logistics /
+                get_refund_eligibility / list_policy_clauses   ← 全只读
+                request_refund(orderId, reason)                ← 本地工具
+                     └─ 内部：复核 ──驳回──▶ escalate_to_human
+                                └─通过──▶ 调用 MCP 的 submit_refund
+                escalate_to_human                              ← 本地工具
+```
+
+**差别在于**：若模型手里就有 `submit_refund`，复核只是它"记得要调用"的一步，可以被跳过；而现在**模型手里根本没有能退款的工具**，复核是唯一通路。这是第 1 道防线（工具面收窄）与第 2 道防线的叠加。
+
+实现方式很轻——`McpToolProvider.Builder.filterToolNames(...)` 在客户端过滤即可，MCP server 不需要知道这件事。
+
 **可测量**：构造「决策 Agent 本该拒绝却给出了 `submit_refund`」的用例，看复核是否拦下 → **复核命中率**是硬指标。
 
 **复核驳回后的行为**：不重试、不争论，直接 `escalate_to_human`。两个 agent 反复拉扯只会放大延迟，且掩盖问题。
