@@ -1198,3 +1198,19 @@ git commit -m "docs: record mcp server end-to-end verification"
 1. **单令牌单进程** —— 每个用户会话需要一个 MCP server 进程。生产形态应在 HTTP 传输下把令牌放在请求头里，本阶段不做。
 2. **无重试** —— 工具调用失败即返回错误给模型，由模型决定是否重试。重试策略属于 Agent 层（Plan C）。
 3. **无缓存** —— `list_policy_clauses` 每次调用都打 supermall。条款很少变动，Plan C 会在启动时拉一次即可。
+
+---
+
+## 做完之后
+
+项目全貌与进度见仓库根目录的 `README.md`。
+
+| 下一步 | 文档 | 依赖 |
+|---|---|---|
+| **计划 C：Agent** | `docs/plans/2026-09-18-plan-c-agent.md` | **本计划的 6 个工具** |
+| 阶段 3：RAG 解释层 | 尚未编写——待设计 | 计划 C |
+| 阶段 4：240 条评测集 | 尚未编写——待设计 | 计划 C |
+
+**本计划完成后**：可以用 JSON-RPC 直接驱动 MCP server 调工具（Task 6 有完整命令），**此时仍然不需要模型**。这一步能独立验收，是很好的检查点。
+
+请顺手更新 `README.md` 的进度表。
