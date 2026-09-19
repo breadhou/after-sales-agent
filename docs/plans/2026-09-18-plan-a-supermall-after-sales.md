@@ -340,6 +340,10 @@ git commit -m "feat: add after-sales policy enum with rule and clause text co-lo
     REFUND_NOT_EXECUTABLE(50004, "退款记录状态不允许执行"),
 ```
 
+> **关于 50004 的用途（2026-09-19 注）**：它目前**全计划没有消费者**。它描述的是「记录存在、但状态不允许执行」——而现有的 `PENDING`/`REFUNDED` 两态下**不存在**这种状态。
+>
+> **不要为了用掉一个错误码而编造语义。** 它真正需要等的是商家审批流（见文末「已知简化」第 4 条，`APPROVED`/`REJECTED` 落地时它才有意义）。**保持预留即可**——计划 B 的工具契约可能引用它。
+
 - [ ] **Step 2: 更新 init.sql 的状态注释**
 
 把 `order` 表 `status` 字段的注释改为（加入 `REFUNDED`）：
@@ -733,6 +737,78 @@ class RefundExecutionServiceImplTest {
         verify(orderMapper, never()).updateById(any());
     }
 
+    /**
+     * 顺序重试的真实形态：check() 会如实报告「已有退款记录」、eligible=false。
+     *
+     * <p><b>这个用例是前一个用例的对照。</b>上一个用 {@link #givenEligible()} 把 check()
+     * stub 成了 eligible=true——而现实中只要退款行存在，check() 绝不会返回 true。
+     * 那个 stub 恰好把会拦住它的组件换掉了，所以它能通过**不代表**真实组合能通过。
+     * 本用例不 stub check()，直接喂入真实形态，守住守卫条件里的
+     * {@code !eligibility.isRefundExists()} 这一半。</p>
+     */
+    @Test
+    void execute_shouldTreatExistingRefundAsRetryNotRejection() {
+        when(eligibilityService.check(ORDER_ID)).thenReturn(new RefundEligibilityVO()
+                .setOrderId(ORDER_ID)
+                .setEligible(false)
+                .setRefundExists(true)
+                .setReason("该订单已有退款记录，不能重复申请"));
+        when(orderMapper.selectByIdForUpdate(ORDER_ID))
+                .thenReturn(new Order().setId(ORDER_ID).setStatus("RECEIVED")
+                        .setTotalAmount(new BigDecimal("199.99")));
+        when(refundMapper.selectOne(any())).thenReturn(
+                new Refund().setId(1L).setOrderId(ORDER_ID).setStatus("REFUNDED"));
+
+        RefundEligibilityVO vo = service.execute(ORDER_ID, "重复请求");
+
+        // 不得抛 ORDER_NOT_REFUNDABLE
+        assertTrue(vo.isRefundExists());
+        verify(refundMapper, never()).insert(any());
+    }
+
+    /**
+     * 顺序重试且既有行仍是 PENDING（旧端点落的）——文案必须与事实相符。
+     */
+    @Test
+    void execute_shouldNotClaimCompletedWhenExistingRefundIsStillPending() {
+        when(eligibilityService.check(ORDER_ID)).thenReturn(new RefundEligibilityVO()
+                .setOrderId(ORDER_ID)
+                .setEligible(false)
+                .setRefundExists(true)
+                .setReason("该订单已有退款记录，不能重复申请"));
+        when(orderMapper.selectByIdForUpdate(ORDER_ID))
+                .thenReturn(new Order().setId(ORDER_ID).setStatus("RECEIVED")
+                        .setTotalAmount(new BigDecimal("199.99")));
+        when(refundMapper.selectOne(any())).thenReturn(
+                new Refund().setId(1L).setOrderId(ORDER_ID).setStatus("PENDING"));
+
+        RefundEligibilityVO vo = service.execute(ORDER_ID, "重复请求");
+
+        // 钱没退、订单没推进，绝不能说「已完成退款」
+        assertNotEquals("该订单已完成退款", vo.getReason());
+        assertTrue(vo.getReason().contains("处理中"), vo.getReason());
+    }
+
+    /**
+     * 并发兜底：复查读到过期快照（返回 null），insert 撞 uk_refund_order。
+     * 必须被翻译成幂等返回，而不是漏成 -1 系统异常。
+     */
+    @Test
+    void execute_shouldTranslateDuplicateKeyIntoIdempotentResult() {
+        givenEligible();
+        Refund winner = new Refund().setId(1L).setOrderId(ORDER_ID).setStatus("REFUNDED");
+        // 第一次复查读不到（模拟 REPEATABLE READ 下的过期快照），
+        // catch 里的第二次查询读得到（新语句，新快照）
+        when(refundMapper.selectOne(any())).thenReturn(null, winner);
+        when(refundMapper.insert(any(Refund.class)))
+                .thenThrow(new DuplicateKeyException("uk_refund_order"));
+
+        RefundEligibilityVO vo = service.execute(ORDER_ID, "并发重试");
+
+        assertTrue(vo.isRefundExists());
+        assertFalse(vo.isEligible());
+    }
+
     @Test
     void execute_shouldRefuseWhenNotEligible() {
         when(eligibilityService.check(ORDER_ID)).thenReturn(new RefundEligibilityVO()
@@ -816,6 +892,7 @@ import com.mall.module.order.mapper.OrderMapper;
 import com.mall.module.order.mapper.RefundMapper;
 import com.mall.module.order.service.RefundEligibilityService;
 import com.mall.module.order.service.RefundExecutionService;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -841,13 +918,23 @@ public class RefundExecutionServiceImpl implements RefundExecutionService {
     @Override
     @Transactional
     public RefundEligibilityVO execute(Long orderId, String reason) {
-        // 先判资格：不符合就直接拒绝，不进入写路径
+        // 先判资格：不符合就直接拒绝，不进入写路径。
+        //
+        // ⚠️「已有退款记录」**不等于**「不可退」——那是**重试**，必须落到下面的幂等分支
+        // 返回既有结果，而不是报错。计划要求「重复调用返回同一结果而不是报错」，
+        // 若这里只判 isEligible()，顺序重试会在这一行被 50002 挡掉，幂等分支永远不可达。
         RefundEligibilityVO eligibility = eligibilityService.check(orderId);
-        if (!eligibility.isEligible()) {
+        if (!eligibility.isEligible() && !eligibility.isRefundExists()) {
             throw new BusinessException(ResultStatus.ORDER_NOT_REFUNDABLE);
         }
 
-        // 锁订单行，防并发重复执行；锁后再查一次退款记录才可靠
+        // 锁订单行，防并发重复执行。
+        //
+        // ⚠️ 不要指望「锁后再查一次」能看见并发赢家刚提交的退款行：本方法是 @Transactional，
+        // 而上面的 check() 里的 selectById 已经建立了本事务的 read view；InnoDB 在
+        // REPEATABLE READ 下不会刷新它。selectByIdForUpdate **只刷新被锁的那一行，不刷新快照**。
+        // 所以下面的复查可能读到 null，随后撞上 uk_refund_order。
+        // **真正的并发裁判是唯一索引**，不是这次复查——见下面的 catch。
         Order order = orderMapper.selectByIdForUpdate(orderId);
         if (order == null) {
             throw new BusinessException(ResultStatus.ORDER_NOT_EXIST);
@@ -857,28 +944,58 @@ public class RefundExecutionServiceImpl implements RefundExecutionService {
                 new LambdaQueryWrapper<Refund>().eq(Refund::getOrderId, orderId));
         if (existing != null) {
             // 幂等分支：Agent 重试会走到这里。不报错、不重复退款，返回既有结果。
-            return new RefundEligibilityVO()
-                    .setOrderId(orderId)
-                    .setEligible(false)
-                    .setRefundExists(true)
-                    .setRefundableAmount(existing.getAmount())
-                    .setReason("该订单已完成退款");
+            return idempotentResult(orderId, existing);
         }
 
-        refundMapper.insert(new Refund()
-                .setId(SnowflakeIdUtil.nextId())
-                .setOrderId(orderId)
-                .setUserId(order.getUserId())
-                // 金额一律取服务端算出的值，绝不用入参
-                .setAmount(eligibility.getRefundableAmount())
-                .setReason(reason)
-                .setStatus(REFUNDED)
-                .setCreatedAt(LocalDateTime.now()));
+        try {
+            refundMapper.insert(new Refund()
+                    .setId(SnowflakeIdUtil.nextId())
+                    .setOrderId(orderId)
+                    .setUserId(order.getUserId())
+                    // 金额一律取服务端算出的值，绝不用入参
+                    .setAmount(eligibility.getRefundableAmount())
+                    .setReason(reason)
+                    .setStatus(REFUNDED)
+                    .setCreatedAt(LocalDateTime.now()));
+        } catch (DuplicateKeyException e) {
+            // 并发重试的兜底：另一个事务抢先插入了同一订单的退款行，而上方的复查
+            // 读到了过期快照（见方法内注释）。唯一索引已经替我们挡住了重复退款，
+            // 这里只需把它翻译成业务语义。
+            // 与 OrderServiceImpl.requestRefund 的写法同源（Task 3 已批准落地）。
+            Refund winner = refundMapper.selectOne(
+                    new LambdaQueryWrapper<Refund>().eq(Refund::getOrderId, orderId));
+            if (winner == null) {
+                // 理论上不可达：能撞上 uk_refund_order 就说明那行存在。
+                // 真发生了说明约束不是它挡的，别吞异常。
+                throw e;
+            }
+            // 注意：这里**不能**吞掉「订单状态没推进」这件事。赢家事务会推进它；
+            // 本事务回滚后，订单状态由赢家负责。
+            return idempotentResult(orderId, winner);
+        }
 
         order.setStatus(REFUNDED);
         orderMapper.updateById(order);
 
         return eligibility;
+    }
+
+    /**
+     * 幂等返回：把一条既有退款记录翻译成调用方能读懂的结论。
+     *
+     * <p><b>文案按状态区分是必须的，不是措辞讲究。</b>旧端点
+     * {@code POST /api/orders/{id}/refund} 落的行是 {@code PENDING}——钱没退、订单状态
+     * 也没推进。若对它也回「该订单已完成退款」，那就是一句<b>与事实相反</b>的话，
+     * 而这句话会经 MCP 传到 agent，成为给用户的解释。</p>
+     */
+    private RefundEligibilityVO idempotentResult(Long orderId, Refund existing) {
+        boolean completed = REFUNDED.equals(existing.getStatus());
+        return new RefundEligibilityVO()
+                .setOrderId(orderId)
+                .setEligible(false)
+                .setRefundExists(true)
+                .setRefundableAmount(existing.getAmount())
+                .setReason(completed ? "该订单已完成退款" : "该订单已有退款申请在处理中");
     }
 }
 ```
@@ -889,7 +1006,9 @@ public class RefundExecutionServiceImpl implements RefundExecutionService {
 JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -Dtest=RefundExecutionServiceImplTest
 ```
 
-Expected: `Tests run: 5, Failures: 0, Errors: 0`
+Expected: `Tests run: 8, Failures: 0, Errors: 0`
+
+（原计划此处为 5 个用例；2026-09-19 的 Task 4 质量审查发现计划给的幂等分支在真实组合下不可达，补了 3 个用例守住修订后的语义——见下方 Step 1 里新增的三个测试方法。）
 
 - [ ] **Step 5: 提交**
 
@@ -1045,7 +1164,11 @@ Expected: `Tests run: 2, Failures: 0, Errors: 0`
 JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test
 ```
 
-Expected: `BUILD SUCCESS`，既有 188 个测试全绿
+Expected: `BUILD SUCCESS`，**零失败**
+
+> ⚠️ **不要照特定数字核对。** 计划原文此处写「既有 188 个测试全绿」，但 2026-09-19 实测该数字**对不上**——`mall-server` 当时的实际全量是 **166**（Task 2 加 2 个后为 168，Task 3 后为 171，Task 4 后仍为 171）。基线数字会随每个任务增长，**判据应当是「零失败」而不是「等于某个数」**，否则会为一个幽灵差异白花时间。
+>
+> 另注：跑全量时 `SeckillConsumerTest` 的负路径会打印 ERROR 日志，那是断言的一部分，不是失败。
 
 - [ ] **Step 6: 提交**
 
@@ -1329,9 +1452,12 @@ Expected: `ORDER_NOT_EXIST(50000)`
 
 ## 完成标准
 
-- [ ] 全量测试通过且既有 188 个测试未受影响
-- [ ] 新建的 5 个测试类全绿：`AfterSalesPolicyTest`(7)、`RefundEligibilityServiceImplTest`(5)、`RefundExecutionServiceImplTest`(5)、`OrderControllerRefundTest`(2)、`AfterSalesPolicyControllerTest`(2)
-- [ ] 真实环境下：查资格 → 执行 → 幂等 → 越权 → 金额不可指定，五项全部符合预期
+- [ ] 全量测试通过，**零失败**（不要照某个具体数字核对，理由见 Task 6 Step 5）
+- [ ] 新建的 5 个测试类全绿：`AfterSalesPolicyTest`(**9**)、`RefundEligibilityServiceImplTest`(5)、`RefundExecutionServiceImplTest`(**8**)、`OrderControllerRefundTest`(2)、`AfterSalesPolicyControllerTest`(2)
+
+> 括号里的数字是 2026-09-19 的实测值，**与计划初稿不同**：`AfterSalesPolicyTest` 原为 7，Task 2 的重审补了 2 个（可达性守卫 + `resolve` 层的边界断言）；`RefundExecutionServiceImplTest` 原为 5，Task 4 的重审补了 3 个（见 Task 5 Step 1）。
+
+- [ ] 真实环境下：查资格 → 执行 → 幂等 → **旧端点重复提交** → 越权 → 金额不可指定，**六项**全部符合预期
 - [ ] `refund` 表有 `uk_refund_order` 唯一索引
 - [ ] 订单可进入 `REFUNDED` 状态
 - [ ] `GET /api/after-sales/policies` 返回的条款码与资格接口返回的 `policyCode` 能对上

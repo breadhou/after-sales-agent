@@ -441,11 +441,86 @@ Task 4 的 `RefundEligibilityServiceImpl` 里有个 `daysSince()` 辅助方法�
 
 ---
 
+## K-24 Task 4→Task 5 的接缝断裂（**已修复**，但仍值得记）
+
+| | |
+|---|---|
+| **状态** | **已处理**（2026-09-19，计划已修订；Task 5 未开工，故零返工） |
+| **发现于** | 2026-09-19，Task 4 的代码质量审查 |
+| **位置** | 计划 A 的 Task 5 `RefundExecutionServiceImpl.execute` |
+| **严重性** | **Critical（审查者判定）**——且它不在 Task 4 的 diff 里，而在它**交出去的契约**里 |
+
+**问题**：`check()` 只要有退款行就返回 `eligible=false`；而 `execute()` 第一件事就是 `check()`，`!eligible` 直接 `throw ORDER_NOT_REFUNDABLE`（50002）。**后果是计划里那段幂等分支（注释写着「Agent 重试会走到这里」）在真实组合下永远不可达。**
+
+**为什么计划自己的测试是绿的**：`givenEligible()` 把 `check()` **stub 成了 `eligible=true`**——而现实中只要退款行存在，`check()` 绝不会返回 true。**那个 stub 恰好把会拦住它的组件换掉了**，所以它通过不代表真实组合通过。
+
+**这不是理论**：计划 Task 8 的 Step 5 期望「重复执行返回成功（不报错）」，按原计划会返回 50002，**验收标准当场不通过**。
+
+**第二处（并发）**：计划注释「锁后再查一次退款记录才可靠」**是错的**。`execute()` 是 `@Transactional`，`check()` 里的 `selectById` 已建立本事务的 read view；InnoDB 在 REPEATABLE READ 下不刷新它，而 `selectByIdForUpdate` **只刷新被锁的那一行，不刷新快照**。所以复查可能读到 0 行 → 撞 `uk_refund_order` → 原计划**没有 catch** → `-1 系统异常`，正是 K-6 刚替旧端点修掉的那个坑。
+
+**审查者在 MySQL 8.0.40 上用双会话隔离级别实验实测确认了这个行为**（不是推理）。
+
+**修复（已落进计划）**：
+
+1. 守卫条件改为把「已有退款」认成**重试**而非拒绝：
+   ```java
+   if (!eligibility.isEligible() && !eligibility.isRefundExists()) { throw ... }
+   ```
+2. `insert` 外包 `catch (DuplicateKeyException)` → 走幂等返回。**唯一索引是并发裁判，代码只负责把它翻译成业务语义**——与 Task 3 已批准落地的 `OrderServiceImpl` 写法同源。
+3. 补 3 个测试：真实形态的顺序重试、`PENDING` 行的文案、并发撞唯一键的翻译。
+4. 计划里那句错注释改成了正确的解释。
+
+**为什么值得保留记录**：这是本项目「幂等与原子性」这条架构主张上**唯一一次真正被击穿**的地方，而且击穿方式是「测试把要验的组件 mock 掉了」——一种**看起来全绿**的失败。演示时若被问「你怎么知道幂等真的成立」，这个案例比任何顺利的例子都更有说服力。
+
+---
+
+## K-25 `RefundEligibilityVO.refundableAmount` 的语义重载
+
+| | |
+|---|---|
+| **状态** | **待判断**（倾向保持现状 + 注释说明） |
+| **发现于** | 2026-09-19，Task 4 的代码质量审查 |
+| **位置** | `RefundEligibilityVO.java` 的 `refundableAmount` 字段 |
+| **处理时机** | Task 6（写 HTTP 端点、要定契约文档）时 |
+
+**现状**：该字段注释写「**可退**金额」，但：
+- `check()` 在**不可退**路径上也照填（`RefundEligibilityServiceImpl.java:40`）
+- Task 5 的幂等分支用**同一个字段**装「**已退**金额」（`idempotentResult` 里的 `existing.getAmount()`）
+
+同一个字段、两种含义。审查者判断这是「跨仓库契约里最容易散架的地方」。
+
+**倾向保持现状，理由**：计划 B 的 `RefundTools.getRefundEligibility` **已经把六个字段名写进了测试**（计划 B 第 823 行）。加字段会**破坏计划 B 已经写好的测试**，成本高于收益。
+
+**要做的**：在 Task 6 写端点时，把 `refundableAmount` 的**实际语义**写进契约文档——「本字段在可退时是**可退**金额，在 `refundExists=true` 时是**已退**金额」。说清楚即可，不必改结构。
+
+---
+
+## K-23 测试里 `BigDecimal` 断言的 scale 敏感性
+
+| | |
+|---|---|
+| **状态** | **不必修**（当前实现下无问题）；记录是因为 **Task 5 / Task 8 可能踩到** |
+| **发现于** | 2026-09-19，Task 4 的 implementer 自审时主动提出 |
+| **位置** | `RefundEligibilityServiceImplTest.java` 的 `shouldRefundFullOrderAmountNotPartial` 等 |
+| **处理时机** | Task 5 若让金额经过运算时 |
+
+**现状**：这些测试用 `assertEquals(new BigDecimal("199.99"), vo.getRefundableAmount())`。而 **`BigDecimal.equals` 对 scale 敏感**——`199.99` 与 `199.990` 不相等。
+
+**当前为什么没问题**：金额是**直接透传**的（`setRefundableAmount(order.getTotalAmount())`），断言比的是**同一个实例**，scale 必然一致。
+
+**什么时候会出问题**：一旦金额经过**任何运算**（按比例折算、四舍五入、`multiply`/`divide` 等），scale 可能变化，断言会**误红**——而这是个假警报，浪费排查时间。
+
+**届时的修法**：改用 `assertEquals(0, expected.compareTo(actual))`，即**比数值不比精度**。
+
+**为什么值得记**：Task 5 的 `RefundExecutionServiceImpl` 会写 `.setAmount(eligibility.getRefundableAmount())`——按计划也是透传，所以大概率不会触发。但 Task 8 若要验「退款金额等于订单实付金额」，从 HTTP 响应里解出的 `BigDecimal` 经过 JSON 反序列化后 **scale 未必与数据库一致**，那时这条就会咬人。
+
+---
+
 ## K-20 Task 5 的幂等分支会把旧端点写的 `PENDING` 行报成「已完成退款」
 
 | | |
 |---|---|
-| **状态** | **待修**（**必须在 Task 5 动笔前决定**） |
+| **状态** | **已处理**（2026-09-19，采用选项 1，已落进计划） |
 | **发现于** | 2026-09-19，Task 3 的代码质量审查 |
 | **位置** | 计划 A 的 `RefundExecutionServiceImpl.execute` 幂等分支（计划第 853-863 行） |
 | **处理时机** | **Task 5 开工之前** |
@@ -468,7 +543,20 @@ Task 4 的 `RefundEligibilityServiceImpl` 里有个 `daysSince()` 辅助方法�
 1. **幂等分支按 `existing.getStatus()` 区分文案**——`PENDING` → 「该订单已有退款申请在处理中」；`REFUNDED` → 「该订单已完成退款」。（推荐）
 2. 明确「旧端点产生的行不属于 agent 路径」并加守卫。
 
-**顺带**：这条修复正好给 **`REFUND_NOT_EXECUTABLE(50004)`** 一个真实用途（见 K-21 第 4 点）。
+**决定（2026-09-19）**：**采用选项 1——按 `existing.getStatus()` 区分文案。**
+
+计划里新增了一个私有方法承载它：
+
+```java
+private RefundEligibilityVO idempotentResult(Long orderId, Refund existing) {
+    boolean completed = REFUNDED.equals(existing.getStatus());
+    return new RefundEligibilityVO()
+            ...
+            .setReason(completed ? "该订单已完成退款" : "该订单已有退款申请在处理中");
+}
+```
+
+**关于 `REFUND_NOT_EXECUTABLE(50004)`**：审查者建议「给它一个真实用途，或明确标注预留」。**本次选择「预留」**——现有的 `PENDING`/`REFUNDED` 两态下，没有哪种状态是「记录存在但不可执行」的。**不要为了用掉一个错误码而编造语义。** 它真正需要等的是商家审批流（K-8）。已在计划里注明。
 
 **关联**：Task 5 若改了写入值，**必须同步 `init.sql` 里 `refund.status` 的注释**——它现在是退款状态域在 schema 层的**唯一**陈述（另三处文档按 K-18 有意保留 4 态描述）。
 
