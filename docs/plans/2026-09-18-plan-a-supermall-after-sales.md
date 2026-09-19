@@ -21,6 +21,21 @@ mysql_q() {
 }
 ```
 
+**Maven 命令为什么带 `-am -Dsurefire.failIfNoSpecifiedTests=false`（2026-09-19 修订）**
+
+本计划原文的命令是 `test -pl mall-server -Dtest=X`，**在本机跑不通**。
+
+原因：`mall-common` / `mall-security` / `mall-infra` **从未 install 到本地仓库**——`~/.m2/repository/com/mall/` 下**只有 `.lastUpdated` 失败标记，没有真正的 jar/pom**（那是某次失败的远程解析留下的）。而 `-pl`（project list）会把这三个模块**从 reactor 里剔除**，于是 `mall-server` 的依赖只能去本地仓库找——找不到，直接 `Could not resolve dependencies`，**连编译都到不了**。
+
+两个参数各自解决一半问题：
+
+- **`-am`（also make）**：把被依赖的模块**加回 reactor**，按依赖顺序先构建它们。于是它们从源码参与解析，**根本不需要本地仓库里有它们**。
+- **`-Dsurefire.failIfNoSpecifiedTests=false`**：`-Dtest=X` 对 reactor 里**每个模块**都生效；兄弟模块没有叫 `X` 的测试类，surefire 默认会报 `No tests were executed!` 而失败。这个参数让它别为此报错。
+
+> **不要改成「先 `mvn install` 一次，然后照抄原命令」**——那是另一种可行解，但有个**静默陷阱**：`install` 把构件写进全局的 `~/.m2`，之后 `-pl` 就从那里取。**只要有人改了 `mall-common` 等模块而忘了重装，测试就会静默地跑在旧代码上**（签名变了会编译失败、响亮；签名没变而行为变了则完全无声）。`-am` 没有这个失效模式。
+>
+> 详见 `docs/known-issues.md` 的 **K-11**。
+
 ---
 
 ## 背景：为什么这些改动是必要的
@@ -216,7 +231,7 @@ class AfterSalesPolicyTest {
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
-JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -Dtest=AfterSalesPolicyTest
+JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -am -Dtest=AfterSalesPolicyTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: 编译失败，`找不到符号: 类 AfterSalesPolicy`
@@ -310,7 +325,7 @@ public enum AfterSalesPolicy {
 - [ ] **Step 4: 运行测试确认通过**
 
 ```bash
-JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -Dtest=AfterSalesPolicyTest
+JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -am -Dtest=AfterSalesPolicyTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: `Tests run: 7, Failures: 0, Errors: 0`
@@ -527,7 +542,7 @@ class RefundEligibilityServiceImplTest {
 - [ ] **Step 3: 运行测试确认失败**
 
 ```bash
-JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -Dtest=RefundEligibilityServiceImplTest
+JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -am -Dtest=RefundEligibilityServiceImplTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: 编译失败，`找不到符号: 类 RefundEligibilityServiceImpl`
@@ -627,7 +642,7 @@ public class RefundEligibilityServiceImpl implements RefundEligibilityService {
 - [ ] **Step 5: 运行测试确认通过**
 
 ```bash
-JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -Dtest=RefundEligibilityServiceImplTest
+JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -am -Dtest=RefundEligibilityServiceImplTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: `Tests run: 5, Failures: 0, Errors: 0`
@@ -851,7 +866,7 @@ class RefundExecutionServiceImplTest {
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
-JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -Dtest=RefundExecutionServiceImplTest
+JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -am -Dtest=RefundExecutionServiceImplTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: 编译失败，`找不到符号: 类 RefundExecutionServiceImpl`
@@ -1003,7 +1018,7 @@ public class RefundExecutionServiceImpl implements RefundExecutionService {
 - [ ] **Step 4: 运行测试确认通过**
 
 ```bash
-JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -Dtest=RefundExecutionServiceImplTest
+JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -am -Dtest=RefundExecutionServiceImplTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: `Tests run: 8, Failures: 0, Errors: 0`
@@ -1113,7 +1128,7 @@ public class RefundReasonDTO {
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
-JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -Dtest=OrderControllerRefundTest
+JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -am -Dtest=OrderControllerRefundTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: 编译失败，`找不到符号: 方法 refundEligibility`
@@ -1153,7 +1168,7 @@ Expected: 编译失败，`找不到符号: 方法 refundEligibility`
 - [ ] **Step 4: 运行测试确认通过**
 
 ```bash
-JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -Dtest=OrderControllerRefundTest
+JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -am -Dtest=OrderControllerRefundTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: `Tests run: 2, Failures: 0, Errors: 0`
@@ -1255,7 +1270,7 @@ class AfterSalesPolicyControllerTest {
 - [ ] **Step 3: 运行测试确认失败**
 
 ```bash
-JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -Dtest=AfterSalesPolicyControllerTest
+JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -am -Dtest=AfterSalesPolicyControllerTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: 编译失败，`找不到符号: 类 AfterSalesPolicyController`
@@ -1302,7 +1317,7 @@ public class AfterSalesPolicyController {
 - [ ] **Step 5: 运行测试确认通过**
 
 ```bash
-JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -Dtest=AfterSalesPolicyControllerTest
+JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -am -Dtest=AfterSalesPolicyControllerTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 Expected: `Tests run: 2, Failures: 0, Errors: 0`

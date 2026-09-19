@@ -297,7 +297,7 @@ implementer 自己就是靠「把测试副本里的 `USE` 那一行替换成临�
 
 | | |
 |---|---|
-| **状态** | **该修**（2026-09-19 按「取舍准绳」判定——它关乎**可复现性**） |
+| **状态** | **已处理**（2026-09-19，用户选定方案 a，计划已修订） |
 | **发现于** | 2026-09-19，Task 2 的 implementer 执行时发现 |
 | **位置** | 计划 A 全文的验证命令，如 `mvn test -pl mall-server -Dtest=XXX` |
 | **处理时机** | 建议在计划 A 收尾时统一修订计划文档 |
@@ -316,7 +316,15 @@ cd /d/sourcecode/supermall && JAVA_HOME=/d/jdks/openjdk-22.0.2 \
 
 **影响**：计划 A 里所有 `-pl mall-server` 的验证命令**照抄会失败**。这不是代码问题，是环境/流程问题，但会让照计划执行的人卡住。Task 8 有全量 `mvn test`，需另行确认是否也需要 `-am`。
 
-**注**：也可以在开工前先跑一次 `mvn install -DskipTests` 把三个模块装进本地仓库，那样原命令就能用。两种解法都行，但**必须选一种并写进计划**。
+**决定（2026-09-19）**：**采用方案 a——计划里所有 `-pl mall-server` 的命令补上 `-am` 与 `-Dsurefire.failIfNoSpecifiedTests=false`，已全部改完（10 处）。**
+
+**为什么不选方案 b（先 `mvn install` 一次）**——它有**静默陷阱**：`install` 把构件写进全局的 `~/.m2`，之后 `-pl` 就从那里取。**只要有人改了 `mall-common` 等模块而忘了重装，测试就会静默地跑在旧代码上**（签名变了会编译失败、响亮；**签名没变而行为变了则完全无声**）。而 Task 3 已经改过 `mall-common` 的 `ResultStatus`，将来还会改。
+
+`-am` **永远从源码构建，不可能解析到陈旧构件**。代价只是每条命令多十几秒的增量重建。
+
+**这与本项目的既有教训同源**：K-1 与 K-2 讲的都是「**靠约定维护的一致性迟早漂移**」。`mvn install` 是又一个「靠人记得」的约定；`-am` 是机制上不可能出错的那一类。**计划里所有命令自带 `-am`，比写一句「记得先 install」更符合这个项目要讲的故事。**
+
+**已在计划里加了一段说明**（「命令约定」小节），解释这两个参数**为什么**必要——否则下一个人看到会以为是多余的。也写明**不要**改成 install 方案及原因。
 
 ---
 
@@ -605,7 +613,7 @@ private RefundEligibilityVO idempotentResult(Long orderId, Refund existing) {
 
 | | |
 |---|---|
-| **状态** | **倾向不修**（灰色地带，等用户裁定） |
+| **状态** | **不处理**（用户 2026-09-19 裁定） |
 | **发现于** | 2026-09-19，Task 3 的 implementer 在修 B 组时主动上报 |
 | **位置** | `supermall/AGENTS.md:247`、`supermall/CLAUDE.md:178`、`supermall/docs/设计文档.md:248` |
 | **处理时机** | 与 K-8（商家审批流）同步 |
@@ -628,7 +636,7 @@ private RefundEligibilityVO idempotentResult(Long orderId, Refund existing) {
 
 | | |
 |---|---|
-| **状态** | **倾向不修**（灰色地带，等用户裁定） |
+| **状态** | **不必修**（按「取舍准绳」判定；⚠️ 用户未就此条明确表态，有异议可推翻） |
 | **发现于** | 2026-09-19，Task 3 的 implementer 自审时发现 |
 | **位置** | `mall-server/.../common/handler/GlobalExceptionHandler.java:25-29` |
 | **处理时机** | 不适用 |
