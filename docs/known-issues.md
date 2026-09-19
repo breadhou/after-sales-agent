@@ -483,7 +483,7 @@ Task 4 的 `RefundEligibilityServiceImpl` 里有个 `daysSince()` 辅助方法�
 
 | | |
 |---|---|
-| **状态** | **部分处理**（2026-09-19，用户裁定**只修售后端点**；仓库级缺口**有意保留**，见下） |
+| **状态** | **部分处理**（2026-09-19，用户裁定**只在局部收口**；仓库级缺口**有意保留**，见下。实现 `e9adfa5`） |
 | **发现于** | 2026-09-19，Task 6 的代码质量审查 |
 | **位置** | `GlobalExceptionHandler.java`（缺 handler）；影响全仓 14 个用 `@Valid` 的文件 |
 | **严重性** | 中——**本项目已修过两次的同型问题**（405 那次、K-6 修 `DuplicateKeyException` 那次） |
@@ -500,16 +500,37 @@ Task 4 的 `RefundEligibilityServiceImpl` 里有个 `daysSince()` 辅助方法�
 **论证与 K-6 完全一致**：K-6 修 `DuplicateKeyException` 就是因为「驱动这个端点的 agent 看到的是系统异常，
 会诱发重试与升级」。同一个理由在这里成立。
 
-### 处置：只修售后端点（用户 2026-09-19 裁定）
+### 处置：在 `OrderController` 内局部收口（用户 2026-09-19 裁定）
 
 Task 6 在 `OrderController` 内加了一个**局部** `@ExceptionHandler(MethodArgumentNotValidException.class)`
 → `PARAM_ERROR(10000)`。Spring 中控制器内部的 `@ExceptionHandler` 只作用于该控制器且**优先于** `@ControllerAdvice`。
 
-**为什么不做全局**：本次任务的改动范围是售后端点，全局改动会让**提交范围与任务范围脱钩**——
-这正是同一天`MerchantSecurityConfig` 那次裁决所立的规则（范围外的问题只报告不改；开了口子就是全仓重构）。
+**为什么不做全局**：全局改动会让**提交范围与任务范围脱钩**——这正是同一天
+`MerchantSecurityConfig` 那次裁决所立的规则（范围外的问题只报告不改；开了口子就是全仓重构）。
 
-**该选择被显式采纳而非默认**：三个方案（当场全局修 / 只记录 / 只修售后端点）都已列出，用户选了第三个。
-代价是**同一类请求错误在仓库里有两套响应语义**，这一点已写进 handler 的注释，免得将来有人以为是疏忽。
+### ⚠️ 实际范围比「售后端点」宽一格、窄一格——**措辞已按事实订正**
+
+选型时用的标签是「只覆盖售后端点」。**这在 Spring 机制上做不到**：
+控制器级 `@ExceptionHandler` 按**控制器**生效，**不按端点**。实际范围是：
+
+| | 端点 | 效果 |
+|---|---|---|
+| **宽** | `POST /api/orders`（`createOrder`，**建订单，与售后无关**） | 非法请求体 `-1` → `10000` |
+| **宽** | `POST /api/orders/{id}/refund`（旧退款端点） | 同上 |
+| **宽** | `POST /api/orders/{id}/refund/execute`（本任务的） | 同上 |
+| **窄** | `GET /api/orders`（`listOrders`，`@Valid OrderPageDTO` 非请求体） | **仍是 `-1`** |
+| **窄** | 其余 13 个用 `@Valid` 的文件 | **仍是 `-1`** |
+
+**「窄」的机制原因**：`listOrders` 的参数校验抛 `BindException`，而 handler 声明在**子类**
+`MethodArgumentNotValidException` 上——声明在子类上的 handler **收不到父类实例**。
+
+**这对本条的原始论据有影响**：「保持局部」的论据是「不动本任务以外的端点」，
+但它**已经改变了 `createOrder` 的行为**，那个论据因此不成立。
+三个方案（全局修 / 只记录 / 局部修）重新列出后，用户仍选**局部修**——理由是
+**影响面仍限制在一个控制器内（1 个文件 vs 14 个文件）**，而非「完全没有范围外影响」。
+
+**计划里「唯一改变既有行为的地方」这条声称已同步订正**（见计划开头的第二次修订说明），
+现状是 **2 处**：重复提交的 `50003`（K-6）与订单模块非法请求体的 `10000`（本条）。
 
 ### 残留风险（**不要遗忘这一条**）
 
@@ -519,15 +540,24 @@ Task 6 在 `OrderController` 内加了一个**局部** `@ExceptionHandler(Method
 **届时的修法**：在 `GlobalExceptionHandler` 加
 
 ```java
-@ExceptionHandler(MethodArgumentNotValidException.class)
+@ExceptionHandler(MethodArgumentNotValidException.class)   // 请求体校验
 public Result<Void> handleValidation(MethodArgumentNotValidException e) {
     return Result.fail(ResultStatus.PARAM_ERROR);   // 10000，已存在且语义正好
 }
+
+@ExceptionHandler(BindException.class)                     // 查询参数校验（listOrders 那类）
+public Result<Void> handleBind(BindException e) {
+    return Result.fail(ResultStatus.PARAM_ERROR);
+}
 ```
 
-并**删掉 `OrderController` 里那个局部 handler**（否则两处并存，又是一次「同一事实的多个副本」）。
-注意它是**行为改动**：会让所有 `@Valid` 端点的非法输入路径从 `-1` 变成 `10000`，
-按 K-6 的先例需要同步修订「不改动既有接口的行为」这条声称。
+**两条都要加**：只加前者的话，`GET /api/orders` 那类参数校验仍是 `-1`（见上表的「窄」）。
+
+并**删掉 `OrderController` 里那个局部 handler**——否则两处并存，又是一次「同一事实的多个副本」，
+且局部那个会因为更具体而永远赢，全局那个形同虚设。
+
+注意它是**行为改动**：会让所有 `@Valid` 端点的非法输入路径从 `-1` 变成 `10000`。
+计划开头的「改变既有行为的地方」清单需要**第三次**修订。
 
 ---
 

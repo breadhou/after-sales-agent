@@ -58,11 +58,26 @@ Agent 要"真执行"退款，而 supermall 现在的退款能力有三个硬缺�
 >   这是**有意的**——原行为正是本计划要消除的「一次重试就是一笔重复退款」。
 >
 > 相应地，`OrderServiceImpl.requestRefund` 需要捕获 `DuplicateKeyException` 并转成上面的业务错误。
-> 这是全计划**唯一改变既有接口行为**的地方（注意措辞：`ResultStatus.java`、`OrderController.java` 等也属「修改」，
-> 但它们只增不改；真正改变**行为**的只有这一处）。若不修，调用方看到的会是 `-1 系统异常`，
-> 与真实故障无法区分（详见 `docs/known-issues.md` 的 K-6）。
+> 若不修，调用方看到的会是 `-1 系统异常`，与真实故障无法区分（详见 `docs/known-issues.md` 的 K-6）。
 >
 > **该声称必须在真实环境可演示**——见 Task 8 的 Step 6。
+>
+> **第二次修订（2026-09-19 晚，Task 6 质量审查后）：改变既有行为的地方有 G 处，不是一处。**
+>
+> 原文写「这是全计划**唯一**改变既有接口行为的地方」。Task 6 之后这句话又不成立了，
+> 因为 `OrderController` 里新增的局部 `@ExceptionHandler` **按控制器生效、不是按端点生效**：
+>
+> | # | 改变的行为 | 来源 |
+> |---|---|---|
+> | 1 | `POST /api/orders/{id}/refund` 重复提交 → `50003` | Task 3 / K-6 |
+> | 2 | **订单控制器内**所有 `@Valid @RequestBody` 端点的**非法请求体** → `10000`（原为 `-1`） | Task 6 / K-31 |
+>
+> 第 2 项**含与售后无关的 `POST /api/orders`（建订单）**——这是局部方案在 Spring 机制下的必然结果
+> （控制器级 `@ExceptionHandler` 无法只作用于某几个端点），**已被接受**，不是疏漏。
+>
+> **同一控制器内仍不受影响的一类**：`GET /api/orders`（`listOrders`）的参数校验抛 `BindException`，
+> 而 handler 声明在**子类** `MethodArgumentNotValidException` 上，收不到父类实例——**它仍是 `-1`**。
+> 其余 13 个用 `@Valid` 的文件同样仍是 `-1`（见 K-31）。
 
 ---
 
