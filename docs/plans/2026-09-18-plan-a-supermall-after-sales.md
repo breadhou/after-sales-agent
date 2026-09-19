@@ -1141,6 +1141,21 @@ git commit -m "feat: add idempotent refund execution with server-side amount"
 - Modify: `mall-server/src/main/java/com/mall/module/order/controller/OrderController.java`
 - Test: `mall-server/src/test/java/com/mall/module/order/controller/OrderControllerRefundTest.java`（新建）
 
+> **本任务兼负契约文档的职责**（2026-09-19 补，关闭 K-25 与 K-28）。
+>
+> 这两个端点返回的 `RefundEligibilityVO` 有两个字段**语义重载**，而它经 MCP 传给 Agent，
+> 是 Agent 判断「要不要重试 / 怎么向用户解释」的**唯一依据**。两处必须**一次说清**，
+> 不能留到第三个地方再补：
+>
+> | 字段 | 含义一 | 含义二 |
+> |---|---|---|
+> | `refundableAmount` | 可退时是**可退**金额 | `refundExists=true` 时是那条既有记录的**已退**金额（K-25） |
+> | `eligible` | 查询语义下是「当前是否可退」 | `execute` 的返回值里，`false` 意味着「此前已退过、本次未重复执行」，**不是失败**（K-28） |
+>
+> Step 3 给的端点 javadoc 已经把这两条写全了，**照抄即可，不要精简掉**。
+> 交接时要说明：`RefundEligibilityVO` 自身的字段注释是按**查询**语义写的，
+> 在 `execute` 的返回值里以端点 javadoc 为准。
+
 - [ ] **Step 1: 写失败的测试**
 
 ```java
@@ -1246,7 +1261,13 @@ Expected: 编译失败，`找不到符号: 方法 refundEligibility`
     @Autowired
     RefundExecutionService refundExecutionService;
 
-    /** 查询该订单的售后资格与可退金额。只读。 */
+    /**
+     * 查询该订单的售后资格与可退金额。只读，无副作用。
+     *
+     * <p><b>{@code refundableAmount} 的语义是重载的，调用方必须结合 {@code refundExists} 判读：</b>
+     * 可退时它是<b>可退</b>金额；{@code refundExists=true}（已有退款记录）时，
+     * 它是那条既有记录的<b>已退</b>金额。字段名只有一种，含义有两种。</p>
+     */
     @GetMapping("/{id}/refund-eligibility")
     public Result<RefundEligibilityVO> refundEligibility(@PathVariable Long id) {
         Result<RefundEligibilityVO> result = Result.build();
@@ -1255,8 +1276,22 @@ Expected: 编译失败，`找不到符号: 方法 refundEligibility`
     }
 
     /**
-     * 执行退款。幂等——Agent 会重试，重复调用返回既有结果而非报错。
+     * 执行退款。幂等——Agent 会重试，重复调用返回既有结论而非报错。
      * 金额由服务端决定，请求体只携带原因。
+     *
+     * <p><b>两种响应形态，调用方必须都能正确处理</b>（与
+     * {@link RefundExecutionService#execute} 的契约一致）：</p>
+     *
+     * <ul>
+     *   <li><b>本次执行了退款</b>：{@code eligible=true}、{@code reason=null}，
+     *       {@code refundableAmount} 为本次退款金额，订单已推进到 {@code REFUNDED}；</li>
+     *   <li><b>此前已有退款记录、本次未重复执行</b>：{@code eligible=false}、
+     *       {@code refundExists=true}。<b>这不是失败</b>——调用方据此判断「已经退过了」，
+     *       不要读成「退款没成功」而重试或升级。</li>
+     * </ul>
+     *
+     * <p>⚠️ 第二种形态返回的 {@code eligible=false} 是最容易被误读的地方：把它当失败，
+     * 幂等路径就会在调用方那边被读成错误，本端点做幂等就白做了。</p>
      */
     @PostMapping("/{id}/refund/execute")
     public Result<RefundEligibilityVO> executeRefund(@PathVariable Long id,
