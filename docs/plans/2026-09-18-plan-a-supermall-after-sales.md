@@ -965,7 +965,9 @@ public interface RefundExecutionService {
      *       不代表此刻的状态。</li>
      *   <li><b>此前已有退款记录，本次未重复执行</b>：{@code eligible=false}、
      *       {@code refundExists=true}，{@code refundableAmount} 为<b>该既有记录的金额</b>。
-     *       调用方据此判断「已经退过了」，<b>不要当成失败</b>。</li>
+     *       调用方据此判断「此前已有记录」，<b>不要当成失败</b>。
+     *       <b>注意是「已有记录」而不是「已经退过了」</b>——记录可能仍在处理中、钱未必已退，
+     *       具体看下一段的 {@code reason} 文案。</li>
      * </ul>
      *
      * <p>第二种形态的 {@code reason} 文案按<b>既有行的状态</b>区分，两者不可混为一谈：
@@ -1286,11 +1288,21 @@ Expected: 编译失败，`找不到符号: 方法 refundEligibility`
      *   <li><b>本次执行了退款</b>：{@code eligible=true}、{@code reason=null}，
      *       {@code refundableAmount} 为本次退款金额，订单已推进到 {@code REFUNDED}；</li>
      *   <li><b>此前已有退款记录、本次未重复执行</b>：{@code eligible=false}、
-     *       {@code refundExists=true}。<b>这不是失败</b>——调用方据此判断「已经退过了」，
+     *       {@code refundExists=true}。<b>这不是失败</b>，
      *       不要读成「退款没成功」而重试或升级。</li>
      * </ul>
      *
-     * <p>⚠️ 第二种形态返回的 {@code eligible=false} 是最容易被误读的地方：把它当失败，
+     * <p>⚠️ <b>第二种形态必须再看 {@code reason} 才知道既有记录走到了哪一步，
+     * 两者不可混为一谈：</b></p>
+     *
+     * <ul>
+     *   <li>「该订单已完成退款」：既有行已是 {@code REFUNDED}，<b>钱已退、订单已推进</b>；</li>
+     *   <li>「该订单已有退款申请在处理中」：既有行仍是 {@code PENDING}（旧端点
+     *       {@code POST /api/orders/{id}/refund} 落的），<b>钱没退、订单状态也没推进</b>。
+     *       这同样不是失败——它是「已有申请、尚未执行」。</li>
+     * </ul>
+     *
+     * <p>⚠️ 最容易被误读的是第二种形态返回的 {@code eligible=false}：把它当失败，
      * 幂等路径就会在调用方那边被读成错误，本端点做幂等就白做了。</p>
      */
     @PostMapping("/{id}/refund/execute")
