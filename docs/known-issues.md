@@ -483,7 +483,7 @@ Task 4 的 `RefundEligibilityServiceImpl` 里有个 `daysSince()` 辅助方法�
 
 | | |
 |---|---|
-| **状态** | **已处理**（2026-09-19，Task 5 的质量审查发现，当场修；计划与代码同步订正） |
+| **状态** | **已处理**（2026-09-19，Task 5 的质量审查发现，当场修。supermall `bc94d5e` + `71d8537`；计划同步订正） |
 | **发现于** | 2026-09-19，Task 5 的代码质量审查 |
 | **位置** | `RefundExecutionService.java` 的接口 javadoc |
 | **严重性** | **中**——不是行为缺陷，但**它是 Task 6 会照抄的契约文本** |
@@ -519,7 +519,7 @@ Task 4 的 `RefundEligibilityServiceImpl` 里有个 `daysSince()` 辅助方法�
 
 | | |
 |---|---|
-| **状态** | **已处理**（2026-09-19。计划修订 `5af759e`；实现修复 supermall `e070723`，注释订正 `b43e161`；Task 8 增补并发验证步骤） |
+| **状态** | **已处理**（2026-09-19。计划修订 `5af759e`；supermall 实现修复 `e070723` + 注释订正 `b43e161`；Task 8 增补并发验证步骤。**质量审查的变异测试确认缺口真被堵上**） |
 | **发现于** | 2026-09-19，Task 5 的 implementer 自审时提出疑虑，**主控独立验证后确认并加强** |
 | **位置** | 计划 A 的 Task 5 `RefundExecutionServiceImpl.execute` 的 `catch (DuplicateKeyException)` |
 | **严重性** | **高——交付物缺陷**（幂等属取舍准绳里明确「该修」的架构主张）。但**钱始终是安全的**，坏的是响应形态 |
