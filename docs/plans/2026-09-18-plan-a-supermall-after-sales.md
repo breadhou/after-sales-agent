@@ -1257,10 +1257,34 @@ git commit -m "feat: expose refund eligibility and execution endpoints"
 
 **Files:**
 - Create: `mall-server/src/main/java/com/mall/module/order/entity/vo/PolicyClauseVO.java`
+- Create: `mall-server/src/main/java/com/mall/module/order/entity/vo/PolicyCatalogVO.java`
 - Create: `mall-server/src/main/java/com/mall/module/order/controller/AfterSalesPolicyController.java`
 - Test: `mall-server/src/test/java/com/mall/module/order/controller/AfterSalesPolicyControllerTest.java`
 
-- [ ] **Step 1: 创建 VO**
+> **修订说明（2026-09-19）：端点改为返回「条款 + 指纹」，关闭 K-13。**
+>
+> 初稿只返回条款数组。那样只做到了**空间维度**的同源（判定与文本出自同一个枚举），
+> **时间维度**仍是破的：Agent 侧在启动时拉一次并索引（计划 B 原话：「无缓存……Plan C 会在启动时
+> 拉一次即可」），此后 supermall 改了某条条款并重新部署，**没有任何机制告诉 Agent 它手里的文本已经过期**。
+> 于是它可能引用一条**已不存在的条款**去解释一个**按新规则做出的决定**——
+> 而这正是 §4.2 要防的那件事，只不过换了个维度。
+>
+> **用户 2026-09-19 选定方案一**：响应体由数组改为 `{fingerprint, clauses}`。
+>
+> - **指纹从枚举派生，不手写版本号**。本仓库没有任何版本追踪机制（K-2），手写的版本号
+>   **自己就会漂移**——改了条款忘了改版本号，比没有还糟。派生出来的指纹改了条款就必然变。
+> - **指纹由「本次实际返回的那批条款」算出**，不是另算一份。这样「指纹覆盖的内容」与
+>   「响应里的内容」是**同一个列表**，不可能不同步——**结构性保证，不是约定**。这正是本项目的取舍准绳所在。
+> - **指纹对顺序敏感**，而这是必须的：本项目的政策枚举**顺序即优先级**（K-16）。
+>   调换顺序会改变判定结果，因此也必须改变指纹。
+>
+> **代价已核实**：计划 B 的 `listPolicyClauses()` 只是把响应体原样 `toString()` 透传给模型
+> （计划 B 第 865 行），**没有任何测试断言其形状**——跨仓库契约实际上没有消费者。
+> 代价只落在本任务自己的测试上。
+
+- [ ] **Step 1: 创建两个 VO**
+
+`PolicyClauseVO.java`：
 
 ```java
 package com.mall.module.order.entity.vo;
@@ -1279,12 +1303,80 @@ public class PolicyClauseVO {
 }
 ```
 
+`PolicyCatalogVO.java`——**指纹与条款绑在一起，构造时就派生**：
+
+```java
+package com.mall.module.order.entity.vo;
+
+import lombok.Data;
+import lombok.experimental.Accessors;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.List;
+
+/** 政策条款目录。供 Agent 侧建立检索索引并检测漂移。 */
+@Data
+@Accessors(chain = true)
+public class PolicyCatalogVO {
+
+    /**
+     * 本批条款的指纹。Agent 侧重新拉取时比对，不一致即说明服务端的条款变了，重建索引。
+     */
+    private String fingerprint;
+
+    private List<PolicyClauseVO> clauses;
+
+    /**
+     * 从一批条款构造目录。<b>指纹取自传入的这批条款本身</b>，而不是另算一份——
+     * 于是「指纹覆盖的内容」与「响应返回的内容」是同一个列表，不可能不同步。
+     *
+     * <p>用工厂方法而不是裸 new + setter，是为了让这条不变量跟着数据走：
+     * 想构造目录就得经过这里，绕不过指纹。</p>
+     */
+    public static PolicyCatalogVO of(List<PolicyClauseVO> clauses) {
+        return new PolicyCatalogVO()
+                .setFingerprint(fingerprintOf(clauses))
+                .setClauses(clauses);
+    }
+
+    /**
+     * 对条款求 SHA-256。
+     *
+     * <p>字段之间用 {@code \0} / {@code \1} 分隔，避免拼接歧义——
+     * 否则 {@code ("ab","c")} 与 {@code ("a","bc")} 会得到同一个指纹。</p>
+     *
+     * <p><b>顺序敏感是必须的</b>：本项目的政策枚举顺序即优先级（见 K-16），
+     * 调换顺序会改变判定结果，因此也必须改变指纹。</p>
+     */
+    private static String fingerprintOf(List<PolicyClauseVO> clauses) {
+        StringBuilder canonical = new StringBuilder();
+        for (PolicyClauseVO clause : clauses) {
+            canonical.append(clause.getCode()).append('\0')
+                    .append(clause.getTitle()).append('\0')
+                    .append(clause.getClauseText()).append('\1');
+        }
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.toString().getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            // SHA-256 是 JDK 强制实现，走不到这里
+            throw new IllegalStateException("SHA-256 不可用", e);
+        }
+    }
+}
+```
+
 - [ ] **Step 2: 写失败的测试**
 
 ```java
 package com.mall.module.order.controller;
 
 import com.mall.common.result.Result;
+import com.mall.module.order.entity.vo.PolicyCatalogVO;
 import com.mall.module.order.entity.vo.PolicyClauseVO;
 import com.mall.module.order.enums.AfterSalesPolicy;
 import org.junit.jupiter.api.Test;
@@ -1299,10 +1391,10 @@ class AfterSalesPolicyControllerTest {
 
     @Test
     void shouldExposeEveryPolicyWithCodeAndClauseText() {
-        Result<List<PolicyClauseVO>> result = controller.listPolicies();
+        Result<PolicyCatalogVO> result = controller.listPolicies();
 
         assertEquals(0, result.getCode());
-        List<PolicyClauseVO> clauses = result.getData();
+        List<PolicyClauseVO> clauses = result.getData().getClauses();
         assertEquals(AfterSalesPolicy.values().length, clauses.size());
 
         for (PolicyClauseVO clause : clauses) {
@@ -1314,12 +1406,62 @@ class AfterSalesPolicyControllerTest {
 
     @Test
     void codeShouldMatchEnumNameSoDecisionAndExplanationShareAKey() {
-        Result<List<PolicyClauseVO>> result = controller.listPolicies();
+        Result<PolicyCatalogVO> result = controller.listPolicies();
 
         // 资格接口返回的 policyCode 必须能在这里找到对应条款
-        boolean found = result.getData().stream()
+        boolean found = result.getData().getClauses().stream()
                 .anyMatch(c -> "SEVEN_DAY_NO_REASON".equals(c.getCode()));
         assertTrue(found, "资格接口给出的政策码在条款列表里找不到对应项");
+    }
+
+    @Test
+    void shouldAlwaysCarryAFingerprint() {
+        String fingerprint = controller.listPolicies().getData().getFingerprint();
+
+        assertNotNull(fingerprint);
+        assertFalse(fingerprint.isBlank(), "没有指纹，Agent 侧就无法发现条款漂移（K-13）");
+    }
+
+    /**
+     * 指纹必须**稳定**：同一批条款每次都要算出同一个值。
+     * 这条守的是「指纹不是时间戳/随机数/对象身份哈希」——那种实现会让 Agent 每次比对都判定「变了」，
+     * 于是每次刷新都重建索引，指纹退化成一个恒真的告警。
+     */
+    @Test
+    void fingerprintShouldBeStableAcrossCalls() {
+        assertEquals(controller.listPolicies().getData().getFingerprint(),
+                controller.listPolicies().getData().getFingerprint());
+    }
+
+    /**
+     * 指纹必须**覆盖条款文本**。改了文本而指纹不变 = 漂移检测失效，这正是 K-13 要防的。
+     * 直接喂两组只差一个字的条款，绕开枚举不可变的限制。
+     */
+    @Test
+    void fingerprintShouldChangeWhenAnyClauseTextChanges() {
+        PolicyClauseVO original = new PolicyClauseVO()
+                .setCode("X").setTitle("标题").setClauseText("原文");
+        PolicyClauseVO edited = new PolicyClauseVO()
+                .setCode("X").setTitle("标题").setClauseText("改过的原文");
+
+        assertNotEquals(PolicyCatalogVO.of(List.of(original)).getFingerprint(),
+                PolicyCatalogVO.of(List.of(edited)).getFingerprint());
+    }
+
+    /**
+     * 指纹必须**对顺序敏感**——因为本项目的政策枚举**顺序即优先级**（见 K-16）。
+     * 调换两条政策的先后会改变判定结果，因此也必须改变指纹；否则一次「静默改了优先级」
+     * 的服务端发布，Agent 侧会认为条款没变而继续用旧的顺序解释。
+     */
+    @Test
+    void fingerprintShouldBeOrderSensitiveBecauseOrderIsPriority() {
+        PolicyClauseVO first = new PolicyClauseVO()
+                .setCode("A").setTitle("甲").setClauseText("甲条款");
+        PolicyClauseVO second = new PolicyClauseVO()
+                .setCode("B").setTitle("乙").setClauseText("乙条款");
+
+        assertNotEquals(PolicyCatalogVO.of(List.of(first, second)).getFingerprint(),
+                PolicyCatalogVO.of(List.of(second, first)).getFingerprint());
     }
 }
 ```
@@ -1338,6 +1480,7 @@ Expected: 编译失败，`找不到符号: 类 AfterSalesPolicyController`
 package com.mall.module.order.controller;
 
 import com.mall.common.result.Result;
+import com.mall.module.order.entity.vo.PolicyCatalogVO;
 import com.mall.module.order.entity.vo.PolicyClauseVO;
 import com.mall.module.order.enums.AfterSalesPolicy;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -1350,13 +1493,16 @@ import java.util.List;
 /**
  * 售后政策条款。直接来自 {@link AfterSalesPolicy} 枚举——
  * 与判定逻辑同一份定义，Agent 侧索引的就是这里返回的文本。
+ *
+ * <p>响应里带一个由这批条款派生的指纹，Agent 侧重新拉取时比对即可发现漂移
+ * （K-13：只做到空间维度的同源还不够，时间维度也要堵）。</p>
  */
 @RestController
 @RequestMapping("/api/after-sales")
 public class AfterSalesPolicyController {
 
     @GetMapping("/policies")
-    public Result<List<PolicyClauseVO>> listPolicies() {
+    public Result<PolicyCatalogVO> listPolicies() {
         List<PolicyClauseVO> clauses = Arrays.stream(AfterSalesPolicy.values())
                 .map(policy -> new PolicyClauseVO()
                         .setCode(policy.name())
@@ -1364,8 +1510,9 @@ public class AfterSalesPolicyController {
                         .setClauseText(policy.getClauseText()))
                 .toList();
 
-        Result<List<PolicyClauseVO>> result = Result.build();
-        result.success(clauses);
+        Result<PolicyCatalogVO> result = Result.build();
+        // 指纹由 PolicyCatalogVO.of 从**同一批** clauses 派生，不另算一份
+        result.success(PolicyCatalogVO.of(clauses));
         return result;
     }
 }
@@ -1377,7 +1524,11 @@ public class AfterSalesPolicyController {
 JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -am -Dtest=AfterSalesPolicyControllerTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: `Tests run: 2, Failures: 0, Errors: 0`
+Expected: `Tests run: 6, Failures: 0, Errors: 0`
+
+（初稿为 2 个用例；2026-09-19 的 K-13 修订加了 4 个守指纹的：非空、稳定、覆盖条款文本、对顺序敏感。
+**「稳定」那一条不是凑数**——它守的是「指纹不是时间戳/对象身份哈希」，
+那种实现会让 Agent 每次比对都判定「变了」而每轮都重建索引，指纹退化成恒真告警。）
 
 - [ ] **Step 6: 提交**
 
@@ -1566,7 +1717,7 @@ Expected: `ORDER_NOT_EXIST(50000)`
 ## 完成标准
 
 - [ ] 全量测试通过，**零失败**（不要照某个具体数字核对，理由见 Task 6 Step 5）
-- [ ] 新建的 5 个测试类全绿：`AfterSalesPolicyTest`(**9**)、`RefundEligibilityServiceImplTest`(5)、`RefundExecutionServiceImplTest`(**8**)、`OrderControllerRefundTest`(2)、`AfterSalesPolicyControllerTest`(2)
+- [ ] 新建的 5 个测试类全绿：`AfterSalesPolicyTest`(**9**)、`RefundEligibilityServiceImplTest`(5)、`RefundExecutionServiceImplTest`(**8**)、`OrderControllerRefundTest`(2)、`AfterSalesPolicyControllerTest`(**6**)
 
 > 括号里的数字是 2026-09-19 的实测值，**与计划初稿不同**：`AfterSalesPolicyTest` 原为 7，Task 2 的重审补了 2 个（可达性守卫 + `resolve` 层的边界断言）；`RefundExecutionServiceImplTest` 原为 5，Task 4 的重审补了 3 个（见 Task 5 Step 1）。
 
@@ -1574,6 +1725,7 @@ Expected: `ORDER_NOT_EXIST(50000)`
 - [ ] `refund` 表有 `uk_refund_order` 唯一索引
 - [ ] 订单可进入 `REFUNDED` 状态
 - [ ] `GET /api/after-sales/policies` 返回的条款码与资格接口返回的 `policyCode` 能对上
+- [ ] `GET /api/after-sales/policies` 的响应带 `fingerprint`，且同一份条款两次请求得到同一指纹（K-13）
 
 ---
 
