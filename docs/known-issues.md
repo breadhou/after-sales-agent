@@ -508,29 +508,51 @@ Task 6 在 `OrderController` 内加了一个**局部** `@ExceptionHandler(Method
 **为什么不做全局**：全局改动会让**提交范围与任务范围脱钩**——这正是同一天
 `MerchantSecurityConfig` 那次裁决所立的规则（范围外的问题只报告不改；开了口子就是全仓重构）。
 
-### ⚠️ 实际范围比「售后端点」宽一格、窄一格——**措辞已按事实订正**
+### ⚠️ 实际范围比「售后端点」宽——**措辞已按事实订正两次**
 
 选型时用的标签是「只覆盖售后端点」。**这在 Spring 机制上做不到**：
 控制器级 `@ExceptionHandler` 按**控制器**生效，**不按端点**。实际范围是：
 
 | | 端点 | 效果 |
 |---|---|---|
-| **宽** | `POST /api/orders`（`createOrder`，**建订单，与售后无关**） | 非法请求体 `-1` → `10000` |
+| **宽** | `POST /api/orders`（`createOrder`，**建订单，与售后无关**） | 非法参数 `-1` → `10000` |
 | **宽** | `POST /api/orders/{id}/refund`（旧退款端点） | 同上 |
 | **宽** | `POST /api/orders/{id}/refund/execute`（本任务的） | 同上 |
-| **窄** | `GET /api/orders`（`listOrders`，`@Valid OrderPageDTO` 非请求体） | **仍是 `-1`** |
+| **宽** | `GET /api/orders`（`listOrders`，**查询参数**校验） | **同样是 `10000`**，详见下 |
 | **窄** | 其余 13 个用 `@Valid` 的文件 | **仍是 `-1`** |
 
-**「窄」的机制原因**：`listOrders` 的参数校验抛 `BindException`，而 handler 声明在**子类**
-`MethodArgumentNotValidException` 上——声明在子类上的 handler **收不到父类实例**。
+**「保持局部」的原始论据已不成立**：它的理由本是「不动本任务以外的端点」，
+但它**已经改变了 `createOrder` 的行为**。三个方案重新列出后，用户仍选**局部修**，
+理由换成准确的版本：**影响面限制在一个控制器内（1 个文件 vs 14 个文件）**，而非「零范围外影响」。
 
-**这对本条的原始论据有影响**：「保持局部」的论据是「不动本任务以外的端点」，
-但它**已经改变了 `createOrder` 的行为**，那个论据因此不成立。
-三个方案（全局修 / 只记录 / 局部修）重新列出后，用户仍选**局部修**——理由是
-**影响面仍限制在一个控制器内（1 个文件 vs 14 个文件）**，而非「完全没有范围外影响」。
+### ⚠️⚠️ 第二次订正：`GET /api/orders` 也是「宽」，不是「窄」（2026-09-19 晚，复审发现）
 
-**计划里「唯一改变既有行为的地方」这条声称已同步订正**（见计划开头的第二次修订说明），
-现状是 **2 处**：重复提交的 `50003`（K-6）与订单模块非法请求体的 `10000`（本条）。
+初稿把它列为「窄」，理由是「非请求体的 `@Valid` 抛 `BindException`，
+而 handler 声明在**子类** `MethodArgumentNotValidException` 上，收不到父类实例」。
+
+**前提是错的。** 在 spring-web 6.2.5 里，**非请求体的 `@Valid` 失败同样抛 `MethodArgumentNotValidException`**。
+源码级证据（我已独立复核）：
+
+```java
+// ModelAttributeMethodProcessor.java:157-158
+if (binder.getBindingResult().hasErrors() && isBindExceptionRequired(binder, parameter)) {
+    throw new MethodArgumentNotValidException(parameter, binder.getBindingResult());
+}
+// :257-262   isBindExceptionRequired(parameter) → return !hasBindingResult
+```
+
+`listOrders(@Valid OrderPageDTO dto)` 后面**没有** `BindingResult` 参数 → `isBindExceptionRequired` 返回 `true`
+→ 抛的是 `MethodArgumentNotValidException`。另核：`:134-139` 的 `catch` 是**原样重抛**、从不转成 `BindException`；
+spring-web 全文唯一的 `throw new BindException(...)` 在 `WebRequestDataBinder:178` 的 `closeNoCatch()` 里，
+**不在绑定路径上**。
+
+**因此「一个 handler 同时覆盖请求体与查询参数两类」**——这一点反过来简化了将来全局修的改法（见下）。
+
+> **这条错误的来源值得记**：implementer 报的是「实测 spring-web 6.2.5 `MethodArgumentNotValidException extends BindException`」——
+> **这个前提是真的**，但它据此推出的「所以 `listOrders` 抛的是 `BindException`」**是假的**（真实抛的是子类）。
+> 而**主控把结论直接采信、写进了本条与计划**，没有自己看一眼调用点。
+> 与 K-29 同族：**「一个真实的前提」也能推出「一个假结论」，而采信结论的人不会察觉**。
+> 是复审读 Spring 源码时发现的。
 
 ### 残留风险（**不要遗忘这一条**）
 
@@ -540,18 +562,16 @@ Task 6 在 `OrderController` 内加了一个**局部** `@ExceptionHandler(Method
 **届时的修法**：在 `GlobalExceptionHandler` 加
 
 ```java
-@ExceptionHandler(MethodArgumentNotValidException.class)   // 请求体校验
+@ExceptionHandler(MethodArgumentNotValidException.class)
 public Result<Void> handleValidation(MethodArgumentNotValidException e) {
     return Result.fail(ResultStatus.PARAM_ERROR);   // 10000，已存在且语义正好
 }
-
-@ExceptionHandler(BindException.class)                     // 查询参数校验（listOrders 那类）
-public Result<Void> handleBind(BindException e) {
-    return Result.fail(ResultStatus.PARAM_ERROR);
-}
 ```
 
-**两条都要加**：只加前者的话，`GET /api/orders` 那类参数校验仍是 `-1`（见上表的「窄」）。
+**只加这一个就够**——它同时覆盖**请求体**与**查询参数**两类校验失败（理由见上面的第二次订正）。
+
+> ⚠️ **不要**照 2026-09-19 初稿那样再加一个 `@ExceptionHandler(BindException.class)`：
+> 那条建议建立在「非请求体校验抛 `BindException`」这个**错误前提**上，加了是多余的死代码。
 
 并**删掉 `OrderController` 里那个局部 handler**——否则两处并存，又是一次「同一事实的多个副本」，
 且**局部那个会永远赢，全局那个形同虚设**。

@@ -70,14 +70,18 @@ Agent 要"真执行"退款，而 supermall 现在的退款能力有三个硬缺�
 > | # | 改变的行为 | 来源 |
 > |---|---|---|
 > | 1 | `POST /api/orders/{id}/refund` 重复提交 → `50003` | Task 3 / K-6 |
-> | 2 | **订单控制器内**所有 `@Valid @RequestBody` 端点的**非法请求体** → `10000`（原为 `-1`） | Task 6 / K-31 |
+> | 2 | **订单控制器内所有 `@Valid` 参数校验失败** → `10000`（原为 `-1`） | Task 6 / K-31 |
 >
 > 第 2 项**含与售后无关的 `POST /api/orders`（建订单）**——这是局部方案在 Spring 机制下的必然结果
 > （控制器级 `@ExceptionHandler` 无法只作用于某几个端点），**已被接受**，不是疏漏。
 >
-> **同一控制器内仍不受影响的一类**：`GET /api/orders`（`listOrders`）的参数校验抛 `BindException`，
-> 而 handler 声明在**子类** `MethodArgumentNotValidException` 上，收不到父类实例——**它仍是 `-1`**。
-> 其余 13 个用 `@Valid` 的文件同样仍是 `-1`（见 K-31）。
+> **注意第 2 项写的是「所有 `@Valid` 参数」而不是「请求体」**（2026-09-19 晚订正）：
+> 初稿写「非法请求体」，并声称 `GET /api/orders`（查询参数校验）**不受影响、仍是 `-1`**。
+> **那个声称是错的**——spring-web 6.2.5 的 `ModelAttributeMethodProcessor:157-158` 表明，
+> 非请求体的 `@Valid` 失败**同样抛 `MethodArgumentNotValidException`**，
+> 故 `GET /api/orders?pageNum=abc` 也返回 `10000`。源码证据与错误来源见 K-31 的「第二次订正」。
+>
+> 其余 13 个用 `@Valid` 的文件确实仍是 `-1`（它们都不在 `OrderController` 里）。
 
 ---
 
