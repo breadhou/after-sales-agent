@@ -3,7 +3,8 @@
 **日期**：2026-09-19
 **范围**：计划 A / Task 1（refund 唯一索引）的迁移脚本
 **被验证文件**：`supermall/mall-server/src/main/resources/db/migration/2026-09-18-refund-unique.sql`
-**supermall 提交**：`23eadf7`（本次修复）· `1fc8a5d`（删除冗余索引）· `ab3ad5b`（加唯一索引）
+**supermall 提交**：`afcfad9`（uk 撞名硬化）· `23eadf7`（自判断重写）·
+`1fc8a5d`（删除冗余索引）· `ab3ad5b`（加唯一索引）
 
 **为什么单独记这份**：这个仓库没有 flyway/liquibase，也没有迁移版本追踪表，
 `init.sql` 也不随应用启动执行。**迁移是否已应用无法从仓库事后还原**，所以
@@ -38,12 +39,21 @@
 | prod 形态（有 uk、有 idx） | 只删 idx | `DROP KEY idx_order_id` |
 | 已迁移（有 uk、无 idx） | 无操作 | 空 → `DO 0` |
 | 异常（无 uk、无 idx） | 加 uk | `ADD UNIQUE KEY …` |
+| 同名但非唯一（uk 撞名、类型错） | 重建为唯一 | `DROP KEY uk_refund_order , ADD UNIQUE KEY …` |
+
+最后一行是矩阵之外、由本次验证追加堵掉的**同类静默失败**：只按索引名判断时，
+一个**非唯一**却叫 `uk_refund_order` 的索引会被误判成「唯一索引已就位」，
+于是跳过 ADD 却仍删掉 `idx_order_id` —— 脚本退出码 0、无任何报错，而
+`order_id` 上其实没有任何唯一约束，幂等保证落空。因此 uk 检测连 `non_unique`
+一起判断，撞名且类型不对时先 DROP 再 ADD（已验证 MySQL 允许同一条 ALTER 里
+同名 DROP+ADD）。
 
 ---
 
 ## 3. 逐状态实测（原始输出）
 
-测试方式：用临时库（`mall_st1` / `mall_st4` / `mall_dup`）构造各种状态。
+测试方式：用临时库（`mall_s1` / `mall_s4` / `mall_s5` / `mall_s5b` / `mall_dup`）
+构造各种状态。
 脚本里有 `USE mall;`，因此测试副本**只替换了 `USE` 那一行的库名**，其余逐字未动：
 
 ```
@@ -51,7 +61,7 @@
 47c47
 < USE mall;
 ---
-> USE mall_st1;
+> USE mall_s1;
 ```
 
 ### 状态 1：全新（无 uk、有 idx）→ 应加 uk、删 idx
@@ -139,6 +149,37 @@ uk_refund_order	0
 ```
 ✅ 只加 uk，不尝试 DROP。
 
+### 状态 5：uk 撞名但非唯一（矩阵之外，本次追加）→ 应重建为唯一
+
+前置（手工建一个**非唯一**索引却叫 `uk_refund_order`）：
+```
+INDEX_NAME	NON_UNIQUE
+idx_order_id	1
+PRIMARY	0
+uk_refund_order	1
+```
+
+运行脚本：
+```
+EXIT CODE: 0
+```
+```
+INDEX_NAME	NON_UNIQUE
+PRIMARY	0
+uk_refund_order	0
+```
+✅ 撞名的非唯一索引被删掉重建为唯一（`non_unique=0`），`idx_order_id` 已删。
+
+**修复前的行为**（实测确认）：同样前置下脚本退出码 0、无报错，但结果是
+```
+INDEX_NAME	NON_UNIQUE
+PRIMARY	0
+uk_refund_order	1
+```
+`uk_refund_order` 仍是**非唯一**，而 `idx_order_id` 已被删除——脚本报成功，
+`order_id` 上却没有任何唯一约束，幂等保证落空，且比迁移前更糟（原来的索引也没了）。
+这与 K-1 属于同一类静默失败。
+
 ### 补充：有重复数据时的行为（原子性）
 
 构造「迁移前形态 + 重复 order_id」的库，先跑运行前检查查询：
@@ -169,6 +210,9 @@ rows_now
 ✅ 整条 ALTER 原子回滚：**`idx_order_id` 仍在、未创建 uk、数据完好**。
 表没有落入「两个索引都没了」的中间状态。这是刻意的设计取舍——宁可原索引留着，
 也不要迁移失败时把表改坏。
+
+状态 5 的变体（撞名非唯一 + 有重复数据）同样验证过，结果一致——报
+`ERROR 1062`，退出码 1，表完全没变（`idx_order_id` 与撞名索引都还在）。
 
 ---
 
@@ -220,7 +264,8 @@ seckill_order	idx_order_id
 
 ## 5. 数据清理确认
 
-- 临时库 `mall_st1` / `mall_st4` / `mall_dup` 已全部 DROP，确认无残留：
+- 全部临时库（`mall_s1` / `mall_s4` / `mall_s5` / `mall_s5b` / `mall_edge` /
+  `mall_edge2` / `mall_dup`）已 DROP，确认无残留：
   ```
   SELECT schema_name FROM information_schema.schemata
    WHERE schema_name LIKE 'mall\_%' AND schema_name <> 'mall';
