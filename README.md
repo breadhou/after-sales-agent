@@ -10,7 +10,9 @@
 
 ## 当前状态
 
-**代码尚未开始，设计与实现计划已完成。** 从下面的「下一步」开始执行。
+**计划 A 正在执行中（8 个任务已完成 4 个）**，分支 `feat/after-sales-capability`（在 supermall 仓库），已推送。
+
+计划 B、C 尚未开工。执行中发现的问题与取舍记录在 [`docs/known-issues.md`](docs/known-issues.md)。
 
 ### 文档地图
 
@@ -25,7 +27,7 @@
 
 | # | 阶段 | 产出 | 计划 | 状态 |
 |---|---|---|---|---|
-| A | supermall 售后能力 | 政策判定 + 资格查询 + 退款执行 + 幂等 | ✅ 已写 | ⬜ **待执行** |
+| A | supermall 售后能力 | 政策判定 + 资格查询 + 退款执行 + 幂等 | ✅ 已写 | 🔄 **进行中** — Task 1-4 / 8 |
 | B | MCP Server | 6 个工具，stdio 传输 | ✅ 已写 | ⬜ 待执行（**依赖 A**） |
 | C | Agent | 决策 Agent + 复核 Agent + 升级人工 | ✅ 已写 | ⬜ 待执行（**依赖 B**） |
 | 3 | RAG 解释层 | 政策条款与 FAQ 的检索，**只解释不判定** | ❌ 未写 | ⏸ 待设计 |
@@ -42,6 +44,17 @@
 > 执行 `docs/plans/2026-09-18-plan-a-supermall-after-sales.md`
 
 计划头部声明了该用哪个子技能（`executing-plans` 或 `subagent-driven-development`），新会话读到即可接续，**跨会话不受影响**。
+
+> **当前进度：Task 1-4 已完成，从 Task 5（退款执行服务）接续。**
+>
+> ⚠️ **计划里的复选框没有被回填**（仍是初始状态，53 个全部未勾）——**不要拿它当进度依据**，否则会从 Task 1 重做。可靠的进度依据是 supermall 仓库的分支历史：
+>
+> ```bash
+> git -C D:/sourcecode/supermall log --oneline main..feat/after-sales-capability
+> ```
+>
+> 按提交信息与任务一一对应即可看出做到哪。
+> Task 5 的代码块里有两处注释说明了两个坑（`@Transactional` 下的 read view 不会刷新、唯一索引才是并发裁判），照它写即可。
 
 **顺序不能乱**：A → B → C。B 依赖 A 的三个新端点，C 依赖 B 能跑起来。
 
