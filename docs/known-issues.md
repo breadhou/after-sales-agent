@@ -479,6 +479,58 @@ Task 4 的 `RefundEligibilityServiceImpl` 里有个 `daysSince()` 辅助方法�
 
 ---
 
+## K-31 `@Valid` 校验失败在全仓范围内返回 `-1 系统异常`（**局部已收口，仓库级未修**）
+
+| | |
+|---|---|
+| **状态** | **部分处理**（2026-09-19，用户裁定**只修售后端点**；仓库级缺口**有意保留**，见下） |
+| **发现于** | 2026-09-19，Task 6 的代码质量审查 |
+| **位置** | `GlobalExceptionHandler.java`（缺 handler）；影响全仓 14 个用 `@Valid` 的文件 |
+| **严重性** | 中——**本项目已修过两次的同型问题**（405 那次、K-6 修 `DuplicateKeyException` 那次） |
+
+**现状**：`GlobalExceptionHandler` 只有四个 handler——`NullPointerException` / `BusinessException` /
+`HttpRequestMethodNotSupportedException` / 兜底 `Exception`。**没有 `MethodArgumentNotValidException`**，
+于是任何 `@Valid` 校验失败都落进兜底分支，返回 `{"code":-1,"message":"系统异常"}`。
+
+**为什么对 Agent 特别危险**：`refund/execute` 的 `reason` 是 `@NotBlank @Size(max=512)`，
+而 **LLM 很容易把用户的整段抱怨当作 `reason` 递上来**（超 512 字）。此时它收到 `-1`——
+在它的判断里等于「售后系统故障」，会诱发重试与升级。Plan B 的客户端把 `code != 0` 抛成异常，
+模型据 `code` 决策，所以这个码会**直接影响它的选择**。
+
+**论证与 K-6 完全一致**：K-6 修 `DuplicateKeyException` 就是因为「驱动这个端点的 agent 看到的是系统异常，
+会诱发重试与升级」。同一个理由在这里成立。
+
+### 处置：只修售后端点（用户 2026-09-19 裁定）
+
+Task 6 在 `OrderController` 内加了一个**局部** `@ExceptionHandler(MethodArgumentNotValidException.class)`
+→ `PARAM_ERROR(10000)`。Spring 中控制器内部的 `@ExceptionHandler` 只作用于该控制器且**优先于** `@ControllerAdvice`。
+
+**为什么不做全局**：本次任务的改动范围是售后端点，全局改动会让**提交范围与任务范围脱钩**——
+这正是同一天`MerchantSecurityConfig` 那次裁决所立的规则（范围外的问题只报告不改；开了口子就是全仓重构）。
+
+**该选择被显式采纳而非默认**：三个方案（当场全局修 / 只记录 / 只修售后端点）都已列出，用户选了第三个。
+代价是**同一类请求错误在仓库里有两套响应语义**，这一点已写进 handler 的注释，免得将来有人以为是疏忽。
+
+### 残留风险（**不要遗忘这一条**）
+
+**其余 13 个用 `@Valid` 的文件照旧返回 `-1`。** 当前没有 Agent 调用它们，所以不构成问题；
+**但只要将来有 Agent 走任何一个 `@Valid` 端点，这个坑就会重新生效。**
+
+**届时的修法**：在 `GlobalExceptionHandler` 加
+
+```java
+@ExceptionHandler(MethodArgumentNotValidException.class)
+public Result<Void> handleValidation(MethodArgumentNotValidException e) {
+    return Result.fail(ResultStatus.PARAM_ERROR);   // 10000，已存在且语义正好
+}
+```
+
+并**删掉 `OrderController` 里那个局部 handler**（否则两处并存，又是一次「同一事实的多个副本」）。
+注意它是**行为改动**：会让所有 `@Valid` 端点的非法输入路径从 `-1` 变成 `10000`，
+按 K-6 的先例需要同步修订「不改动既有接口的行为」这条声称。
+
+---
+
 ## K-30 「超期」走不到那个象限——把资格说窄比说宽更危险
 
 | | |

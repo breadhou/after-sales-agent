@@ -1278,7 +1278,7 @@ Expected: 编译失败，`找不到符号: 方法 refundEligibility`
      *       别读成「已退」；</li>
      *   <li>两者皆为 {@code false}（订单状态不符合任何售后政策）：<b>这个数字更不是承诺</b>——
      *       字段仍填了订单实付金额，但该订单当前不可退。
-     *       <b>别把这一支读成「超期」</b>：签收超过 7 天**不会**落到这里——
+     *       <b>别把这一支读成「超期」</b>：签收超过 7 天<b>不会</b>落到这里——
      *       {@code QUALITY_ISSUE} 对 {@code RECEIVED} 订单无期限兜底，
      *       天数只决定命中哪条政策，不决定有没有政策（见 {@code AfterSalesPolicy}）。</li>
      * </ul>
@@ -1304,9 +1304,13 @@ Expected: 编译失败，`找不到符号: 方法 refundEligibility`
      *
      * <ul>
      *   <li><b>本次执行了退款</b>：{@code eligible=true}、{@code reason=null}，
-     *       {@code refundableAmount} 为本次退款金额，订单已推进到 {@code REFUNDED}；</li>
+     *       {@code refundableAmount} 为本次退款金额，订单已推进到 {@code REFUNDED}；
+     *       此时 {@code refundExists=false} 说的是<b>本次调用之前</b>没有既有退款记录——
+     *       它是写前的事实，<b>不代表此刻</b>（这一刻刚写入了一条）；
+     *       本形态还会带上 {@code policyCode} / {@code policyTitle}；形态二这两项为 {@code null}。</li>
      *   <li><b>此前已有退款记录、本次未重复执行</b>：{@code eligible=false}、
-     *       {@code refundExists=true}。<b>这不是失败</b>，
+     *       {@code refundExists=true}，{@code refundableAmount} 为<b>该既有记录的金额</b>
+     *       （取值来源与资格查询不同：那边取订单实付金额，当前两者同值）。<b>这不是失败</b>，
      *       不要读成「退款没成功」而重试或升级。</li>
      * </ul>
      *
@@ -1821,6 +1825,35 @@ Expected: `ORDER_NOT_EXIST(50000)`
 
 用 `{"reason":"...","amount":99999}` 调用（多余字段），确认落库金额仍是订单实付金额。
 
+- [ ] **Step 9b: 验证非法 reason 不会被报成系统异常**（2026-09-19 补）
+
+**为什么单独验**：`@Valid` 校验失败此前会落进 `GlobalExceptionHandler` 的**兜底**分支，返回 `-1 系统异常`——
+而 `-1` 在 Agent 的判断里等于「售后系统故障」，会诱发重试与升级。这与 K-6 修 `DuplicateKeyException` 是同一论证。
+Task 6 已在 `OrderController` 内加了局部 `@ExceptionHandler` 收口（**只覆盖售后端点**，仓库级缺口仍在，见 K-31）。
+
+**必须用一张尚无退款记录的 `RECEIVED` 订单**（记为 `$ORDER_ID4`）。这一点是关键：
+若订单已有 PENDING/REFUNDED 行，请求会走幂等分支，**即使校验完全没生效也不会写入**——
+断言全绿却什么都没证明，正是本项目记过的「看起来全绿的失败」。
+
+```bash
+printf '%s' '{"reason":"   "}' > /tmp/refund-blank.json
+curl -s -X POST -H "Authorization: Bearer $CT" -H 'Content-Type: application/json' \
+  --data-binary @/tmp/refund-blank.json \
+  "http://localhost:8081/api/orders/$ORDER_ID4/refund/execute"
+```
+
+Expected: `code: 10000`、`message: 参数错误`（**不是** `-1 系统异常`）；且
+
+```bash
+mysql_q "SELECT COUNT(*) FROM mall.refund WHERE order_id=$ORDER_ID4;"
+```
+
+Expected: **0**——校验挡住时不得落任何退款行，订单状态仍为 `RECEIVED`。
+
+再用一条**超过 512 字**的 reason 重复一次，期望相同（`@Size(max=512)` 与 `refund.reason VARCHAR(512)` 逐字对齐）。
+
+> 若拿到 `-1` 并看到 `unknown_failure` ERROR 日志，说明局部 handler 没生效——那是**失败**，不是预期现象。
+
 - [ ] **Step 10: 提交验证记录**
 
 在 `docs/` 下记录本轮验证结果（造了哪些数据、每步的返回、最终一致性核对），提交。
@@ -1834,7 +1867,7 @@ Expected: `ORDER_NOT_EXIST(50000)`
 
 > 括号里的数字是 2026-09-19 的实测值，**与计划初稿不同**：`AfterSalesPolicyTest` 原为 7，Task 2 的重审补了 2 个（可达性守卫 + `resolve` 层的边界断言）；`RefundExecutionServiceImplTest` 原为 5，Task 4 的重审补了 3 个（见 Task 5 Step 1）。
 
-- [ ] 真实环境下：查资格 → 执行 → 幂等（顺序） → **幂等（并发）** → **旧端点重复提交** → 越权 → 金额不可指定，**七项**全部符合预期
+- [ ] 真实环境下：查资格 → 执行 → 幂等（顺序） → **幂等（并发）** → **旧端点重复提交** → 越权 → 金额不可指定 → **非法 reason 不报系统异常**，**八项**全部符合预期
 - [ ] `refund` 表有 `uk_refund_order` 唯一索引
 - [ ] 订单可进入 `REFUNDED` 状态
 - [ ] `GET /api/after-sales/policies` 返回的条款码与资格接口返回的 `policyCode` 能对上
