@@ -1152,7 +1152,7 @@ git commit -m "feat: add idempotent refund execution with server-side amount"
 > | 字段 | 含义一 | 含义二 |
 > |---|---|---|
 > | `refundableAmount` | 可退时是**可退**金额 | `refundExists=true` 时是那条既有记录的**已退**金额（K-25） |
-> | `eligible` | 查询语义下是「当前是否可退」 | `execute` 的返回值里，`false` 意味着「此前已退过、本次未重复执行」，**不是失败**（K-28） |
+> | `eligible` | 查询语义下是「当前是否可退」 | `execute` 的返回值里，`false` 意味着「此前已有退款记录、本次未重复执行」，**不是失败**（K-28）。既有记录是**已完成**还是**仍在处理中**，看 `reason` 文案——**别说成「已退过」，PENDING 时钱没退** |
 >
 > Step 3 给的端点 javadoc 已经把这两条写全了，**照抄即可，不要精简掉**。
 > 交接时要说明：`RefundEligibilityVO` 自身的字段注释是按**查询**语义写的，
