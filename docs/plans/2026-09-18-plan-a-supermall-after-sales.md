@@ -1151,7 +1151,7 @@ git commit -m "feat: add idempotent refund execution with server-side amount"
 >
 > | 字段 | 含义一 | 含义二 |
 > |---|---|---|
-> | `refundableAmount` | 可退时是**可退**金额 | `refundExists=true` 时**仍是订单实付金额**（取值来自订单，不是读退款行）。**它不代表「已退」——既有行可能是 PENDING，钱没退**（K-25） |
+> | `refundableAmount` | `eligible=true` 时是**可退**金额 | `refundExists=true` 时它仍**有值**，但 `eligible=false`——**这个数字不代表现在还能退，更不代表已退**。两个端点的取值来源不同：资格查询取**订单实付金额**、执行接口幂等分支取**既有行的金额**，当前同值（只支持整单退款）。**既有行是 PENDING 时，这笔钱还没退**（K-25） |
 > | `eligible` | 查询语义下是「当前是否可退」 | `execute` 的返回值里，`false` 意味着「此前已有退款记录、本次未重复执行」，**不是失败**（K-28）。既有记录是**已完成**还是**仍在处理中**，看 `reason` 文案——**别说成「已退过」，PENDING 时钱没退** |
 >
 > Step 3 给的端点 javadoc 已经把这两条写全了，**照抄即可，不要精简掉**。
@@ -1266,17 +1266,24 @@ Expected: 编译失败，`找不到符号: 方法 refundEligibility`
     /**
      * 查询该订单的售后资格与可退金额。只读，无副作用。
      *
-     * <p><b>{@code refundableAmount} 的语义是重载的，调用方必须结合 {@code refundExists} 判读：</b>
-     * 可退时它是<b>可退</b>金额；{@code refundExists=true}（已有退款记录）时它同样是
-     * <b>订单实付金额</b>——当前只支持整单退款（见「已知简化」），故两个含义数值相同。
-     * 注意它<b>取值来自订单，不是从退款行读出的</b>。</p>
+     * <p><b>{@code refundableAmount} 的语义是重载的，调用方必须结合 {@code eligible}
+     * 与 {@code refundExists} 判读。它<b>只要订单存在就一定有值</b>（恒为订单实付金额），
+     * 但含义随象限变化：</p>
      *
-     * <p>⚠️ <b>「已有退款记录」不等于「钱已退」</b>：既有行可能是 {@code PENDING}
-     * （旧端点 {@code POST /api/orders/{id}/refund} 落的），此时<b>钱没退、订单状态也没推进</b>。
-     * <b>本端点区分不了这两种情况</b>——{@code refundExists=true} 时它只报告「有记录」，
-     * {@code reason} 也不带状态。要判断退款走到了哪一步，调
-     * {@code POST /api/orders/{id}/refund/execute} 看它返回的 {@code reason}。
-     * <b>不要把这个字段读成「已退款」。</b></p>
+     * <ul>
+     *   <li>{@code eligible=true}：它是<b>可退</b>金额，此刻确实可退；</li>
+     *   <li>{@code refundExists=true}（已有退款记录，此时 {@code eligible=false}）：
+     *       <b>这个数字不代表现在还能退</b>——它对应那条既有记录（当前只支持整单退款，
+     *       故与订单实付金额同额）。<b>既有行还是 {@code PENDING} 时，这笔钱还没退</b>，
+     *       别读成「已退」；</li>
+     *   <li>两者皆为 {@code false}（政策不适用／超期）：<b>这个数字更不是承诺</b>——
+     *       字段仍填了订单实付金额，但该订单当前不可退。</li>
+     * </ul>
+     *
+     * <p>⚠️ <b>本端点区分不了既有记录是「已完成」还是「仍在处理中」</b>——
+     * {@code refundExists=true} 时它只报告「有记录」，{@code reason} 也不带状态。
+     * 要判断退款走到了哪一步，调 {@code POST /api/orders/{id}/refund/execute}
+     * 看它返回的 {@code reason}。</p>
      */
     @GetMapping("/{id}/refund-eligibility")
     public Result<RefundEligibilityVO> refundEligibility(@PathVariable Long id) {

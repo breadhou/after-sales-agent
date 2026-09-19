@@ -552,7 +552,7 @@ Task 4 的 `RefundEligibilityServiceImpl` 里有个 `daysSince()` 辅助方法�
 **不要**为了「返回首次结果」去改行为——让重试返回与首次完全相同的 VO，
 会抹掉 K-20 特意保留的 PENDING 区分。
 
-**与 K-25 是同一条**：K-25 要求在 Task 6 说清 `refundableAmount` 的双重语义（可退金额 / 已退金额）。
+**与 K-25 是同一条**：K-25 要求在 Task 6 说清 `refundableAmount` 的双重语义（可退金额 / **该既有记录对应的金额**——注意不是「已退金额」，见 K-29 与 K-25 的订正）。
 本条是同一份契约文档的另一半——**`eligible` 同样有双重语义**。两处已合并进 Task 6 的端点 javadoc，一次说清。
 
 ---
