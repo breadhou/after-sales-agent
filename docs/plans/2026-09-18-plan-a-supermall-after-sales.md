@@ -837,8 +837,9 @@ class RefundExecutionServiceImplTest {
     @Test
     void execute_shouldTranslateDuplicateKeyIntoIdempotentResult() {
         givenEligible();
-        Refund winner = new Refund().setId(1L).setOrderId(ORDER_ID).setStatus("REFUNDED");
-        // 上方那次复查是普通 SELECT，在本事务的过期 read view 下读不到（见 Task 5 的修订说明）
+        Refund winner = new Refund().setId(1L).setOrderId(ORDER_ID).setStatus("REFUNDED")
+                .setAmount(new BigDecimal("199.99"));
+        // 上方那次复查是普通 SELECT，在本事务的 read view 下读不到（见 Task 5 的修订说明）
         when(refundMapper.selectOne(any())).thenReturn(null);
         // catch 里的兜底**必须走锁定读**——只有它读最新已提交版本，不受本事务快照约束
         when(refundMapper.selectByOrderIdForUpdate(ORDER_ID)).thenReturn(winner);
@@ -852,6 +853,29 @@ class RefundExecutionServiceImplTest {
         // 结构性断言：本 bug 对行为断言完全不可见（读被 stub 掉了，不 stub 就必然是 null），
         // 只有这条能守住「兜底走了锁定读」。真实环境的证明在 Task 8。
         verify(refundMapper).selectByOrderIdForUpdate(ORDER_ID);
+        // 下面两条把「用的是锁定读的**结果**」也钉住（2026-09-19 补）。
+        // 只有上面那条 verify 是不够的：把返回值丢掉、改用硬编码的 Refund 构造结论，
+        // 8/8 照样全绿——**变异测试实测确认过这个缺口**，这两条才把它堵上。
+        assertEquals(new BigDecimal("199.99"), vo.getRefundableAmount());
+        assertEquals("该订单已完成退款", vo.getReason());
+    }
+
+    /**
+     * catch 的另一条出口：撞上的**不是**这条唯一索引时，必须原样抛出，不得吞成业务结论。
+     *
+     * <p>2026-09-19 补。catch 有两条出口，上面那个用例守的是「翻译成业务结论」，
+     * 本用例守的是「翻译不了就别把真故障说成业务结论」——K-21 第 2 条记的正是这个家族
+     * （撞主键被误报成「已有退款记录」）。</p>
+     */
+    @Test
+    void execute_shouldRethrowWhenTheDuplicateIsNotTheOrderUniqueIndex() {
+        givenEligible();
+        when(refundMapper.selectOne(any())).thenReturn(null);
+        when(refundMapper.selectByOrderIdForUpdate(ORDER_ID)).thenReturn(null);
+        when(refundMapper.insert(any(Refund.class)))
+                .thenThrow(new DuplicateKeyException("PRIMARY"));
+
+        assertThrows(DuplicateKeyException.class, () -> service.execute(ORDER_ID, "并发重试"));
     }
 
     @Test
@@ -912,7 +936,7 @@ Expected: 编译失败，`找不到符号: 类 RefundExecutionServiceImpl`
     /**
      * 锁定读该订单的退款行。
      *
-     * <p>并发重试的兜底专用：进入 catch 时本事务的 read view 已过期（见 Task 5 修订说明），
+     * <p>并发重试的兜底专用：进入 catch 时本事务的 read view **早于赢家提交**（见 Task 5 修订说明），
      * 普通 SELECT 复用旧 view 必然读不到赢家，只有锁定读才读最新已提交版本。</p>
      */
     @Select("SELECT * FROM refund WHERE order_id = #{orderId} LIMIT 1 FOR UPDATE")
@@ -929,7 +953,28 @@ import com.mall.module.order.entity.vo.RefundEligibilityVO;
 public interface RefundExecutionService {
 
     /**
-     * 执行退款。幂等：重复调用返回首次结果，不报错也不重复退款。
+     * 执行退款。幂等：重复调用不报错、不重复退款。
+     *
+     * <p>返回值是 {@link RefundEligibilityVO}，但它描述的是<b>本次调用后的结论</b>，
+     * 不是「当前是否可退」的查询结论。两种形态：</p>
+     *
+     * <ul>
+     *   <li><b>本次执行了退款</b>：{@code eligible=true}、{@code reason=null}，
+     *       {@code refundableAmount} 为<b>本次退款金额</b>，订单已推进到 {@code REFUNDED}；
+     *       {@code refundExists=false} 说的是<b>本次调用之前</b>没有既有退款记录——它是写前的事实，
+     *       不代表此刻的状态。</li>
+     *   <li><b>此前已有退款记录，本次未重复执行</b>：{@code eligible=false}、
+     *       {@code refundExists=true}，{@code refundableAmount} 为<b>该既有记录的金额</b>。
+     *       调用方据此判断「已经退过了」，<b>不要当成失败</b>。</li>
+     * </ul>
+     *
+     * <p>第二种形态的 {@code reason} 文案按<b>既有行的状态</b>区分，两者不可混为一谈：
+     * 行已是 {@code REFUNDED} 则是「该订单已完成退款」（钱已退、订单已推进）；
+     * 行仍是 {@code PENDING}（旧端点 {@code POST /api/orders/{id}/refund} 落的）则是
+     * 「该订单已有退款申请在处理中」——<b>钱没退、订单状态也没推进</b>。</p>
+     *
+     * <p>{@link RefundEligibilityVO} 的字段注释是按<b>查询</b>语义写的；在本方法的返回值里，
+     * 请以本方法陈述的两种形态为准。</p>
      *
      * @param reason 用户给出的退款原因，仅作记录，不影响金额
      */
@@ -1019,9 +1064,8 @@ public class RefundExecutionServiceImpl implements RefundExecutionService {
                     .setStatus(REFUNDED)
                     .setCreatedAt(LocalDateTime.now()));
         } catch (DuplicateKeyException e) {
-            // 并发重试的兜底：另一个事务抢先插入了同一订单的退款行，而上方的复查
-            // 读到了过期快照（见方法内注释）。唯一索引已经替我们挡住了重复退款，
-            // 这里只需把它翻译成业务语义。
+            // 并发重试的兜底：另一个事务抢先插入了同一订单的退款行，唯一索引已经
+            // 替我们挡住了重复退款，这里只需把它翻译成业务语义。
             // 与 OrderServiceImpl.requestRefund 的写法同源（Task 3 已批准落地）。
             //
             // ⚠️ 必须用**锁定读**，不能再用普通 SELECT（2026-09-19 修订，见 Task 5 修订说明）。
@@ -1036,9 +1080,11 @@ public class RefundExecutionServiceImpl implements RefundExecutionService {
                 // 不是这条唯一索引，别把异常吞掉。
                 throw e;
             }
-            // 注意：这里**不能**吞掉「订单状态没推进」这件事。赢家事务会推进它；
-            // 本事务只是没有写入成功，正常返回即提交，而提交一个什么都没写的
-            // 事务等于无操作——订单状态由赢家负责。
+            // 注意：这里**不能**吞掉「订单状态没推进」这件事。但「谁推进」取决于赢家是谁：
+            // 赢家若是本服务，订单状态已由它推进到 REFUNDED；赢家若是旧端点
+            // （POST /api/orders/{id}/refund），它只落一行 PENDING，**本就不该**推进订单状态。
+            // 两种情况都不需要本事务补写——本事务只是没有写入成功，正常返回即提交，
+            // 而提交一个什么都没写的事务等于无操作。
             return idempotentResult(orderId, winner);
         }
 
@@ -1074,9 +1120,11 @@ public class RefundExecutionServiceImpl implements RefundExecutionService {
 JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -am -Dtest=RefundExecutionServiceImplTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: `Tests run: 8, Failures: 0, Errors: 0`
+Expected: `Tests run: 9, Failures: 0, Errors: 0`
 
-（原计划此处为 5 个用例；2026-09-19 的 Task 4 质量审查发现计划给的幂等分支在真实组合下不可达，补了 3 个用例守住修订后的语义——见下方 Step 1 里新增的三个测试方法。）
+（用例数的演变：原计划 5 个 → Task 4 的质量审查发现计划给的幂等分支在真实组合下不可达，
+补 3 个守住修订后的语义，成 8 个 → Task 5 的质量审查发现结构性断言只钉住「调用了锁定读」、
+钉不住「用的是它的结果」，补 1 个守住 catch 的另一条出口，成 9 个。）
 
 - [ ] **Step 5: 提交**
 
@@ -1717,7 +1765,7 @@ Expected: `ORDER_NOT_EXIST(50000)`
 ## 完成标准
 
 - [ ] 全量测试通过，**零失败**（不要照某个具体数字核对，理由见 Task 6 Step 5）
-- [ ] 新建的 5 个测试类全绿：`AfterSalesPolicyTest`(**9**)、`RefundEligibilityServiceImplTest`(5)、`RefundExecutionServiceImplTest`(**8**)、`OrderControllerRefundTest`(2)、`AfterSalesPolicyControllerTest`(**6**)
+- [ ] 新建的 5 个测试类全绿：`AfterSalesPolicyTest`(**9**)、`RefundEligibilityServiceImplTest`(5)、`RefundExecutionServiceImplTest`(**9**)、`OrderControllerRefundTest`(2)、`AfterSalesPolicyControllerTest`(**6**)
 
 > 括号里的数字是 2026-09-19 的实测值，**与计划初稿不同**：`AfterSalesPolicyTest` 原为 7，Task 2 的重审补了 2 个（可达性守卫 + `resolve` 层的边界断言）；`RefundExecutionServiceImplTest` 原为 5，Task 4 的重审补了 3 个（见 Task 5 Step 1）。
 
