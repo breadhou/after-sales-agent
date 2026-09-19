@@ -109,6 +109,18 @@
 
 **但该补一句话说明**：在 README 或计划里写明「为什么两个退款端点并存、agent 走哪条」。这不是为了合规，是为了**别在演示时被问住**——「你为什么有两个退款接口」是个很自然的提问，答不上来会把「纯增量」这个有意的设计选择显得像疏漏。
 
+**准备好这个追问（2026-09-19 由 Task 3 的质量审查提出）**：
+
+> **「同一个仓库里，优惠券撞唯一键返回既有记录（`CouponServiceImpl.java:94-101`），退款撞唯一键却报错，为什么不一样？」**
+
+答案：**两者服务不同的调用方与语义**。
+
+- 旧退款端点是**「申请」**语义——**重复申请本身就是错误**，应当告诉调用方「你已经申请过了」。
+- 优惠券领用是**「幂等获取」**语义——重复领取返回同一张券是**期望行为**。
+- 真正的幂等退款在新端点 `refund/execute`（Task 5），它**确实**返回既有结果而不报错。
+
+这个对比反而是个**加分点**：它说明「幂等」不是一刀切的，而是**按业务语义分别设计**的。
+
 ---
 
 ## K-5 计划 A 的 Task 4 测试会 NPE
@@ -426,6 +438,120 @@ Task 4 的 `RefundEligibilityServiceImpl` 里有个 `daysSince()` 辅助方法�
 **修复方向**：在 `mall-common` 里引入一个小的 `OrderStatus` 常量持有类。
 
 **注意**：这超出计划 A 的范围（涉及重构既有代码 11 处），**需要用户决策**。
+
+---
+
+## K-20 Task 5 的幂等分支会把旧端点写的 `PENDING` 行报成「已完成退款」
+
+| | |
+|---|---|
+| **状态** | **待修**（**必须在 Task 5 动笔前决定**） |
+| **发现于** | 2026-09-19，Task 3 的代码质量审查 |
+| **位置** | 计划 A 的 `RefundExecutionServiceImpl.execute` 幂等分支（计划第 853-863 行） |
+| **处理时机** | **Task 5 开工之前** |
+
+**现状**：计划给的 `RefundExecutionServiceImpl` 幂等分支对**任何**已存在的退款行都返回：
+
+```java
+.setRefundExists(true)
+.setReason("该订单已完成退款")
+```
+
+但**旧端点落下的行是 `PENDING`**——钱没退、订单状态没推进。
+
+**后果**：旧客户端（或一次手工 curl）先调旧端点，agent 再调 `submit_refund`，于是 **agent 和用户会看到一句假话**——「该订单已完成退款」。
+
+**这比 K-14 严重得多**：K-14 那条只是措辞中性（不引用条款），而这条是**与事实相反**，且出现在**面向用户的解释**里。而「解释不得与判定结果矛盾」正是阶段 4 的评测项。
+
+**必须在 Task 5 动笔前二选一**：
+
+1. **幂等分支按 `existing.getStatus()` 区分文案**——`PENDING` → 「该订单已有退款申请在处理中」；`REFUNDED` → 「该订单已完成退款」。（推荐）
+2. 明确「旧端点产生的行不属于 agent 路径」并加守卫。
+
+**顺带**：这条修复正好给 **`REFUND_NOT_EXECUTABLE(50004)`** 一个真实用途（见 K-21 第 4 点）。
+
+**关联**：Task 5 若改了写入值，**必须同步 `init.sql` 里 `refund.status` 的注释**——它现在是退款状态域在 schema 层的**唯一**陈述（另三处文档按 K-18 有意保留 4 态描述）。
+
+---
+
+## K-21 退款错误路径的几处观察（记录，不修）
+
+| | |
+|---|---|
+| **状态** | **不必修**（按「取舍准绳」，五条均不承载架构叙事） |
+| **发现于** | 2026-09-19，Task 3 的代码质量审查 |
+| **处理时机** | 不适用 |
+
+**1. 原始异常被丢弃，且日志里看不出是哪张订单。** `OrderServiceImpl.java:294` 的 `throw new BusinessException(...)` 丢弃了原始 `DuplicateKeyException`。更麻烦的是 `GlobalExceptionHandler.java:27-30` 对 `BusinessException` **只打 `e.getStatus().getMessage()`**（ERROR 级、无堆栈、**无 orderId**）——于是正常的重复提交在日志里只剩「该订单已有退款记录」，连是哪张订单都看不出（改动前是 `unknown_failure` + 完整堆栈）。
+
+> **不建议改 `BusinessException` 的构造器**（blast radius 远大于收益）。真想留线索，最便宜的是在 catch 里加一行 `log.debug("duplicate refund for order {}", orderId)`。
+
+**2. 按类型捕获的固有边界**：`refund` 表上除 `uk_refund_order` 还有 `PRIMARY KEY (id)`（雪花新 ID）。理论上撞主键会被误报成「该订单已有退款记录」。概率≈0（`SnowflakeIdUtil` 已 fail-fast 防误配），且靠错误信息子串消歧更脆。**记录即可。**
+
+**3. `REFUND_NOT_EXECUTABLE(50004)` 全仓、全计划都没有消费者**（两个仓库都 grep 过；计划 Task 4-8 也不用）。它描述的是审批流式状态机（`APPROVED`/`REJECTED`），而那条流程不存在（K-8 / K-18）。计划 Task 3 Step 1 明确要求这三条，implementer 照做无过。
+
+> **不要擅自删**——计划 B 的工具契约可能引用。最好在 K-20 的修复里给它真实用途。
+
+**4. B 组只改了 `init.sql`，既有库的列注释不会跟着变**（本仓库无 flyway，见 K-2；Task 1 的迁移是手工在真库执行的）。若演示时 `SHOW FULL COLUMNS FROM refund` 或开 Navicat，看到的仍是旧注释。**记录即可**——为一行注释再加迁移文件不值得，且与 K-2「别累积迁移」相悖。
+
+**5. 旧端点第二次调用的错误码取决于第一次走的是哪条路径**：第一次走旧端点（订单仍 `PAID`、行 `PENDING`）→ `50003`；第一次走新端点（订单已 `REFUNDED`）→ 先在状态校验被挡，返回 `50001`，根本走不到 catch。两者都不算错（前置状态确实不同），属 K-4「两条写路径」家族。
+
+---
+
+## K-22 supermall 的 `implementation-plan.md` 状态描述与代码不符
+
+| | |
+|---|---|
+| **状态** | **不必修**（与 K-18 同批，属 supermall 自己的路线图文档） |
+| **发现于** | 2026-09-19，Task 3 的代码质量审查（既有问题，与本次改动无关） |
+| **位置** | `supermall/docs/implementation-plan.md:410` |
+| **处理时机** | 与 K-18 一起决定 |
+
+**现状**：该处写「申请退款（`PAID`/`SHIPPED` 状态）」，而代码接受的是 `PAID`/`DELIVERED`/`RECEIVED`（`OrderServiceImpl.java:273-277`）——**两个方向都不对**（`SHIPPED` 反而不被允许）。
+
+**倾向**：并入 K-18 批次一起决定，**不要**在别的改动里顺手改。
+
+---
+
+## K-18 supermall 的三处文档把退款生命周期描述成已实现
+
+| | |
+|---|---|
+| **状态** | **倾向不修**（灰色地带，等用户裁定） |
+| **发现于** | 2026-09-19，Task 3 的 implementer 在修 B 组时主动上报 |
+| **位置** | `supermall/AGENTS.md:247`、`supermall/CLAUDE.md:178`、`supermall/docs/设计文档.md:248` |
+| **处理时机** | 与 K-8（商家审批流）同步 |
+
+**现状**：三处都写着 `Refund` 拥有「独立生命周期（`PENDING/APPROVED/REJECTED/COMPLETED`）」。
+
+**实际**：`refund.status` 只有两个写入点——旧端点写 `PENDING`，Task 5 的新执行服务写 `REFUNDED`。**`APPROVED`/`REJECTED`/`COMPLETED` 零写入点**，对应的商家审批端点（`/api/merchant/refunds/{id}/approve|reject`）在代码里也不存在（见 K-8）。
+
+**这与 K-3 性质不同，别混淆**：K-3 修的是「**计划 A 即将写入的值**与建表注释不符」——那是计划 A 自己制造的不一致，必须修。这三处描述的是 **supermall 自己的设计意图**，而审批流是 supermall 尚未实现的部分。supermall 有它自己的路线图。
+
+**我的倾向：记录，不改。** 理由：改别人的仓库级文档超出计划 A 范围；且这三处描述的是**规划中的设计**，直接改成 `PENDING/REFUNDED` 会丢掉「审批流是规划中的」这个信息。
+
+**若要改，更好的改法是加注「（审批流为规划中，尚未实现）」而不是直接替换**——保留信息的同时消除误导。
+
+**为什么值得记**：这是**展示型项目**里最容易被戳破的一类不一致——读完文档去找 `approve` 端点，找不到。
+
+---
+
+## K-19 `GlobalExceptionHandler` 的 `BusinessException` 分支没有专门测试
+
+| | |
+|---|---|
+| **状态** | **倾向不修**（灰色地带，等用户裁定） |
+| **发现于** | 2026-09-19，Task 3 的 implementer 自审时发现 |
+| **位置** | `mall-server/.../common/handler/GlobalExceptionHandler.java:25-29` |
+| **处理时机** | 不适用 |
+
+**现状**：`GlobalExceptionHandlerTest` 只覆盖了 `handleMethodNotSupported`。**`BusinessException` 分支没有测试**——而那是**所有业务错误的出口**。
+
+Task 3 的 C 组新引入的 `REFUND_ALREADY_EXISTS` 正是走这条分支，其映射结论**来自读码而非跑测试**（`@ExceptionHandler(BusinessException.class)` → `Result.fail(e.getStatus())`，异常类型精确匹配优先于 `Exception` 兜底分支）。
+
+**这是既有缺口，不是本次引入的。**
+
+**我的倾向：不修。** 映射是两行显然的代码，且读码结论清晰。但它是**爆炸半径很大**的一处（映射若坏，所有业务错误码全错），若将来出现「错误码不对」的诡异现象，这是第一个该看的地方。
 
 ---
 

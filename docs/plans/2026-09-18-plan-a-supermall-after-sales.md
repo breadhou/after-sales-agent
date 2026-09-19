@@ -43,8 +43,11 @@ Agent 要"真执行"退款，而 supermall 现在的退款能力有三个硬缺�
 >   这是**有意的**——原行为正是本计划要消除的「一次重试就是一笔重复退款」。
 >
 > 相应地，`OrderServiceImpl.requestRefund` 需要捕获 `DuplicateKeyException` 并转成上面的业务错误。
-> 这是全计划**唯一**对既有代码的修改。若不修，调用方看到的会是 `-1 系统异常`，
+> 这是全计划**唯一改变既有接口行为**的地方（注意措辞：`ResultStatus.java`、`OrderController.java` 等也属「修改」，
+> 但它们只增不改；真正改变**行为**的只有这一处）。若不修，调用方看到的会是 `-1 系统异常`，
 > 与真实故障无法区分（详见 `docs/known-issues.md` 的 K-6）。
+>
+> **该声称必须在真实环境可演示**——见 Task 8 的 Step 6。
 
 ---
 
@@ -1278,17 +1281,47 @@ mysql_q "SELECT COUNT(*) FROM mall.refund WHERE order_id=$ORDER_ID;"
 
 Expected: **1**（不是 2）
 
-- [ ] **Step 6: 验证越权被挡**
+- [ ] **Step 6: 验证旧端点的重复提交返回业务错误**
+
+这一步守的是 Task 3 那处唯一**既有行为改动**的声称：`POST /api/orders/{id}/refund` 第二次调用应返回 `REFUND_ALREADY_EXISTS(50003)`，而**不是** `-1 系统异常`。
+
+**为什么必须在真实环境验**：单元测试 mock 掉了 `refundMapper.insert` 直接抛 `DuplicateKeyException`，它只能守住 **catch 分支**，**守不住异常翻译链**。若数据源/模板配置变化导致 MySQL 1062 不再被翻译成 `DuplicateKeyException`，那个 catch 会**静默变成死代码**——单测照样全绿，调用方又回到「系统异常」。声称必须可演示。
+
+⚠️ **用一张新的 `PAID` 订单**（记为 `$ORDER_ID2`），**不要**用前面的 `$ORDER_ID`——它已进入 `REFUNDED`，第二次调用会在状态校验就被 `ORDER_STATUS_ERROR(50001)` 挡下，根本走不到这个分支。
+
+```bash
+printf '%s' '{"reason":"旧端点重复提交验证"}' > /tmp/refund-old.json
+
+# 第一次：应成功落一条 PENDING
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  --data-binary @/tmp/refund-old.json "$BASE/api/orders/$ORDER_ID2/refund"
+
+# 第二次：应返回业务错误，不是 -1
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  --data-binary @/tmp/refund-old.json "$BASE/api/orders/$ORDER_ID2/refund"
+```
+
+Expected:
+- 第二次响应 `code = 50003`、`message = "该订单已有退款记录"`（**不是 `-1`**）
+- 落库仍只有一条：
+
+```bash
+mysql_q "SELECT COUNT(*) FROM mall.refund WHERE order_id=$ORDER_ID2;"
+```
+
+Expected: **1**
+
+- [ ] **Step 7: 验证越权被挡**
 
 用**另一个用户**的 token 请求同一订单。
 
 Expected: `ORDER_NOT_EXIST(50000)`
 
-- [ ] **Step 7: 验证金额不可指定**
+- [ ] **Step 8: 验证金额不可指定**
 
 用 `{"reason":"...","amount":99999}` 调用（多余字段），确认落库金额仍是订单实付金额。
 
-- [ ] **Step 8: 提交验证记录**
+- [ ] **Step 9: 提交验证记录**
 
 在 `docs/` 下记录本轮验证结果（造了哪些数据、每步的返回、最终一致性核对），提交。
 
