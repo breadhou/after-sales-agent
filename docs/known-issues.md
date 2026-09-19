@@ -554,7 +554,15 @@ public Result<Void> handleBind(BindException e) {
 **两条都要加**：只加前者的话，`GET /api/orders` 那类参数校验仍是 `-1`（见上表的「窄」）。
 
 并**删掉 `OrderController` 里那个局部 handler**——否则两处并存，又是一次「同一事实的多个副本」，
-且局部那个会因为更具体而永远赢，全局那个形同虚设。
+且**局部那个会永远赢，全局那个形同虚设**。
+
+> **「为什么局部会赢」的机制要说准**（2026-09-19 订正，原文写「因为更具体而永远赢」是**错的**）：
+> `ExceptionHandlerExceptionResolver` **先查 handler 所在类自己的 `@ExceptionHandler` 方法，找不到才遍历 `@ControllerAdvice`**
+> ——即赢在**解析顺序**，不是赢在「更具体」。
+>
+> **差别有实际后果**：若将来局部声明的是**父类**（如 `BindException`）、全局声明的是**子类**
+> （如 `MethodArgumentNotValidException`），先被检查的**局部仍然会赢**，与「更具体者胜」的预期**正好相反**。
+> 按错误的机制去推理，会得出「只要全局声明得更具体就能盖过局部」这种不成立的结论。
 
 注意它是**行为改动**：会让所有 `@Valid` 端点的非法输入路径从 `-1` 变成 `10000`。
 计划开头的「改变既有行为的地方」清单需要**第三次**修订。
@@ -855,7 +863,7 @@ public Result<Void> handleBind(BindException e) {
 **倾向保持现状，理由**：计划 B 的 `RefundTools.getRefundEligibility` **已经把六个字段名写进了测试**（计划 B 第 823 行）。加字段会**破坏计划 B 已经写好的测试**，成本高于收益。
 
 **落实（2026-09-19，Task 6）**：写进 `OrderController.refundEligibility` 的 javadoc，说清两种含义，不改结构。
-supermall 提交链：`e15c05b`（端点）→ `2a792c0` → `62e6ae1`（三象限）→ `d48a3d2`（成因与来源订正）→ `ecb7f37`。
+supermall 提交链：`e15c05b`（端点）→ `2a792c0` → `62e6ae1`（三象限）→ `d48a3d2`（成因与来源订正）→ `ecb7f37` → `e9adfa5`（补限定词与 `policyCode` 说明；该次改动也重写了这段 `<ul>`）。
 
 ### K-25 的两处订正（都是「准确陈述被缩短后丢了限定词」）
 
