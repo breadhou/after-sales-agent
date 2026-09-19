@@ -661,9 +661,35 @@ git commit -m "feat: add read-only refund eligibility check"
 **Files:**
 - Create: `mall-server/src/main/java/com/mall/module/order/service/RefundExecutionService.java`
 - Create: `mall-server/src/main/java/com/mall/module/order/service/impl/RefundExecutionServiceImpl.java`
+- Modify: `mall-server/src/main/java/com/mall/module/order/mapper/RefundMapper.java`（新增一个锁定读方法）
 - Test: `mall-server/src/test/java/com/mall/module/order/service/impl/RefundExecutionServiceImplTest.java`
 
 **设计要点**：执行是**写**操作。重复调用必须返回同一结果而不是报错——Agent 会重试。
+
+> **修订说明（2026-09-19）：并发兜底必须用锁定读，普通 SELECT 在此处恒失败。**
+>
+> 初稿的 catch 分支用普通 `selectOne` 复查赢家，并注释「第二次查询读得到（新语句，新快照）」——
+> **那是 READ COMMITTED 的语义**。本项目 MySQL 实测为 `REPEATABLE-READ`（`application.yml` 未覆盖），
+> 而 `check()` 开头的 `orderMapper.selectById`（`RefundEligibilityServiceImpl.java:33`）已经在事务里
+> 建立了 read view，**普通 SELECT 只会复用它，不会刷新**。
+>
+> 推论比「偶尔读不到」更强——**两个分支互补，互为充要**：
+>
+> - 赢家提交**早于**本事务 read view → 上方 `existing` 复查就看得见 → 提前正常返回，**进不了 catch**
+> - 赢家提交**晚于**本事务 read view → 进 catch → catch 里也是普通 SELECT，复用同一旧 view → **必定读不到**
+>
+> 所以「进入 catch」与「复查能成功」互斥。原注释写的「理论上不可达」恰好说反了：
+> **`throw e` 才是唯一可达的出口**，这条分支对它声称要处理的场景**从未生效**，并发重试会稳定漏成 `-1 系统异常`。
+>
+> （补充：两个事务都会先 `selectByIdForUpdate` 锁订单行，故 T2 会**阻塞**到 T1 提交——这恰是最常见的
+> 并发重试形态，bug 必现而非罕见交错。也正因如此，同一订单的请求在订单行上串行化，catch 里加锁不引入死锁。）
+>
+> **修法**：catch 改用锁定读（`SELECT ... FOR UPDATE` 读最新已提交版本，不受快照约束），
+> 按本仓库既有约定（`OrderMapper.selectByIdForUpdate`）落成 `RefundMapper` 上的专用方法。
+> **不采用**改隔离级别：那会动摇本方法其余对 REPEATABLE READ 的推理，代价远大于收益。
+>
+> 单测抓不到这个 bug（读被 Mockito stub 掉了），因此测试里增加一条**结构性断言**钉住它，
+> 并在 **Task 8 增补并发验证步骤**——声称必须可演示。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -812,9 +838,10 @@ class RefundExecutionServiceImplTest {
     void execute_shouldTranslateDuplicateKeyIntoIdempotentResult() {
         givenEligible();
         Refund winner = new Refund().setId(1L).setOrderId(ORDER_ID).setStatus("REFUNDED");
-        // 第一次复查读不到（模拟 REPEATABLE READ 下的过期快照），
-        // catch 里的第二次查询读得到（新语句，新快照）
-        when(refundMapper.selectOne(any())).thenReturn(null, winner);
+        // 上方那次复查是普通 SELECT，在本事务的过期 read view 下读不到（见 Task 5 的修订说明）
+        when(refundMapper.selectOne(any())).thenReturn(null);
+        // catch 里的兜底**必须走锁定读**——只有它读最新已提交版本，不受本事务快照约束
+        when(refundMapper.selectByOrderIdForUpdate(ORDER_ID)).thenReturn(winner);
         when(refundMapper.insert(any(Refund.class)))
                 .thenThrow(new DuplicateKeyException("uk_refund_order"));
 
@@ -822,6 +849,9 @@ class RefundExecutionServiceImplTest {
 
         assertTrue(vo.isRefundExists());
         assertFalse(vo.isEligible());
+        // 结构性断言：本 bug 对行为断言完全不可见（读被 stub 掉了，不 stub 就必然是 null），
+        // 只有这条能守住「兜底走了锁定读」。真实环境的证明在 Task 8。
+        verify(refundMapper).selectByOrderIdForUpdate(ORDER_ID);
     }
 
     @Test
@@ -872,6 +902,22 @@ JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/mave
 Expected: 编译失败，`找不到符号: 类 RefundExecutionServiceImpl`
 
 - [ ] **Step 3: 实现**
+
+先给 `RefundMapper` 补一个锁定读方法（它目前是空的裸 `BaseMapper`）。写法与既有的
+`OrderMapper.selectByIdForUpdate` 同构，注意 `FOR UPDATE` 在 `LIMIT 1` **之后**：
+
+`RefundMapper.java`（**修改**）：
+
+```java
+    /**
+     * 锁定读该订单的退款行。
+     *
+     * <p>并发重试的兜底专用：进入 catch 时本事务的 read view 已过期（见 Task 5 修订说明），
+     * 普通 SELECT 复用旧 view 必然读不到赢家，只有锁定读才读最新已提交版本。</p>
+     */
+    @Select("SELECT * FROM refund WHERE order_id = #{orderId} LIMIT 1 FOR UPDATE")
+    Refund selectByOrderIdForUpdate(@Param("orderId") Long orderId);
+```
 
 `RefundExecutionService.java`：
 
@@ -977,15 +1023,22 @@ public class RefundExecutionServiceImpl implements RefundExecutionService {
             // 读到了过期快照（见方法内注释）。唯一索引已经替我们挡住了重复退款，
             // 这里只需把它翻译成业务语义。
             // 与 OrderServiceImpl.requestRefund 的写法同源（Task 3 已批准落地）。
-            Refund winner = refundMapper.selectOne(
-                    new LambdaQueryWrapper<Refund>().eq(Refund::getOrderId, orderId));
+            //
+            // ⚠️ 必须用**锁定读**，不能再用普通 SELECT（2026-09-19 修订，见 Task 5 修订说明）。
+            // 这是上面那段注释的直接推论：本方法的 read view 在 check() 时就已定型，而进入本分支
+            // **意味着**赢家的提交发生在那之后——两者互补。于是本事务里任何普通 SELECT 都
+            // **必定**读不到那行，winner 恒为 null，分支只会走 throw e，把并发重试漏成
+            // -1 系统异常——正是这条分支存在所要避免的结果。
+            // 锁定读读的是最新已提交版本，不受本事务快照约束。
+            Refund winner = refundMapper.selectByOrderIdForUpdate(orderId);
             if (winner == null) {
-                // 理论上不可达：能撞上 uk_refund_order 就说明那行存在。
-                // 真发生了说明约束不是它挡的，别吞异常。
+                // 能撞上 uk_refund_order 就说明那行存在；走到这里说明挡住 insert 的
+                // 不是这条唯一索引，别把异常吞掉。
                 throw e;
             }
             // 注意：这里**不能**吞掉「订单状态没推进」这件事。赢家事务会推进它；
-            // 本事务回滚后，订单状态由赢家负责。
+            // 本事务只是没有写入成功，正常返回即提交，而提交一个什么都没写的
+            // 事务等于无操作——订单状态由赢家负责。
             return idempotentResult(orderId, winner);
         }
 
@@ -1038,7 +1091,7 @@ git commit -m "feat: add idempotent refund execution with server-side amount"
 
 **Files:**
 - Modify: `mall-server/src/main/java/com/mall/module/order/controller/OrderController.java`
-- Test: `mall-server/src/test/java/com/mall/module/order/controller/OrderControllerTest.java`（新建）
+- Test: `mall-server/src/test/java/com/mall/module/order/controller/OrderControllerRefundTest.java`（新建）
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -1046,6 +1099,7 @@ git commit -m "feat: add idempotent refund execution with server-side amount"
 package com.mall.module.order.controller;
 
 import com.mall.common.result.Result;
+import com.mall.module.order.entity.dto.RefundReasonDTO;
 import com.mall.module.order.entity.vo.RefundEligibilityVO;
 import com.mall.module.order.service.RefundEligibilityService;
 import com.mall.module.order.service.RefundExecutionService;
@@ -1188,9 +1242,12 @@ Expected: `BUILD SUCCESS`，**零失败**
 - [ ] **Step 6: 提交**
 
 ```bash
-git add mall-server/src/main/java/com/mall/module/order/
+git add mall-server/src/main/java/com/mall/module/order/ mall-server/src/test/java/com/mall/module/order/
 git commit -m "feat: expose refund eligibility and execution endpoints"
 ```
+
+> **注意 `src/test` 也要加**（2026-09-19 修订）：本步骤新建了测试类，只 `git add src/main` 会让
+> 测试文件游离在提交之外——**测试全绿地留在工作区，而提交里没有它们**。
 
 ---
 
@@ -1325,9 +1382,11 @@ Expected: `Tests run: 2, Failures: 0, Errors: 0`
 - [ ] **Step 6: 提交**
 
 ```bash
-git add mall-server/src/main/java/com/mall/module/order/
+git add mall-server/src/main/java/com/mall/module/order/ mall-server/src/test/java/com/mall/module/order/
 git commit -m "feat: expose after-sales policy clauses for agent-side indexing"
 ```
+
+> **注意 `src/test` 也要加**（2026-09-19 修订）：同 Task 6 的 Step 6，本步骤也新建了测试类。
 
 ---
 
@@ -1419,7 +1478,46 @@ mysql_q "SELECT COUNT(*) FROM mall.refund WHERE order_id=$ORDER_ID;"
 
 Expected: **1**（不是 2）
 
-- [ ] **Step 6: 验证旧端点的重复提交返回业务错误**
+- [ ] **Step 6: 验证幂等——并发执行（2026-09-19 增补）**
+
+**为什么必须单独验这一步**：Step 5 验的是**顺序**重试——第二次调用时赢家早已提交，
+上方那次普通复查就看得见它，走的是**正常幂等路径**。**并发**重试走的是**完全不同的分支**：
+`catch (DuplicateKeyException)` 的兜底，而本事务的 read view 早于赢家提交，普通 SELECT 恒读不到，
+**只有锁定读才救得回来**（见 Task 5 修订说明）。
+
+单测守不住它：catch 里那次读被 Mockito stub 掉了，stub 什么就返回什么，行为断言永远绿。
+**这个 bug 只有在真实 MySQL 上并发调用才会现形**——所以这一步是本修订唯一的证明手段。
+
+拿一张新的 `RECEIVED` 订单（记为 `$ORDER_ID3`），**同时**发两个执行请求：
+
+```bash
+printf '%s' '{"reason":"并发重试验证"}' > /tmp/refund-conc.json
+
+for i in 1 2; do
+  curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    --data-binary @/tmp/refund-conc.json \
+    "$BASE/api/orders/$ORDER_ID3/refund/execute" > /tmp/refund-conc-$i.json &
+done
+wait
+cat /tmp/refund-conc-1.json; echo; cat /tmp/refund-conc-2.json
+```
+
+Expected:
+- **两个响应都是 `code = 0`**。**任何一个出现 `-1` 就是本修订要修的那个 bug 复现了**——
+  它意味着 catch 里的锁定读没生效（或日后又被改回了普通 SELECT）
+- 落库仍只有一条：
+
+```bash
+mysql_q "SELECT COUNT(*) FROM mall.refund WHERE order_id=$ORDER_ID3;"
+```
+
+Expected: **1**
+
+> **判据是「都不报错」，不是「两个响应一模一样」**：并发下谁先谁后不确定，两个响应里
+> 哪一个带「已完成退款」也不确定（只有一个是赢家）。
+> 若两个请求实际串行了（curl 启动有开销），可再跑一轮，或把并发数临时提到 4。
+
+- [ ] **Step 7: 验证旧端点的重复提交返回业务错误**
 
 这一步守的是 Task 3 那处唯一**既有行为改动**的声称：`POST /api/orders/{id}/refund` 第二次调用应返回 `REFUND_ALREADY_EXISTS(50003)`，而**不是** `-1 系统异常`。
 
@@ -1449,17 +1547,17 @@ mysql_q "SELECT COUNT(*) FROM mall.refund WHERE order_id=$ORDER_ID2;"
 
 Expected: **1**
 
-- [ ] **Step 7: 验证越权被挡**
+- [ ] **Step 8: 验证越权被挡**
 
 用**另一个用户**的 token 请求同一订单。
 
 Expected: `ORDER_NOT_EXIST(50000)`
 
-- [ ] **Step 8: 验证金额不可指定**
+- [ ] **Step 9: 验证金额不可指定**
 
 用 `{"reason":"...","amount":99999}` 调用（多余字段），确认落库金额仍是订单实付金额。
 
-- [ ] **Step 9: 提交验证记录**
+- [ ] **Step 10: 提交验证记录**
 
 在 `docs/` 下记录本轮验证结果（造了哪些数据、每步的返回、最终一致性核对），提交。
 
@@ -1472,7 +1570,7 @@ Expected: `ORDER_NOT_EXIST(50000)`
 
 > 括号里的数字是 2026-09-19 的实测值，**与计划初稿不同**：`AfterSalesPolicyTest` 原为 7，Task 2 的重审补了 2 个（可达性守卫 + `resolve` 层的边界断言）；`RefundExecutionServiceImplTest` 原为 5，Task 4 的重审补了 3 个（见 Task 5 Step 1）。
 
-- [ ] 真实环境下：查资格 → 执行 → 幂等 → **旧端点重复提交** → 越权 → 金额不可指定，**六项**全部符合预期
+- [ ] 真实环境下：查资格 → 执行 → 幂等（顺序） → **幂等（并发）** → **旧端点重复提交** → 越权 → 金额不可指定，**七项**全部符合预期
 - [ ] `refund` 表有 `uk_refund_order` 唯一索引
 - [ ] 订单可进入 `REFUNDED` 状态
 - [ ] `GET /api/after-sales/policies` 返回的条款码与资格接口返回的 `policyCode` 能对上

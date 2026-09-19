@@ -449,6 +449,60 @@ Task 4 的 `RefundEligibilityServiceImpl` 里有个 `daysSince()` 辅助方法�
 
 ---
 
+## K-26 Task 5 的并发兜底分支从未生效（**已修复**）
+
+| | |
+|---|---|
+| **状态** | **已处理**（2026-09-19，计划已修订；Task 8 增补并发验证步骤。实现修复见 Task 5 的 B 组提交） |
+| **发现于** | 2026-09-19，Task 5 的 implementer 自审时提出疑虑，**主控独立验证后确认并加强** |
+| **位置** | 计划 A 的 Task 5 `RefundExecutionServiceImpl.execute` 的 `catch (DuplicateKeyException)` |
+| **严重性** | **高——交付物缺陷**（幂等属取舍准绳里明确「该修」的架构主张）。但**钱始终是安全的**，坏的是响应形态 |
+
+**现状**：catch 分支用**普通 `selectOne`** 复查并发赢家，并注释「**理论上不可达**：能撞上 `uk_refund_order` 就说明那行存在」。
+
+**为什么这句说反了——不是「偶尔读不到」，是担保性失败**：
+
+1. `execute()` 标注 `@Transactional`，而 `check()` 开头的 `orderMapper.selectById`（`RefundEligibilityServiceImpl.java:33`）是**普通 SELECT**，**已经在本事务里建立了 read view**
+2. `application.yml` **未配置隔离级别**，MySQL 全局与会话实测均为 **`REPEATABLE-READ`**
+3. REPEATABLE READ 下普通 SELECT **只复用**该 read view，**不会刷新**
+
+于是 catch 的两个入口条件与复查的可见性**恰好互补，互为充要**：
+
+| 赢家提交时刻 | 结果 |
+|---|---|
+| **早于**本事务 read view | 上方 `existing` 复查就看得见 → 提前正常返回，**进不了 catch** |
+| **晚于**本事务 read view | 进 catch → catch 里也是普通 SELECT，复用同一旧 view → **必定读不到** |
+
+**「进入 catch」与「复查能成功」互斥**，所以 `winner == null` → `throw e` 是**唯一可达的出口**。这条分支对它声称要处理的场景**从未生效过**，并发重试会稳定漏成 `-1 系统异常`——**正是它存在所要避免的结果**。
+
+**为什么此前没被发现，且单测永远抓不到**：catch 里那次读被 Mockito stub 掉，stub 什么就返回什么，**行为断言必然全绿**。计划初稿的测试注释写「catch 里的第二次查询读得到（**新语句，新快照**）」——那是 **READ COMMITTED 的语义**，与本项目实际配置不符。**测试把错误假设写进了注释，于是它自己也失去了质疑能力。**
+
+**修复**：catch 改用**锁定读**（`RefundMapper.selectByOrderIdForUpdate`，`SELECT ... FOR UPDATE` 读最新已提交版本，不受快照约束），写法与既有的 `OrderMapper.selectByIdForUpdate` 同构。**不采用**改隔离级别——那会动摇本方法其余对 REPEATABLE READ 的推理。测试补一条**结构性断言**钉住它。
+
+**为什么不会死锁**（值得记，因为「加锁」通常令人紧张）：两个事务都先 `selectByIdForUpdate` 锁**订单行**，所以同一订单的并发请求在订单行上**串行化**——进入 catch 时赢家早已提交并释放全部锁，那次锁定读是无争用的记录锁。
+
+### K-26 的两条教训
+
+1. **`@Transactional` 方法内「先普通读、后复查」的结构有一个隐形前提**：复查要么是**锁定读**，要么能容忍读到过期快照。本项目里这个前提被违反了，而注释反而把它写成了「理论上不可达」。
+2. **单测 stub 掉的那一层，正是 bug 的藏身处**。这条缺陷单测 8/8 全绿、全量 179/179 全绿，**只有真实 MySQL 上的并发调用才现形**——已作为 Task 8 的独立步骤，因为「声称必须可演示」。
+
+---
+
+## K-27 两处测试脚手架陷阱（Task 5 实测踩到，后续任务可能复现）
+
+| | |
+|---|---|
+| **状态** | **已处理**（Task 5 已按此写通）；记录供 Task 6/7 与计划 B/C 参考 |
+| **发现于** | 2026-09-19，Task 5 的 implementer 实测 |
+| **位置** | `RefundExecutionServiceImplTest` |
+| **严重性** | 低——纯粹的脚手架问题，不影响任何断言语义 |
+
+**1. MyBatis-Plus 3.5.10 的重载解析歧义。** `BaseMapper` 同时有 `insert(T)` / `insert(Collection<T>)`、`updateById(T)` / `updateById(Collection<T>)`，**无参 `any()` 无法定型**，编译报歧义（实测 4 处）。改用 `any(Refund.class)` / `any(Order.class)`——Mockito 的 `any(Class)` 与 `any()` 一样匹配含 `null` 的任意值，**语义不变**。
+
+**2. `SnowflakeIdUtil` 在纯单测里不可用。** 它现在必须显式注入 workerId/datacenterId，没有 Spring 容器时调用 `nextId()` 抛 `IllegalStateException`（实测 4 个用例 error）。按本仓库既有约定（`OrderServiceImplTest.java:81`）在 `@BeforeEach` 加 `mockStatic(SnowflakeIdUtil.class)`、`@AfterEach` close。
+
+---
+
 ## K-24 Task 4→Task 5 的接缝断裂（**已修复**，但仍值得记）
 
 | | |
