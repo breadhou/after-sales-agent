@@ -497,7 +497,15 @@ Task 4 的 `RefundEligibilityServiceImpl` 里有个 `daysSince()` 辅助方法�
 | **位置** | `RefundExecutionServiceImplTest` |
 | **严重性** | 低——纯粹的脚手架问题，不影响任何断言语义 |
 
-**1. MyBatis-Plus 3.5.10 的重载解析歧义。** `BaseMapper` 同时有 `insert(T)` / `insert(Collection<T>)`、`updateById(T)` / `updateById(Collection<T>)`，**无参 `any()` 无法定型**，编译报歧义（实测 4 处）。改用 `any(Refund.class)` / `any(Order.class)`——Mockito 的 `any(Class)` 与 `any()` 一样匹配含 `null` 的任意值，**语义不变**。
+**1. MyBatis-Plus 3.5.10 的重载解析歧义。** `BaseMapper` 同时有 `insert(T)` / `insert(Collection<T>)`、`updateById(T)` / `updateById(Collection<T>)`，**无参 `any()` 无法定型**，编译报歧义（实测 4 处）。改用 `any(Refund.class)` / `any(Order.class)`。
+
+> **但理由不是「两者等价」**（2026-09-19 订正，原文写的「`any(Class)` 与 `any()` 一样匹配含 `null` 的任意值」**是错的**）。
+> 审查者以 `javap` 实证 Mockito 5.20.0 字节码：无参 `any()` 是 `Any.ANY`，**匹配含 `null` 的任意值**；
+> `any(Class)` 走 `InstanceOf`，其 `matches` 对 `null` 直接 `ifnull → false`——**`any(Class)` 更严格**。
+>
+> 本次结论「断言语义未变」仍然成立，但成立的真正理由是：那 3 处都在 `verify(..., never())` 路径上，
+> 而那些路径根本不会调用 `insert`/`updateById`，**不依赖 null 匹配**。
+> 若换到依赖 null 匹配的位置，这个替换会**静默改变语义**。
 
 **2. `SnowflakeIdUtil` 在纯单测里不可用。** 它现在必须显式注入 workerId/datacenterId，没有 Spring 容器时调用 `nextId()` 抛 `IllegalStateException`（实测 4 个用例 error）。按本仓库既有约定（`OrderServiceImplTest.java:81`）在 `@BeforeEach` 加 `mockStatic(SnowflakeIdUtil.class)`、`@AfterEach` close。
 
