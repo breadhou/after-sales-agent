@@ -11,6 +11,7 @@ import java.net.ServerSocket;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SupermallClientTest {
 
@@ -46,11 +47,59 @@ class SupermallClientTest {
 
     @Test
     void post_sendsAnAuthenticatedPostAndUnwrapsTheResultEnvelope() {
-        JsonNode data = client.post("/api/orders/9001/refund/execute", "{\"reason\":\"damaged\"}");
+        String requestBody = "{\"reason\":\"商品损坏\"}";
+        JsonNode data = client.post("/api/orders/9001/refund/execute", requestBody);
 
-        assertEquals(9001, data.get("id").asLong());
+        assertEquals(9001, data.get("orderId").asLong());
         assertEquals("POST", fake.receivedMethods.get(0));
         assertEquals("Bearer test-token", fake.receivedAuthHeaders.get(0));
+        assertEquals(requestBody, fake.lastRequestBody);
+        assertTrue(fake.lastContentType.startsWith("application/json"));
+    }
+
+    @Test
+    void get_usesOrderDetailDefaultWithFieldsThatToolsMustTrim() {
+        JsonNode data = client.get("/api/orders/9001");
+
+        assertEquals("SN9001", data.get("orderNo").asText());
+        assertEquals("RECEIVED", data.get("status").asText());
+        assertEquals(10001, data.get("userId").asLong());
+        assertEquals(20001, data.get("addressId").asLong());
+    }
+
+    @Test
+    void get_usesOrderListDefaultWithRecords() {
+        JsonNode data = client.get("/api/orders?pageNum=1&pageSize=20");
+
+        assertEquals("SN9001", data.get("records").get(0).get("orderNo").asText());
+    }
+
+    @Test
+    void get_usesLogisticsDefaultForTheLogisticsRoute() {
+        JsonNode data = client.get("/api/orders/9001/logistics");
+
+        assertEquals("SF Express", data.get("company").asText());
+        assertEquals("SF1234567890", data.get("trackingNo").asText());
+    }
+
+    @Test
+    void get_usesRefundEligibilityDefaultForTheEligibilityRoute() {
+        JsonNode data = client.get("/api/orders/9001/refund-eligibility");
+
+        assertTrue(data.get("eligible").asBoolean());
+        assertEquals("SEVEN_DAY_NO_REASON", data.get("policyCode").asText());
+        assertEquals(199.99, data.get("refundableAmount").asDouble());
+    }
+
+    @Test
+    void get_usesPolicyCatalogDefaultForThePoliciesRoute() {
+        JsonNode data = client.get("/api/after-sales/policies");
+
+        assertEquals("fake-policy-catalog-v1", data.get("fingerprint").asText());
+        assertEquals(3, data.get("clauses").size());
+        assertEquals("SEVEN_DAY_NO_REASON", data.get("clauses").get(0).get("code").asText());
+        assertEquals("SHIPPED_NOT_RECEIVED", data.get("clauses").get(1).get("code").asText());
+        assertEquals("QUALITY_ISSUE", data.get("clauses").get(2).get("code").asText());
     }
 
     @Test
