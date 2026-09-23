@@ -1268,7 +1268,7 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 ## 已处理（保留供追溯）
 
-## K-36 政策文本与规则共址，但部分文本条件并未参与执行
+### K-36 政策文本与规则共址，但部分文本条件并未参与执行
 
 | | |
 |---|---|
@@ -1281,7 +1281,7 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 **当时的触发与影响**：用户查询已发货订单并退款时，条款解释要求等待退货，后端却按当前简化立即完成。即使 RAG 逐字引用枚举，也会复述与实际执行不符的条件。把文本放在枚举中解决了来源分散，不能自动证明文本语义与判定条件一致。
 
-**处理（2026-09-23，`bf2d59a`）**：用户批准按「条款对齐真实执行」修复。最终条款只陈述当前可执行的状态、从 `order.created_at` 起完整经过的 24 小时天数和立即完成的整单退款：`RECEIVED` 且天数不超过 7 返回 `SEVEN_DAY_NO_REASON`，`SHIPPED` / `DELIVERED` 返回 `SHIPPED_NOT_RECEIVED`，其余 `RECEIVED` 返回兼容既有调用方保留的 `QUALITY_ISSUE` 码。当前没有退款理由、商品使用状态、退货物流或质量凭证输入；因此 `QUALITY_ISSUE` 不能解释为已核验质量问题。枚举 javadoc 同时明确，共址支持同次审阅，语义一致仍由测试与代码审查守护。
+**处理（2026-09-23，`bf2d59a`）**：用户批准按「条款对齐真实执行」修复。最终条款只陈述当前可执行的状态、从 `order.created_at` 起完整经过的 24 小时天数和立即完成的整单退款：`RECEIVED` 且天数不超过 7 返回 `SEVEN_DAY_NO_REASON`，`SHIPPED` / `DELIVERED` 返回 `SHIPPED_NOT_RECEIVED`，其余 `RECEIVED` 返回兼容既有调用方保留的 `QUALITY_ISSUE` 码。退款执行端可接收 `reason`，但资格判定和政策匹配不依据它；当前也没有商品使用状态、退货物流事实或质量凭证的输入与核验。因此 `QUALITY_ISSUE` 不能解释为已核验质量问题。枚举 javadoc 同时明确，共址支持同次审阅，语义一致仍由测试与代码审查守护。
 
 **验证与独立复审边界**：`bf2d59a` 的 20/20 个聚焦测试通过；在本次对齐前的 Plan A 全量验证为 226/226 通过。独立复审以最终提交的 `AfterSalesPolicy` 和 `RefundEligibilityServiceImpl` 为准，确认条款、资格判定和即时执行的当前语义对齐并给出 clean 结论；该复审是本问题的语义审查，不替代上述测试或重新执行端到端全量验证。
 

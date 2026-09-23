@@ -260,7 +260,7 @@ Expected: 编译失败，`找不到符号: 类 AfterSalesPolicy`
 
 - [ ] **Step 3: 实现枚举**
 
-> **最终实现修订（2026-09-23，supermall `bf2d59a`）**：本步骤以下的枚举代码和其中的条款文字是实施前的历史示例，不能再作为实现或契约来源。最终实现按订单状态及从 `order.created_at` 起完整经过的 24 小时天数判定：`RECEIVED` 且天数不超过 7 返回 `SEVEN_DAY_NO_REASON`；`SHIPPED` / `DELIVERED` 返回 `SHIPPED_NOT_RECEIVED`；其余 `RECEIVED` 返回为兼容既有调用方保留的 `QUALITY_ISSUE` 码。当前没有退款理由、商品使用状态、退货物流或质量凭证输入，三种情形均为立即完成的整单退款。最终条款已按这些可执行条件写入 `AfterSalesPolicy`；枚举共址需要测试和审查守护语义，不能仅因同一枚举就声称天然一致。
+> **最终实现修订（2026-09-23，supermall `bf2d59a`）**：本步骤以下的枚举代码和其中的条款文字是实施前的历史示例，不能再作为实现或契约来源。最终实现按订单状态及从 `order.created_at` 起完整经过的 24 小时天数判定：`RECEIVED` 且天数不超过 7 返回 `SEVEN_DAY_NO_REASON`；`SHIPPED` / `DELIVERED` 返回 `SHIPPED_NOT_RECEIVED`；其余 `RECEIVED` 返回为兼容既有调用方保留的 `QUALITY_ISSUE` 码。退款执行端可接收 `reason`，但资格判定和政策匹配不依据它；当前也没有商品使用状态、退货物流事实或质量凭证的输入与核验，三种情形均为立即完成的整单退款。最终条款已按这些可执行条件写入 `AfterSalesPolicy`；枚举共址需要测试和审查守护语义，不能仅因同一枚举就声称天然一致。
 
 创建 `AfterSalesPolicy.java`：
 
