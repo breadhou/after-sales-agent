@@ -17,6 +17,7 @@ public final class FakeSupermall implements AutoCloseable {
     private final AtomicReference<Response> responseOverride = new AtomicReference<>();
     public final List<String> receivedAuthHeaders = new CopyOnWriteArrayList<>();
     public final List<String> receivedPaths = new CopyOnWriteArrayList<>();
+    public final List<String> receivedRequestTargets = new CopyOnWriteArrayList<>();
     public final List<String> receivedMethods = new CopyOnWriteArrayList<>();
     public volatile String lastRequestBody;
     public volatile String lastContentType;
@@ -26,6 +27,7 @@ public final class FakeSupermall implements AutoCloseable {
         server.createContext("/", exchange -> {
             receivedAuthHeaders.add(exchange.getRequestHeaders().getFirst("Authorization"));
             receivedPaths.add(exchange.getRequestURI().getPath());
+            receivedRequestTargets.add(exchange.getRequestURI().toString());
             receivedMethods.add(exchange.getRequestMethod());
             lastContentType = exchange.getRequestHeaders().getFirst("Content-Type");
             lastRequestBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
