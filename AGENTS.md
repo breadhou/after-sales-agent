@@ -53,7 +53,7 @@
 
 **计划 A：Task 1–8 已完成。** Task 7 的实现提交为 supermall `b1ff494`；Task 8 的验证记录见
 `supermall/docs/plan-a-task8-validation-2026-09-22.md`。
-实现与验证已完成，但 K-36 的架构验收仍待用户裁定。
+实现、验证与 K-36 的架构验收均已完成：supermall `bf2d59a` 已使政策条款与当前执行语义对齐。
 Task 7 已实现不可变政策目录快照及其指纹；K-13 的 Agent 消费者仍待计划 B/C 落地。
 下一步实施计划 B（本仓库的 MCP Server）。
 

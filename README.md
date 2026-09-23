@@ -10,9 +10,9 @@
 
 ## 当前状态
 
-**计划 A 的 Task 1–8 均已实现并完成验证**，代码位于 supermall 的 `feat/after-sales-capability` 分支。Task 7 的实现提交为 `b1ff494`；Task 8 的验证记录在 [`supermall/docs/plan-a-task8-validation-2026-09-22.md`](../supermall/docs/plan-a-task8-validation-2026-09-22.md)。
+**计划 A 的 Task 1–8 均已实现并完成验收**，代码位于 supermall 的 `feat/after-sales-capability` 分支。Task 7 的实现提交为 `b1ff494`；Task 8 的验证记录在 [`supermall/docs/plan-a-task8-validation-2026-09-22.md`](../supermall/docs/plan-a-task8-validation-2026-09-22.md)；政策条款与执行语义的最终对齐提交为 `bf2d59a`。
 
-下一步是本仓库的计划 B（MCP Server）。K-13 的 Agent 消费者仍待计划 B/C 落地；K-36 的架构验收仍待用户裁定，因此不能宣称计划 A 的架构已完全验收。执行中发现的问题与取舍记录在 [`docs/known-issues.md`](docs/known-issues.md)。
+下一步是本仓库的计划 B（MCP Server）。K-13 的 Agent 消费者仍待计划 B/C 落地。执行中发现的问题与取舍记录在 [`docs/known-issues.md`](docs/known-issues.md)。
 
 ### 文档地图
 
@@ -45,9 +45,9 @@
 
 计划头部声明了该用哪个子技能（`executing-plans` 或 `subagent-driven-development`），新会话读到即可接续，**跨会话不受影响**。
 
-> **当前进度：计划 A 的 Task 1–8 均已实现并验证。** Task 7 的实现提交为 supermall `b1ff494`；Task 8 的验证记录在 `supermall/docs/plan-a-task8-validation-2026-09-22.md`。
+> **当前进度：计划 A 的 Task 1–8 均已实现并验收。** Task 7 的实现提交为 supermall `b1ff494`；Task 8 的验证记录在 `supermall/docs/plan-a-task8-validation-2026-09-22.md`；K-36 的条款与执行语义对齐提交为 `bf2d59a`。
 >
-> 下一步执行本仓库的计划 B（MCP Server）。K-13 的 Agent 消费者仍待计划 B/C 落地；K-36 的架构验收仍待用户裁定，因此不能宣称计划 A 的架构已完全验收。
+> 下一步执行本仓库的计划 B（MCP Server）。K-13 的 Agent 消费者仍待计划 B/C 落地。
 >
 > **Task 5 的提交链**（supermall，按顺序）：
 > `8c52d91`（主实现）→ `e070723`（并发兜底修复）→ `b43e161`（注释订正）→ `bc94d5e`（返回契约 + 测试缺口）→ `71d8537`（PENDING 措辞）。
