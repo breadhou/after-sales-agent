@@ -16,10 +16,13 @@
 
 ```bash
 mysql_q() {
-  "/d/MySQL/MySQL Server 8.0/bin/mysql" -uroot -p123456 -N -B \
+  : "${MYSQL_PWD:?先在仓库外通过环境变量设置 MySQL 密码}"
+  "/d/MySQL/MySQL Server 8.0/bin/mysql" -uroot -N -B \
     --default-character-set=utf8mb4 -e "$1" 2>/dev/null
 }
 ```
+
+运行前从本机安全位置把数据库密码注入 `MYSQL_PWD` 环境变量，不要把值写进计划、命令示例或提交记录。
 
 **Maven 命令为什么带 `-am -Dsurefire.failIfNoSpecifiedTests=false`（2026-09-19 修订）**
 
@@ -1397,7 +1400,7 @@ git commit -m "feat: expose refund eligibility and execution endpoints"
 - Create: `mall-server/src/main/java/com/mall/module/order/controller/AfterSalesPolicyController.java`
 - Test: `mall-server/src/test/java/com/mall/module/order/controller/AfterSalesPolicyControllerTest.java`
 
-> **修订说明（2026-09-19）：端点改为返回「条款 + 指纹」，关闭 K-13。**
+> **修订说明（2026-09-22）：端点返回不可变条款快照及其指纹，完成 K-13 的发布端部分。**
 >
 > 初稿只返回条款数组。那样只做到了**空间维度**的同源（判定与文本出自同一个枚举），
 > **时间维度**仍是破的：Agent 侧在启动时拉一次并索引（计划 B 原话：「无缓存……Plan C 会在启动时
@@ -1409,43 +1412,56 @@ git commit -m "feat: expose refund eligibility and execution endpoints"
 >
 > - **指纹从枚举派生，不手写版本号**。本仓库没有任何版本追踪机制（K-2），手写的版本号
 >   **自己就会漂移**——改了条款忘了改版本号，比没有还糟。派生出来的指纹改了条款就必然变。
-> - **指纹由「本次实际返回的那批条款」算出**，不是另算一份。这样「指纹覆盖的内容」与
->   「响应里的内容」是**同一个列表**，不可能不同步——**结构性保证，不是约定**。这正是本项目的取舍准绳所在。
+> - `PolicyCatalogVO.of` 先以 `List.copyOf` 固定本次返回的条款列表，条款对象也不可变，
+>   再从这份快照计算指纹。后续改动调用方持有的原列表或响应列表，不能让指纹与条款脱节。
 > - **指纹对顺序敏感**，而这是必须的：本项目的政策枚举**顺序即优先级**（K-16）。
 >   调换顺序会改变判定结果，因此也必须改变指纹。
 >
-> **代价已核实**：计划 B 的 `listPolicyClauses()` 只是把响应体原样 `toString()` 透传给模型
-> （计划 B 第 865 行），**没有任何测试断言其形状**——跨仓库契约实际上没有消费者。
-> 代价只落在本任务自己的测试上。
+> **边界**：指纹只覆盖响应中的 `code` / `title` / `clauseText` 及顺序；它不覆盖所有可执行
+> 判定规则，也不会自行刷新 Agent 索引。Agent 侧仍需定时或按需重新拉取、比较指纹并重建索引；
+> 在该消费者落地前，K-13 保持「待修」。计划 B 的 `listPolicyClauses()` 当前只是透传响应体，
+> 不构成上述刷新机制。
 
 - [ ] **Step 1: 创建两个 VO**
 
-`PolicyClauseVO.java`：
+`PolicyClauseVO.java`——不可变值对象：
 
 ```java
 package com.mall.module.order.entity.vo;
 
-import lombok.Data;
-import lombok.experimental.Accessors;
+import lombok.Getter;
 
-/** 政策条款。供 Agent 侧建立检索索引。 */
-@Data
-@Accessors(chain = true)
-public class PolicyClauseVO {
+/**
+ * A policy clause in the catalog exposed to the agent.
+ *
+ * <p>The value is immutable so a catalog's fingerprint cannot become detached from a clause
+ * after the catalog is created.</p>
+ */
+@Getter
+public final class PolicyClauseVO {
 
-    private String code;
-    private String title;
-    private String clauseText;
+    private final String code;
+    private final String title;
+    private final String clauseText;
+
+    private PolicyClauseVO(String code, String title, String clauseText) {
+        this.code = code;
+        this.title = title;
+        this.clauseText = clauseText;
+    }
+
+    public static PolicyClauseVO of(String code, String title, String clauseText) {
+        return new PolicyClauseVO(code, title, clauseText);
+    }
 }
 ```
 
-`PolicyCatalogVO.java`——**指纹与条款绑在一起，构造时就派生**：
+`PolicyCatalogVO.java`——先固定列表快照，再从**同一快照**派生指纹：
 
 ```java
 package com.mall.module.order.entity.vo;
 
-import lombok.Data;
-import lombok.experimental.Accessors;
+import lombok.Getter;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -1453,40 +1469,33 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
 
-/** 政策条款目录。供 Agent 侧建立检索索引并检测漂移。 */
-@Data
-@Accessors(chain = true)
-public class PolicyCatalogVO {
+/**
+ * An immutable snapshot of the policy clauses returned by the policy endpoint.
+ *
+ * <p>The fingerprint is SHA-256 over each returned clause's code, title, and text in catalog
+ * order. It detects changes to this catalog, including a changed clause order. It does not
+ * represent executable policy rules and does not refresh an agent index by itself.</p>
+ */
+@Getter
+public final class PolicyCatalogVO {
 
-    /**
-     * 本批条款的指纹。Agent 侧重新拉取时比对，不一致即说明服务端的条款变了，重建索引。
-     */
-    private String fingerprint;
+    private final String fingerprint;
+    private final List<PolicyClauseVO> clauses;
 
-    private List<PolicyClauseVO> clauses;
-
-    /**
-     * 从一批条款构造目录。<b>指纹取自传入的这批条款本身</b>，而不是另算一份——
-     * 于是「指纹覆盖的内容」与「响应返回的内容」是同一个列表，不可能不同步。
-     *
-     * <p>用工厂方法而不是裸 new + setter，是为了让这条不变量跟着数据走：
-     * 想构造目录就得经过这里，绕不过指纹。</p>
-     */
-    public static PolicyCatalogVO of(List<PolicyClauseVO> clauses) {
-        return new PolicyCatalogVO()
-                .setFingerprint(fingerprintOf(clauses))
-                .setClauses(clauses);
+    private PolicyCatalogVO(String fingerprint, List<PolicyClauseVO> clauses) {
+        this.fingerprint = fingerprint;
+        this.clauses = clauses;
     }
 
     /**
-     * 对条款求 SHA-256。
-     *
-     * <p>字段之间用 {@code \0} / {@code \1} 分隔，避免拼接歧义——
-     * 否则 {@code ("ab","c")} 与 {@code ("a","bc")} 会得到同一个指纹。</p>
-     *
-     * <p><b>顺序敏感是必须的</b>：本项目的政策枚举顺序即优先级（见 K-16），
-     * 调换顺序会改变判定结果，因此也必须改变指纹。</p>
+     * Creates a catalog from an immutable list snapshot and derives its fingerprint from that
+     * same snapshot.
      */
+    public static PolicyCatalogVO of(List<PolicyClauseVO> clauses) {
+        List<PolicyClauseVO> snapshot = List.copyOf(clauses);
+        return new PolicyCatalogVO(fingerprintOf(snapshot), snapshot);
+    }
+
     private static String fingerprintOf(List<PolicyClauseVO> clauses) {
         StringBuilder canonical = new StringBuilder();
         for (PolicyClauseVO clause : clauses) {
@@ -1499,8 +1508,7 @@ public class PolicyCatalogVO {
                     .digest(canonical.toString().getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(digest);
         } catch (NoSuchAlgorithmException e) {
-            // SHA-256 是 JDK 强制实现，走不到这里
-            throw new IllegalStateException("SHA-256 不可用", e);
+            throw new IllegalStateException("JDK SHA-256 implementation is unavailable", e);
         }
     }
 }
@@ -1517,87 +1525,102 @@ import com.mall.module.order.entity.vo.PolicyClauseVO;
 import com.mall.module.order.enums.AfterSalesPolicy;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class AfterSalesPolicyControllerTest {
 
     private final AfterSalesPolicyController controller = new AfterSalesPolicyController();
 
     @Test
-    void shouldExposeEveryPolicyWithCodeAndClauseText() {
+    void listPolicies_shouldReturnSuccessfulCatalogWithEveryPolicy() {
         Result<PolicyCatalogVO> result = controller.listPolicies();
 
         assertEquals(0, result.getCode());
-        List<PolicyClauseVO> clauses = result.getData().getClauses();
-        assertEquals(AfterSalesPolicy.values().length, clauses.size());
+        assertNotNull(result.getData());
+        assertEquals(AfterSalesPolicy.values().length, result.getData().getClauses().size());
+    }
 
-        for (PolicyClauseVO clause : clauses) {
-            assertNotNull(clause.getCode());
-            assertFalse(clause.getClauseText().isBlank(),
-                    clause.getCode() + " 的条款文本为空，RAG 将无据可依");
+    @Test
+    void listPolicies_shouldExposeEachPolicyUsingItsEnumNameAsCode() {
+        List<PolicyClauseVO> clauses = controller.listPolicies().getData().getClauses();
+        Map<String, PolicyClauseVO> clausesByCode = clauses.stream()
+                .collect(Collectors.toMap(PolicyClauseVO::getCode, clause -> clause));
+
+        for (AfterSalesPolicy policy : AfterSalesPolicy.values()) {
+            PolicyClauseVO clause = clausesByCode.get(policy.name());
+            assertNotNull(clause, () -> "missing clause for " + policy.name());
+            assertEquals(policy.getTitle(), clause.getTitle());
+            assertEquals(policy.getClauseText(), clause.getClauseText());
         }
     }
 
     @Test
-    void codeShouldMatchEnumNameSoDecisionAndExplanationShareAKey() {
-        Result<PolicyCatalogVO> result = controller.listPolicies();
+    void listPolicies_shouldExposeNonblankClauseTextForEveryPolicy() {
+        List<PolicyClauseVO> clauses = controller.listPolicies().getData().getClauses();
 
-        // 资格接口返回的 policyCode 必须能在这里找到对应条款
-        boolean found = result.getData().getClauses().stream()
-                .anyMatch(c -> "SEVEN_DAY_NO_REASON".equals(c.getCode()));
-        assertTrue(found, "资格接口给出的政策码在条款列表里找不到对应项");
+        for (PolicyClauseVO clause : clauses) {
+            assertNotNull(clause.getCode());
+            assertFalse(clause.getClauseText().isBlank(),
+                    () -> "clause text is blank for " + clause.getCode());
+        }
     }
 
     @Test
-    void shouldAlwaysCarryAFingerprint() {
+    void listPolicies_shouldIncludeANonblankFingerprint() {
         String fingerprint = controller.listPolicies().getData().getFingerprint();
 
         assertNotNull(fingerprint);
-        assertFalse(fingerprint.isBlank(), "没有指纹，Agent 侧就无法发现条款漂移（K-13）");
+        assertFalse(fingerprint.isBlank());
     }
 
-    /**
-     * 指纹必须**稳定**：同一批条款每次都要算出同一个值。
-     * 这条守的是「指纹不是时间戳/随机数/对象身份哈希」——那种实现会让 Agent 每次比对都判定「变了」，
-     * 于是每次刷新都重建索引，指纹退化成一个恒真的告警。
-     */
     @Test
-    void fingerprintShouldBeStableAcrossCalls() {
-        assertEquals(controller.listPolicies().getData().getFingerprint(),
-                controller.listPolicies().getData().getFingerprint());
+    void listPolicies_shouldKeepFingerprintStableAcrossCalls() {
+        String first = controller.listPolicies().getData().getFingerprint();
+        String second = controller.listPolicies().getData().getFingerprint();
+
+        assertEquals(first, second);
     }
 
-    /**
-     * 指纹必须**覆盖条款文本**。改了文本而指纹不变 = 漂移检测失效，这正是 K-13 要防的。
-     * 直接喂两组只差一个字的条款，绕开枚举不可变的限制。
-     */
     @Test
-    void fingerprintShouldChangeWhenAnyClauseTextChanges() {
-        PolicyClauseVO original = new PolicyClauseVO()
-                .setCode("X").setTitle("标题").setClauseText("原文");
-        PolicyClauseVO edited = new PolicyClauseVO()
-                .setCode("X").setTitle("标题").setClauseText("改过的原文");
+    void catalogFingerprint_shouldChangeWhenClauseTextChanges() {
+        PolicyClauseVO original = PolicyClauseVO.of("X", "Title", "Original clause");
+        PolicyClauseVO edited = PolicyClauseVO.of("X", "Title", "Edited clause");
 
-        assertNotEquals(PolicyCatalogVO.of(List.of(original)).getFingerprint(),
-                PolicyCatalogVO.of(List.of(edited)).getFingerprint());
+        assertFalse(PolicyCatalogVO.of(List.of(original)).getFingerprint()
+                .equals(PolicyCatalogVO.of(List.of(edited)).getFingerprint()));
     }
 
-    /**
-     * 指纹必须**对顺序敏感**——因为本项目的政策枚举**顺序即优先级**（见 K-16）。
-     * 调换两条政策的先后会改变判定结果，因此也必须改变指纹；否则一次「静默改了优先级」
-     * 的服务端发布，Agent 侧会认为条款没变而继续用旧的顺序解释。
-     */
     @Test
-    void fingerprintShouldBeOrderSensitiveBecauseOrderIsPriority() {
-        PolicyClauseVO first = new PolicyClauseVO()
-                .setCode("A").setTitle("甲").setClauseText("甲条款");
-        PolicyClauseVO second = new PolicyClauseVO()
-                .setCode("B").setTitle("乙").setClauseText("乙条款");
+    void catalogFingerprint_shouldChangeWhenClauseOrderChanges() {
+        PolicyClauseVO first = PolicyClauseVO.of("A", "First", "First clause");
+        PolicyClauseVO second = PolicyClauseVO.of("B", "Second", "Second clause");
 
-        assertNotEquals(PolicyCatalogVO.of(List.of(first, second)).getFingerprint(),
-                PolicyCatalogVO.of(List.of(second, first)).getFingerprint());
+        assertFalse(PolicyCatalogVO.of(List.of(first, second)).getFingerprint()
+                .equals(PolicyCatalogVO.of(List.of(second, first)).getFingerprint()));
+    }
+
+    @Test
+    void catalog_shouldKeepAnImmutableSnapshotOfItsInputClauses() {
+        PolicyClauseVO first = PolicyClauseVO.of("A", "First", "First clause");
+        PolicyClauseVO second = PolicyClauseVO.of("B", "Second", "Second clause");
+        List<PolicyClauseVO> source = new ArrayList<>(List.of(first));
+
+        PolicyCatalogVO catalog = PolicyCatalogVO.of(source);
+        String fingerprint = catalog.getFingerprint();
+        source.add(second);
+
+        assertEquals(1, catalog.getClauses().size());
+        assertEquals("A", catalog.getClauses().get(0).getCode());
+        assertEquals(fingerprint, catalog.getFingerprint());
+        org.junit.jupiter.api.Assertions.assertThrows(UnsupportedOperationException.class,
+                () -> catalog.getClauses().add(second));
     }
 }
 ```
@@ -1627,11 +1650,10 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * 售后政策条款。直接来自 {@link AfterSalesPolicy} 枚举——
- * 与判定逻辑同一份定义，Agent 侧索引的就是这里返回的文本。
+ * Exposes the policy clauses defined with the eligibility rules.
  *
- * <p>响应里带一个由这批条款派生的指纹，Agent 侧重新拉取时比对即可发现漂移
- * （K-13：只做到空间维度的同源还不够，时间维度也要堵）。</p>
+ * <p>Each response carries an immutable clause snapshot and a fingerprint derived from that
+ * snapshot. A caller can compare fingerprints from separate responses to detect catalog drift.</p>
  */
 @RestController
 @RequestMapping("/api/after-sales")
@@ -1640,14 +1662,11 @@ public class AfterSalesPolicyController {
     @GetMapping("/policies")
     public Result<PolicyCatalogVO> listPolicies() {
         List<PolicyClauseVO> clauses = Arrays.stream(AfterSalesPolicy.values())
-                .map(policy -> new PolicyClauseVO()
-                        .setCode(policy.name())
-                        .setTitle(policy.getTitle())
-                        .setClauseText(policy.getClauseText()))
+                .map(policy -> PolicyClauseVO.of(
+                        policy.name(), policy.getTitle(), policy.getClauseText()))
                 .toList();
 
         Result<PolicyCatalogVO> result = Result.build();
-        // 指纹由 PolicyCatalogVO.of 从**同一批** clauses 派生，不另算一份
         result.success(PolicyCatalogVO.of(clauses));
         return result;
     }
@@ -1660,11 +1679,11 @@ public class AfterSalesPolicyController {
 JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl mall-server -am -Dtest=AfterSalesPolicyControllerTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-Expected: `Tests run: 6, Failures: 0, Errors: 0`
+Expected: `Tests run: 8, Failures: 0, Errors: 0`
 
-（初稿为 2 个用例；2026-09-19 的 K-13 修订加了 4 个守指纹的：非空、稳定、覆盖条款文本、对顺序敏感。
-**「稳定」那一条不是凑数**——它守的是「指纹不是时间戳/对象身份哈希」，
-那种实现会让 Agent 每次比对都判定「变了」而每轮都重建索引，指纹退化成恒真告警。）
+8 个用例覆盖端点响应与枚举字段映射、非空条款、非空且稳定的指纹、文本与顺序变化，
+以及输入列表和返回列表都不能在目录创建后改动。稳定性只证明相同目录得到相同指纹；
+Agent 侧的拉取、比较和索引重建仍须另行实现（K-13）。
 
 - [ ] **Step 6: 提交**
 
@@ -1709,7 +1728,7 @@ curl -s -X POST $BASE/api/auth/register -H 'Content-Type: application/json' \
 # 2. 建地址（中文必须走 UTF-8 文件）
 printf '%s' '{"receiver":"售后验证","phone":"13700001234","province":"广东省","city":"深圳市","district":"南山区","detail":"测试路1号","isDefault":1}' > /tmp/addr.json
 curl -s -X POST -H "Authorization: Bearer $CT" -H 'Content-Type: application/json' \
-  --data-binary @/tmp/addr.json "$BASE/api/address"
+  --data-binary @/tmp/addr.json "$BASE/api/user/address"
 
 # 3. 下单
 printf '%s' "{\"addressId\":$ADDR,\"items\":[{\"skuId\":930000000000000001,\"quantity\":1}]}" > /tmp/order.json
@@ -1736,7 +1755,7 @@ Expected: `mysql_q "SELECT status FROM mall.\`order\` WHERE id=$ORDER_ID;"` 返�
 - [ ] **Step 3: 查资格**
 
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H "Authorization: Bearer $CT" \
   "http://localhost:8081/api/orders/$ORDER_ID/refund-eligibility"
 ```
 
@@ -1746,7 +1765,7 @@ Expected: `eligible: true`，`policyCode: "SEVEN_DAY_NO_REASON"`，`refundableAm
 
 ```bash
 printf '%s' '{"reason":"不想要了"}' > /tmp/refund.json
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+curl -s -X POST -H "Authorization: Bearer $CT" -H 'Content-Type: application/json' \
   --data-binary @/tmp/refund.json \
   "http://localhost:8081/api/orders/$ORDER_ID/refund/execute"
 ```
@@ -1775,23 +1794,65 @@ Expected: **1**（不是 2）
 单测守不住它：catch 里那次读被 Mockito stub 掉了，stub 什么就返回什么，行为断言永远绿。
 **这个 bug 只有在真实 MySQL 上并发调用才会现形**——所以这一步是本修订唯一的证明手段。
 
-拿一张新的 `RECEIVED` 订单（记为 `$ORDER_ID3`），**同时**发两个执行请求：
+拿一张新的、尚无退款记录的 `RECEIVED` 订单（记为 `$ORDER_ID3`）；先确认
+`SELECT COUNT(*) FROM mall.refund WHERE order_id=$ORDER_ID3` 为 **0**。
+**每次重试本实验都重造一张订单**，不能对已退款的 `$ORDER_ID3` 再发请求。
+
+在**单独的 MySQL 会话**中运行下面三句，记下输出的连接 ID（下文记为 `$BLOCKER_ID`），
+保持该会话和事务打开。它先占住这张订单的行锁：
+
+```sql
+START TRANSACTION;
+SELECT id FROM mall.`order` WHERE id = <ORDER_ID3> FOR UPDATE;
+SELECT CONNECTION_ID();
+```
+
+然后在 Git Bash 同时发两个请求。它们的 `eligibilityService.check()` 会先做普通读取、
+各自建立 read view，再到 `selectByIdForUpdate()` 等待同一行锁：
 
 ```bash
 printf '%s' '{"reason":"并发重试验证"}' > /tmp/refund-conc.json
 
 for i in 1 2; do
-  curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  curl -s -X POST -H "Authorization: Bearer $CT" -H 'Content-Type: application/json' \
     --data-binary @/tmp/refund-conc.json \
     "$BASE/api/orders/$ORDER_ID3/refund/execute" > /tmp/refund-conc-$i.json &
 done
+# 此时先不要 wait，也不要释放 MySQL 行锁；在另一个终端执行下面的锁等待查询。
+```
+
+从另一个 MySQL 会话查询 `performance_schema`（在 Git Bash 中运行；把 `$BLOCKER_ID`
+设为上面 `CONNECTION_ID()` 的实测值）：
+
+```bash
+mysql_q "SELECT DISTINCT r.THREAD_ID, r.OBJECT_SCHEMA, r.OBJECT_NAME, r.INDEX_NAME, r.LOCK_DATA
+FROM performance_schema.data_lock_waits w
+JOIN performance_schema.data_locks r ON r.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID
+JOIN performance_schema.data_locks b ON b.ENGINE_LOCK_ID = w.BLOCKING_ENGINE_LOCK_ID
+WHERE b.THREAD_ID = (SELECT THREAD_ID FROM performance_schema.threads WHERE PROCESSLIST_ID = $BLOCKER_ID)
+  AND r.OBJECT_SCHEMA = 'mall' AND r.OBJECT_NAME = 'order'
+  AND r.INDEX_NAME = 'PRIMARY' AND r.LOCK_DATA = CAST($ORDER_ID3 AS CHAR);"
+```
+
+Expected: **两条不同的 `THREAD_ID`**，且每条都是 `mall.order` 的 `PRIMARY` 键、
+`LOCK_DATA = $ORDER_ID3`，阻塞线程对应刚才的 `$BLOCKER_ID`。若不足两条，
+先检查请求是否到达、是否有错误或超时；本轮**没有证明并发分支**，换新订单重试。
+记录查询结果，再回到持锁会话执行 `COMMIT;`，最后在发请求的 Git Bash 中运行：
+
+```bash
 wait
 cat /tmp/refund-conc-1.json; echo; cat /tmp/refund-conc-2.json
 ```
 
+这个锁等待证据与已核对的调用顺序合在一起，才能证明**两个请求都在赢家提交前建立 read view**。
+释放锁后，第一笔插入并提交；第二笔普通复查沿用旧 read view，看不到赢家，
+插入时由 `uk_refund_order` 拦住，再走 `DuplicateKeyException` 的锁定读兜底。
+只看到两个 `code = 0` 而没有上述两条锁等待，**不能声称测到了 catch 分支**。
+
 Expected:
-- **两个响应都是 `code = 0`**。**任何一个出现 `-1` 就是本修订要修的那个 bug 复现了**——
-  它意味着 catch 里的锁定读没生效（或日后又被改回了普通 SELECT）
+- **两个响应都是 `code = 0`**，其中一笔为首次执行，另一笔为已有退款记录的幂等结果。
+  任一响应为 `-1` 即本轮失败；需结合日志与 SQL 异常确认故障原因，不能仅凭 `-1`
+  断言锁定读失效。
 - 落库仍只有一条：
 
 ```bash
@@ -1802,7 +1863,10 @@ Expected: **1**
 
 > **判据是「都不报错」，不是「两个响应一模一样」**：并发下谁先谁后不确定，两个响应里
 > 哪一个带「已完成退款」也不确定（只有一个是赢家）。
-> 若两个请求实际串行了（curl 启动有开销），可再跑一轮，或把并发数临时提到 4。
+> 此实验依赖 MySQL 8 的 `performance_schema.data_lock_waits` / `data_locks` 可见。
+> 查询不到锁等待时不要把两个成功响应当成证明；先确认 performance_schema 和查询权限，
+> 再用新订单重试。记录锁等待快照、两个响应与最终退款行数；read view 本身未被直接观测，
+> 其先于行锁等待的顺序来自当前 `execute()` / `check()` 的实现。
 
 - [ ] **Step 7: 验证旧端点的重复提交返回业务错误**
 
@@ -1816,11 +1880,11 @@ Expected: **1**
 printf '%s' '{"reason":"旧端点重复提交验证"}' > /tmp/refund-old.json
 
 # 第一次：应成功落一条 PENDING
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+curl -s -X POST -H "Authorization: Bearer $CT" -H 'Content-Type: application/json' \
   --data-binary @/tmp/refund-old.json "$BASE/api/orders/$ORDER_ID2/refund"
 
 # 第二次：应返回业务错误，不是 -1
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+curl -s -X POST -H "Authorization: Bearer $CT" -H 'Content-Type: application/json' \
   --data-binary @/tmp/refund-old.json "$BASE/api/orders/$ORDER_ID2/refund"
 ```
 
@@ -1842,7 +1906,21 @@ Expected: `ORDER_NOT_EXIST(50000)`
 
 - [ ] **Step 9: 验证金额不可指定**
 
-用 `{"reason":"...","amount":99999}` 调用（多余字段），确认落库金额仍是订单实付金额。
+另造一张**尚无退款记录且符合退款资格**的 `RECEIVED` 订单，记为 `$ORDER_ID5`。
+先确认没有退款行并记录订单实付金额，再发送带多余 `amount` 字段的请求：
+
+```bash
+mysql_q "SELECT COUNT(*) FROM mall.refund WHERE order_id=$ORDER_ID5;"  # 应为 0
+mysql_q "SELECT total_amount FROM mall.\`order\` WHERE id=$ORDER_ID5;"
+printf '%s' '{"reason":"金额不可指定验证","amount":99999}' > /tmp/refund-amount.json
+curl -s -X POST -H "Authorization: Bearer $CT" -H 'Content-Type: application/json' \
+  --data-binary @/tmp/refund-amount.json "$BASE/api/orders/$ORDER_ID5/refund/execute"
+mysql_q "SELECT o.total_amount, r.amount FROM mall.\`order\` o
+  JOIN mall.refund r ON r.order_id = o.id WHERE o.id=$ORDER_ID5;"
+```
+
+Expected: 执行响应 `code = 0`；最后一条查询**恰好一行**，两个金额数值相等，
+且退款金额不为 `99999`。用已退款的订单会走幂等路径，无法证明本次请求的 `amount` 未参与写入。
 
 - [ ] **Step 9b: 验证非法 reason 不会被报成系统异常**（2026-09-19 补）
 
@@ -1869,7 +1947,17 @@ mysql_q "SELECT COUNT(*) FROM mall.refund WHERE order_id=$ORDER_ID4;"
 
 Expected: **0**——校验挡住时不得落任何退款行，订单状态仍为 `RECEIVED`。
 
-再用一条**超过 512 字**的 reason 重复一次，期望相同（`@Size(max=512)` 与 `refund.reason VARCHAR(512)` 逐字对齐）。
+再用一条**513 字**的 reason 在**同一张仍无退款记录的订单**上重复一次：
+
+```bash
+printf '{"reason":"%0513d"}' 0 > /tmp/refund-long.json
+curl -s -X POST -H "Authorization: Bearer $CT" -H 'Content-Type: application/json' \
+  --data-binary @/tmp/refund-long.json "$BASE/api/orders/$ORDER_ID4/refund/execute"
+mysql_q "SELECT COUNT(*) FROM mall.refund WHERE order_id=$ORDER_ID4;"
+```
+
+Expected: 同样返回 `code: 10000`、`message: 参数错误`，退款行数仍为 **0**，
+订单状态仍为 `RECEIVED`（`@Size(max=512)` 与 `refund.reason VARCHAR(512)` 对齐）。
 
 > 若拿到 `-1` 并看到 `unknown_failure` ERROR 日志，说明局部 handler 没生效——那是**失败**，不是预期现象。
 
@@ -1882,7 +1970,7 @@ Expected: **0**——校验挡住时不得落任何退款行，订单状态仍�
 ## 完成标准
 
 - [ ] 全量测试通过，**零失败**（不要照某个具体数字核对，理由见 Task 6 Step 5）
-- [ ] 新建的 5 个测试类全绿：`AfterSalesPolicyTest`(**9**)、`RefundEligibilityServiceImplTest`(5)、`RefundExecutionServiceImplTest`(**9**)、`OrderControllerRefundTest`(2)、`AfterSalesPolicyControllerTest`(**6**)
+- [ ] 新建的 5 个测试类全绿：`AfterSalesPolicyTest`(**9**)、`RefundEligibilityServiceImplTest`(5)、`RefundExecutionServiceImplTest`(**9**)、`OrderControllerRefundTest`(2)、`AfterSalesPolicyControllerTest`(**8**)
 
 > 括号里的数字是 2026-09-19 的实测值，**与计划初稿不同**：`AfterSalesPolicyTest` 原为 7，Task 2 的重审补了 2 个（可达性守卫 + `resolve` 层的边界断言）；`RefundExecutionServiceImplTest` 原为 5，Task 4 的重审补了 3 个（见 Task 5 Step 1）。
 
@@ -1890,7 +1978,7 @@ Expected: **0**——校验挡住时不得落任何退款行，订单状态仍�
 - [ ] `refund` 表有 `uk_refund_order` 唯一索引
 - [ ] 订单可进入 `REFUNDED` 状态
 - [ ] `GET /api/after-sales/policies` 返回的条款码与资格接口返回的 `policyCode` 能对上
-- [ ] `GET /api/after-sales/policies` 的响应带 `fingerprint`，且同一份条款两次请求得到同一指纹（K-13）
+- [ ] `GET /api/after-sales/policies` 的响应带 `fingerprint`，且同一份条款两次请求得到同一指纹（K-13 的发布端；Agent 消费者仍待修）
 
 ---
 

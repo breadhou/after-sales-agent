@@ -10,9 +10,9 @@
 
 ## 当前状态
 
-**计划 A 正在执行中（8 个任务已完成 6 个）**，分支 `feat/after-sales-capability`（在 supermall 仓库），已推送。
+**计划 A 的 Task 1–8 均已实现并完成验证**，代码位于 supermall 的 `feat/after-sales-capability` 分支。Task 7 的实现提交为 `b1ff494`；Task 8 的验证记录在 [`supermall/docs/plan-a-task8-validation-2026-09-22.md`](../supermall/docs/plan-a-task8-validation-2026-09-22.md)。
 
-计划 B、C 尚未开工。执行中发现的问题与取舍记录在 [`docs/known-issues.md`](docs/known-issues.md)。
+下一步是本仓库的计划 B（MCP Server）。K-13 的 Agent 消费者仍待计划 B/C 落地；K-36 的架构验收仍待用户裁定，因此不能宣称计划 A 的架构已完全验收。执行中发现的问题与取舍记录在 [`docs/known-issues.md`](docs/known-issues.md)。
 
 ### 文档地图
 
@@ -27,7 +27,7 @@
 
 | # | 阶段 | 产出 | 计划 | 状态 |
 |---|---|---|---|---|
-| A | supermall 售后能力 | 政策判定 + 资格查询 + 退款执行 + 幂等 | ✅ 已写 | 🔄 **进行中** — Task 1-6 / 8 |
+| A | supermall 售后能力 | 政策判定 + 资格查询 + 退款执行 + 幂等 | ✅ 已写 | ✅ Task 1–8 已实现并验证 |
 | B | MCP Server | 6 个工具，stdio 传输 | ✅ 已写 | ⬜ 待执行（**依赖 A**） |
 | C | Agent | 决策 Agent + 复核 Agent + 升级人工 | ✅ 已写 | ⬜ 待执行（**依赖 B**） |
 | 3 | RAG 解释层 | 政策条款与 FAQ 的检索，**只解释不判定** | ❌ 未写 | ⏸ 待设计 |
@@ -41,18 +41,13 @@
 
 从本目录开会话，说：
 
-> 执行 `docs/plans/2026-09-18-plan-a-supermall-after-sales.md`
+> 执行 `docs/plans/2026-09-18-plan-b-mcp-server.md`
 
 计划头部声明了该用哪个子技能（`executing-plans` 或 `subagent-driven-development`），新会话读到即可接续，**跨会话不受影响**。
 
-> **当前进度：Task 1-6 已完成，Task 7-8 暂停（用户 2026-09-19 决定以后再做）。**
+> **当前进度：计划 A 的 Task 1–8 均已实现并验证。** Task 7 的实现提交为 supermall `b1ff494`；Task 8 的验证记录在 `supermall/docs/plan-a-task8-validation-2026-09-22.md`。
 >
-> ⏸ **不要自行接着做 Task 7 / Task 8**——它们已明确推迟，等用户说了再开工。
-> 计划里的 Task 7/8 文本是**完整的**（Task 7 含 K-13 的指纹方案，Task 8 含并发与非法 reason 两步验证），
-> 可直接执行，不必重新设计。
->
-> Task 7 曾在 2026-09-19 短暂开工并**完全回退**（只创建过两个未跟踪的 VO 文件，已删除，**无任何提交**），
-> 所以历史里查不到痕迹，也不需要清理。
+> 下一步执行本仓库的计划 B（MCP Server）。K-13 的 Agent 消费者仍待计划 B/C 落地；K-36 的架构验收仍待用户裁定，因此不能宣称计划 A 的架构已完全验收。
 >
 > **Task 5 的提交链**（supermall，按顺序）：
 > `8c52d91`（主实现）→ `e070723`（并发兜底修复）→ `b43e161`（注释订正）→ `bc94d5e`（返回契约 + 测试缺口）→ `71d8537`（PENDING 措辞）。
