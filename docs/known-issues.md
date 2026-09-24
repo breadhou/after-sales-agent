@@ -1144,7 +1144,7 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 | | |
 |---|---|
-| **状态** | **待修**（2026-09-24，计划 C Task 4 实施前必须修订；限额警报后留待下次） |
+| **状态** | **修复中**（2026-09-24，计划 C Task 4 已启动，先补失败测试并修订示例） |
 | **发现于** | 2026-09-24，计划 C Task 4 实施前的只读核查 |
 | **位置** | `docs/plans/2026-09-18-plan-c-agent.md` Task 4 的 `RefundExecutor.apply()` 示例 |
 | **严重性** | 高——唯一退款写通路在错误或结果不确定时缺少可信解释 |

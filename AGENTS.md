@@ -88,6 +88,7 @@ superpowers:executing-plans`——那是 Claude Code 的插件技能，**Codex �
 - MySQL 是 Windows 服务，Redis / RabbitMQ 是 WSL 容器；**WSL 会在最后一条 `wsl.exe` 结束后约 60 秒关掉整个 VM**
 - 模型走**任意 OpenAI 兼容端点**（DeepSeek、OpenRouter 均可），配 `MODEL_BASE_URL` / `MODEL_API_KEY` / `MODEL_NAME`
 - **凭据一律走环境变量，不入库。** 这是本项目的硬约定
+- 本工作区的本地启动变量保存在仓库根目录 `.env`，已被 `.gitignore` 排除。启动时须显式加载到进程环境；不要打印文件内容或提交它。
 
 ### Maven
 

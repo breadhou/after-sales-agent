@@ -662,6 +662,7 @@ git commit -m "feat: add review verdict model and agent prompts"
 - Create: `agent/src/main/java/com/mall/agent/tools/RefundExecutor.java`
 - Test: `agent/src/test/java/com/mall/agent/tools/RefundRequestToolsTest.java`
 - Test: `agent/src/test/java/com/mall/agent/tools/RefundReviewContextFactoryTest.java`
+- Test: `agent/src/test/java/com/mall/agent/tools/RefundExecutorTest.java`
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -851,6 +852,33 @@ class RefundRequestToolsTest {
     }
 
     @Test
+    void uncertainExecutionMustNotClaimRefundSucceededOrFailed() {
+        tools = new RefundRequestTools(
+                (orderId, reason) -> new RefundReviewContext(
+                        rawUserRequest.get(),
+                        "{\"id\":9001,\"status\":\"RECEIVED\"}",
+                        "{\"eligible\":true,\"refundableAmount\":99}",
+                        new CandidateRefundAction(orderId, reason)),
+                context -> { reviewed.incrementAndGet(); return ReviewVerdict.approvedVerdict(); },
+                (orderId, reason) -> {
+                    executed.incrementAndGet();
+                    throw new IllegalStateException("上游提交结果丢失");
+                },
+                (orderId, summary) -> { escalated.incrementAndGet(); return "已记录"; },
+                "session-1");
+
+        String result = tools.requestRefund(9001L, "不想要了");
+
+        assertEquals(1, reviewed.get());
+        assertEquals(1, executed.get());
+        assertEquals(0, escalated.get(), "执行不确定不应冒称复核驳回");
+        assertTrue(result.contains("无法确认"), result);
+        assertTrue(result.contains("联系人工客服核实"), result);
+        assertFalse(result.contains("已退款") || result.contains("退款成功")
+                || result.contains("退款失败") || result.contains("上游提交结果丢失"), result);
+    }
+
+    @Test
     void rejectionMessageShouldNotExposeInternalFaultsToTheModel() {
         tools = build(new ReviewVerdict(false, List.of("上游系统 ID=42 状态异常")));
 
@@ -980,13 +1008,90 @@ class RefundReviewContextFactoryTest {
 }
 ```
 
+`RefundExecutorTest.java` 直接验证唯一写通路的 MCP 请求与失败关闭。函数替身覆盖 SDK 返回
+`isError=true` 的防御分支；实际 `DefaultMcpClient` 遇该错误也可能直接抛异常，故两种路径都要测：
+
+```java
+package com.mall.agent.tools;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.service.tool.ToolExecutionResult;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class RefundExecutorTest {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    @Test
+    void callsOnlySubmitRefundWithOrderIdAndReason() throws Exception {
+        List<ToolExecutionRequest> calls = new ArrayList<>();
+        RefundExecutor executor = new RefundExecutor(request -> {
+            calls.add(request);
+            return ToolExecutionResult.builder()
+                    .resultText("{\"refundExists\":false,\"eligible\":true}")
+                    .isError(false).build();
+        });
+
+        String result = executor.apply(9001L, "不想要了");
+
+        assertEquals("{\"refundExists\":false,\"eligible\":true}", result);
+        assertEquals(1, calls.size());
+        assertEquals("submit_refund", calls.get(0).name());
+        JsonNode arguments = MAPPER.readTree(calls.get(0).arguments());
+        assertEquals(2, arguments.size(), "调用方不能指定退款金额");
+        assertEquals(9001L, arguments.path("orderId").longValue());
+        assertEquals("不想要了", arguments.path("reason").textValue());
+    }
+
+    @Test
+    void rejectsErrorResultEvenWhenItContainsText() {
+        RefundExecutor executor = new RefundExecutor(request -> ToolExecutionResult.builder()
+                .resultText("{\"error\":true,\"message\":\"退款失败\"}")
+                .isError(true).build());
+
+        assertThrows(IllegalStateException.class, () -> executor.apply(9001L, "不想要了"));
+    }
+
+    @Test
+    void rejectsMissingOrBlankResult() {
+        assertThrows(IllegalStateException.class,
+                () -> new RefundExecutor(request -> null).apply(9001L, "不想要了"));
+        // SDK 不允许直接用 resultText(null) 构造结果；惰性空文本同样不能作为成功回执。
+        assertThrows(IllegalStateException.class, () -> new RefundExecutor(request ->
+                ToolExecutionResult.builder().resultTextSupplier(() -> null).build())
+                .apply(9001L, "不想要了"));
+        for (String text : new String[]{"", "   "}) {
+            RefundExecutor executor = new RefundExecutor(request -> ToolExecutionResult.builder()
+                    .resultText(text).isError(false).build());
+            assertThrows(IllegalStateException.class, () -> executor.apply(9001L, "不想要了"));
+        }
+    }
+
+    @Test
+    void propagatesToolCallExceptionForTheRequestToolToHandle() {
+        RefundExecutor executor = new RefundExecutor(request -> {
+            throw new IllegalStateException("MCP 调用失败");
+        });
+
+        assertThrows(IllegalStateException.class, () -> executor.apply(9001L, "不想要了"));
+    }
+}
+```
+
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
-JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl agent "-Dtest=RefundRequestToolsTest,RefundReviewContextFactoryTest"
+JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl agent "-Dtest=RefundRequestToolsTest,RefundReviewContextFactoryTest,RefundExecutorTest"
 ```
 
-Expected: 编译失败，`找不到符号: 类 RefundRequestTools`
+Expected: 编译失败，Task 4 的 `RefundRequestTools`、`RefundReviewContextFactory`、`RefundExecutor` 尚未创建。
 
 - [ ] **Step 3: 实现**
 
@@ -1086,7 +1191,13 @@ public class RefundRequestTools {
             }
 
             log.info("退款复核通过 session={} orderId={}", sessionId, orderId);
-            return executor.apply(orderId, reason);
+            try {
+                return executor.apply(orderId, reason);
+            } catch (RuntimeException e) {
+                // MCP 错误或超时可能发生在后端写入之后，只能说结果不确定。
+                log.error("退款提交结果无法确认 session={} orderId={}", sessionId, orderId, e);
+                return "该退款申请的提交结果无法确认。请引导用户联系人工客服核实退款状态。";
+            }
         } finally {
             // 通过或执行失败时释放进行中标记；已驳回标记不能被清除。
             reviewStates.remove(orderId, ReviewState.IN_REVIEW);
@@ -1263,17 +1374,11 @@ public final class RefundReviewContextFactory
 }
 ```
 
-- [ ] **Step 6: 运行测试确认通过**
+- [ ] **Step 6: 实现 RefundExecutor——`submit_refund` 的唯一调用点**
 
-```bash
-JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl agent "-Dtest=RefundRequestToolsTest,RefundReviewContextFactoryTest"
-```
-
-Expected: `RefundRequestToolsTest` 与 `RefundReviewContextFactoryTest` 全部通过。
-
-- [ ] **Step 7: 实现 RefundExecutor——`submit_refund` 的唯一调用点**
-
-> **K-46，实施前必须修订下方示例**：MCP 的 `isError=true` 表示工具调用出错，SDK 默认可能直接抛异常；下方既未检查返回结果，也未处理执行异常。执行器须对 null、错误标记和空结果失败关闭，`RefundRequestTools` 须在执行结果不确定时提示人工核实，不声称退款成功或确定失败。测试同时覆盖返回错误标记与调用抛异常。该修订尚未实施。
+MCP 的 `isError=true` 表示工具调用出错；当前 SDK 默认可能在返回结果前直接抛异常。
+对 null、错误标记和空文本均失败关闭。超时可能发生在后端已写入之后，
+`RefundRequestTools` 的执行异常分支因此只称结果无法确认，并请用户联系人工客服核实。
 
 ```java
 package com.mall.agent.tools;
@@ -1285,6 +1390,7 @@ import dev.langchain4j.mcp.client.McpClient;
 import dev.langchain4j.service.tool.ToolExecutionResult;
 
 import java.util.function.BiFunction;
+import java.util.function.Function;
 
 /**
  * 执行退款。
@@ -1297,10 +1403,15 @@ public class RefundExecutor implements BiFunction<Long, String, String> {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final McpClient mcp;
+    private final Function<ToolExecutionRequest, ToolExecutionResult> toolCaller;
 
     public RefundExecutor(McpClient mcp) {
-        this.mcp = mcp;
+        this(mcp::executeTool);
+    }
+
+    /** 测试可替换 MCP 调用，仍经过真实的执行结果检查。 */
+    RefundExecutor(Function<ToolExecutionRequest, ToolExecutionResult> toolCaller) {
+        this.toolCaller = toolCaller;
     }
 
     @Override
@@ -1314,11 +1425,26 @@ public class RefundExecutor implements BiFunction<Long, String, String> {
                 .arguments(arguments.toString())
                 .build();
 
-        ToolExecutionResult result = mcp.executeTool(request);
-        return result.resultText();
+        ToolExecutionResult result = toolCaller.apply(request);
+        if (result == null || result.isError()) {
+            throw new IllegalStateException("退款提交未返回可确认的执行结果");
+        }
+        String resultText = result.resultText();
+        if (resultText == null || resultText.isBlank()) {
+            throw new IllegalStateException("退款提交未返回可确认的执行结果");
+        }
+        return resultText;
     }
 }
 ```
+
+- [ ] **Step 7: 运行测试确认通过**
+
+```bash
+JAVA_HOME=/d/jdks/openjdk-22.0.2 "/d/JetBrains/IntelliJ IDEA 2026.2/plugins/maven-plugin/lib/maven3/bin/mvn.cmd" test -pl agent "-Dtest=RefundRequestToolsTest,RefundReviewContextFactoryTest,RefundExecutorTest"
+```
+
+Expected: `RefundRequestToolsTest`、`RefundReviewContextFactoryTest` 与 `RefundExecutorTest` 全部通过。
 
 - [ ] **Step 8: 提交**
 

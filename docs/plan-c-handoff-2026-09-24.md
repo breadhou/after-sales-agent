@@ -21,6 +21,7 @@ K-13 仍为待修：阶段 3 RAG 首项必须实现目录指纹消费者，拉�
 ## 环境与验证
 
 - 两仓库在收尾时：after-sales-agent `main`；supermall `feat/after-sales-capability`，比远端领先 6 个提交。supermall 的未跟踪 `.worktrees/` 为既有内容，未触碰。
-- 再次开工前重新启动并确认 supermall、Redis、RabbitMQ；MySQL 服务状态也需确认。启动按两仓 `AGENTS.md`，凭据只经环境变量。
+- 进入实际测试前确认 supermall、Redis、RabbitMQ 与 MySQL 状态；已停止的进程按两仓 `AGENTS.md` 重新启动，凭据只经环境变量。
+- 本工作区已按用户要求创建被 Git 忽略的根目录 `.env`，存放本地启动的五个环境变量；应用本身不会自动加载该文件，启动进程须先显式读取。不要打印或提交其内容。`git check-ignore -v .env` 已验证命中。
 - Windows PowerShell 的 Maven 使用 `D:\JetBrains\IntelliJ IDEA 2026.2\plugins\maven-plugin\lib\maven3\bin\mvn.cmd`；`-D` 参数加引号。构建使用 JDK 22；JDK 17 运行仍未验证。
 - 两仓已提交的代码和文档无待提交改动；最终状态需用 `git status` 再核对。
