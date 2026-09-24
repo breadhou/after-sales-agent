@@ -1266,7 +1266,7 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 **处理（2026-09-24）**：Task 5 的本地防线接受且只接受正的 `Integer`、`Long` 或范围内 `BigInteger` 订单 ID；拒绝小数、溢出、缺失、`null`、布尔、字符串和对象。字段校验同时拒绝缺失/非对象参数及 schema 外字段，`reason` 必须是非空且不超过 512 字符的字符串。`CallToolRequestDeserializer` 将非对象 `arguments` 保留在本地校验路径；所有这些错误返回结构化 `isError=true`、业务码 `10000` 的工具结果，且不请求 supermall。
 
-**证据与范围**：`McpProtocolTest` 直接驱动 `tools/call`，覆盖小数、溢出、缺失、显式 `null`、非对象参数、非法原因和额外 `amount`，并断言 fake backend 未收到请求、响应不泄漏输入或转换异常。Task 5 接受记录为 Maven **34/34** 测试通过及 JDK 22 打包 jar 的 stdio smoke；独立 Sol 复审关闭两项 Important 和一项 Minor。JDK 17 的运行尚未验证；Task 6 的真实 supermall 端到端验证仍待执行，见 K-43。
+**证据与范围**：`McpProtocolTest` 直接驱动 `tools/call`，覆盖小数、溢出、缺失、显式 `null`、非对象参数、非法原因和额外 `amount`，并断言 fake backend 未收到请求、响应不泄漏输入或转换异常。Task 5 接受记录为 Maven **34/34** 测试通过及 JDK 22 打包 jar 的 stdio smoke；独立 Sol 复审关闭两项 Important 和一项 Minor。Task 6 已用真实 supermall 验证正常工具调用和业务错误，见验证记录；非法入参的后端零调用断言仍来自协议测试。JDK 17 运行尚未验证。
 
 ### K-42 Task 5 的资格工具描述会把观察值和退款状态说成可执行结论
 
@@ -1281,7 +1281,7 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 **处理（2026-09-24）**：`get_refund_eligibility` 的描述明确：仅 `eligible=true` 时 `refundableAmount` 才是本次可退金额；否则只是观察值，不能据此执行退款；`refundExists` 只表示已有记录，可能仍为 `PENDING`。`submit_refund` 的描述进一步限定：`refundExists=false` 且 `eligible=true` 才表示本次执行完成；为 `true` 时必须按 `reason` 区分「已有退款申请在处理中」与「已完成退款」，不能只凭该字段声称已退款。
 
-**证据与范围**：`ToolSchemaTest` 锁住资格工具描述中的 `eligible=false`、`refundableAmount`、`观察值`、`refundExists` 与 `PENDING`；上述 Task 5 的 34/34 Maven 测试、JDK 22 jar stdio smoke 和独立 Sol 复审同样适用。JDK 17 运行与 Task 6 的真实后端验证均未在本次接受范围内。
+**证据与范围**：`ToolSchemaTest` 锁住资格工具描述中的 `eligible=false`、`refundableAmount`、`观察值`、`refundExists` 与 `PENDING`；上述 Task 5 的 34/34 Maven 测试、JDK 22 jar stdio smoke 和独立 Sol 复审同样适用。Task 6 的真实调用证实了首次可退资格及执行返回；`PENDING` 描述由既有契约测试守护。JDK 17 运行尚未验证。
 
 ### K-33 supermall 的两份指令文件已漂移，且对项目状态给出相反答案
 
