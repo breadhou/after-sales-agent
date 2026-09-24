@@ -140,6 +140,22 @@ class McpProtocolTest {
     }
 
     @Test
+    void explicitNullStatusIsRejectedBeforeListingOrders() throws Exception {
+        assertLocalArgumentError(protocol.call("list_user_orders", "{\"status\":null}"));
+        assertTrue(fake.receivedPaths.isEmpty());
+    }
+
+    @Test
+    void nonObjectToolArgumentsReturnLocalErrorsWithoutLeakingConversionExceptions() throws Exception {
+        for (String arguments : List.of("[]", "[1]", "42", "\"secret-value\"")) {
+            JsonNode result = protocol.call("get_order", arguments);
+            assertLocalArgumentError(result);
+            assertFalse(result.toString().contains("secret-value"));
+        }
+        assertTrue(fake.receivedPaths.isEmpty());
+    }
+
+    @Test
     void backendBusinessFailureBecomesAnErrorToolResult() throws Exception {
         fake.respondWith(200, "{\"code\":80001,\"message\":\"订单不满足退款条件\",\"data\":null}");
 

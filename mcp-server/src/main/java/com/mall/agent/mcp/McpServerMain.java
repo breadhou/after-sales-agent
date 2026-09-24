@@ -1,5 +1,12 @@
 package com.mall.agent.mcp;
 
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.JsonDeserializer;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.mall.agent.mcp.tools.OrderTools;
 import com.mall.agent.mcp.tools.PolicyTools;
 import com.mall.agent.mcp.tools.RefundTools;
@@ -12,6 +19,7 @@ import io.modelcontextprotocol.spec.McpServerTransportProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
@@ -65,8 +73,10 @@ public final class McpServerMain {
                     """),
             new ToolDefinition("submit_refund",
                     "按订单执行退款；金额由系统根据订单确定，调用方无法指定。"
-                            + "调用前须先用 get_refund_eligibility 确认 eligible=true。"
-                            + "返回的 refundExists 只表示已有记录，不能单凭该字段声称已退款。",
+                            + "首次执行前须先用 get_refund_eligibility 确认 eligible=true；重复调用会返回既有记录而不重复退款。"
+                            + "返回的 refundExists 表示本次调用前是否已有退款记录；false 且 eligible=true 表示本次执行完成。"
+                            + "true 表示返回既有记录，须按 reason 区分 PENDING 的「该订单已有退款申请在处理中」"
+                            + "与 REFUNDED 的「该订单已完成退款」，不能仅据 refundExists 声称已退款。",
                     """
                     {"type":"object","properties":{
                       "orderId":{"type":"integer","minimum":1,"maximum":9223372036854775807,"description":"订单 ID"},
@@ -106,6 +116,8 @@ public final class McpServerMain {
                         longArg(args, "orderId"), requiredReason(args))));
 
         return McpServer.sync(transport)
+                .objectMapper(new ObjectMapper().registerModule(new SimpleModule()
+                        .addDeserializer(McpSchema.CallToolRequest.class, new CallToolRequestDeserializer())))
                 .serverInfo("after-sales-mcp", "1.0.0")
                 .capabilities(McpSchema.ServerCapabilities.builder().tools(true).build())
                 .tools(specs)
@@ -172,7 +184,7 @@ public final class McpServerMain {
 
     private static String optionalStringArg(Map<String, Object> args, String key) {
         Object value = args.get(key);
-        if (value == null) {
+        if (value == null && !args.containsKey(key)) {
             return null;
         }
         if (value instanceof String text) {
@@ -187,6 +199,22 @@ public final class McpServerMain {
             return text;
         }
         throw new InvalidToolArguments("参数不合法：reason 必须是非空且不超过 512 字符的字符串");
+    }
+
+    /** Keeps malformed argument shapes inside the tool-result validation path. */
+    private static final class CallToolRequestDeserializer extends JsonDeserializer<McpSchema.CallToolRequest> {
+        @Override
+        public McpSchema.CallToolRequest deserialize(JsonParser parser, DeserializationContext context)
+                throws IOException {
+            JsonNode request = parser.readValueAsTree();
+            ObjectMapper mapper = (ObjectMapper) parser.getCodec();
+            String name = mapper.convertValue(request.path("name"), String.class);
+            JsonNode argumentsNode = request.path("arguments");
+            Map<String, Object> arguments = argumentsNode.isObject()
+                    ? mapper.convertValue(argumentsNode, new TypeReference<Map<String, Object>>() { })
+                    : null;
+            return new McpSchema.CallToolRequest(name, arguments);
+        }
     }
 
     private static final class InvalidToolArguments extends RuntimeException {
