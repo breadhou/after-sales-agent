@@ -43,13 +43,13 @@
 
 从本目录开会话，说：
 
-> 按 `docs/plan-c-handoff-2026-09-24.md` 接续计划 C：先处理 K-44，再实施 Task 4
+> 按 `docs/plan-c-handoff-2026-09-24.md` 接续计划 C 的 Task 4，先处理 K-46
 
 计划头部声明了该用哪个子技能（`executing-plans` 或 `subagent-driven-development`），新会话读到即可接续，**跨会话不受影响**。
 
 > **当前进度：计划 A 的 Task 1–8 均已实现并验收。** Task 7 的实现提交为 supermall `b1ff494`；Task 8 的验证记录在 `supermall/docs/plan-a-task8-validation-2026-09-22.md`；K-36 的条款与执行语义对齐提交为 `bf2d59a`。
 >
-> 计划 B 的 **Task 1–6 已完成**；计划 C 的 **Task 1–3 已完成**（`62621da`、`e8cd154`、`0656eca`），先处理 K-44 再接续 Task 4。K-13 的 Agent 消费者仍待阶段 3 RAG 落地。
+> 计划 B 的 **Task 1–6 已完成**；计划 C 的 **Task 1–3 已完成**（`62621da`、`e8cd154`、`0656eca`）。K-44 已处理，接续 Task 4 前先修 K-46。K-13 的 Agent 消费者仍待阶段 3 RAG 落地。
 >
 > **Task 5 的提交链**（supermall，按顺序）：
 > `8c52d91`（主实现）→ `e070723`（并发兜底修复）→ `b43e161`（注释订正）→ `bc94d5e`（返回契约 + 测试缺口）→ `71d8537`（PENDING 措辞）。

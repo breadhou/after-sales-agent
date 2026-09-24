@@ -1273,7 +1273,7 @@ Expected: `RefundRequestToolsTest` 与 `RefundReviewContextFactoryTest` 全部�
 
 - [ ] **Step 7: 实现 RefundExecutor——`submit_refund` 的唯一调用点**
 
-> **K-46，实施前必须修订下方示例**：MCP 的 `isError=true` 表示写入失败；下方直接返回 `resultText()` 会把失败当普通工具结果。执行器须对 null、错误标记和空结果失败关闭，`RefundRequestTools` 须对执行失败返回不声称退款成功的结果，并加入错误回执测试。该修订尚未实施。
+> **K-46，实施前必须修订下方示例**：MCP 的 `isError=true` 表示工具调用出错，SDK 默认可能直接抛异常；下方既未检查返回结果，也未处理执行异常。执行器须对 null、错误标记和空结果失败关闭，`RefundRequestTools` 须在执行结果不确定时提示人工核实，不声称退款成功或确定失败。测试同时覆盖返回错误标记与调用抛异常。该修订尚未实施。
 
 ```java
 package com.mall.agent.tools;

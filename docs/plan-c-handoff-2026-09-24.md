@@ -12,8 +12,8 @@
 
 ## 接续顺序
 
-1. **K-44（用户已决定修）**：仅在 `agent/pom.xml` 导入 `com.fasterxml.jackson:jackson-bom:2.22.1`，确认 Agent 最终选择 annotations 2.22、core/databind 2.22.1；不改父 POM 和已验收的 MCP Server。运行 Agent 测试。具体风险见 `docs/known-issues.md`。
-2. **计划 C Task 4**：先修 K-46。计划中的 `RefundExecutor` 直接返回 MCP `resultText()`，未处理 null、`isError=true`、空回执；必须失败关闭，`RefundRequestTools` 不得把失败写入说成成功，并增加错误回执测试。再按 Task 4 的其它步骤实施、验证和审查唯一退款执行通路。
+1. **K-44 已处理**：只在 `agent/pom.xml` 导入 `jackson-bom:2.22.1` 并覆盖父 POM 的 databind 版本。依赖树选中 annotations 2.22、core/databind 2.22.1；Agent 14/14、MCP Server 34/34 测试通过，未改父 POM。
+2. **计划 C Task 4**：先修 K-46。计划中的 `RefundExecutor` 直接返回 MCP `resultText()`，未处理 null、`isError=true`、空回执或 SDK 抛出的异常；必须失败关闭，`RefundRequestTools` 在执行结果不确定时提示人工核实，不得说成成功或确定失败。测试覆盖错误回执和调用抛异常，再按 Task 4 的其它步骤实施、验证和审查唯一退款执行通路。
 3. 继续 Task 5–6。Task 5 的配置占位符、MCP jar 相对路径和执行结果语义需结合实际启动目录检查；Task 6 应用新订单验证正常退款与对抗路径，核对数据库，避免幂等路径造成假阳性。
 
 K-13 仍为待修：阶段 3 RAG 首项必须实现目录指纹消费者，拉取、比对并在变化时用同次条款快照重建索引。计划 C 当前没有索引，不应提前关闭 K-13。

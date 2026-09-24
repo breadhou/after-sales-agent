@@ -1140,33 +1140,31 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 ---
 
-## K-44 Agent 模块的 Jackson 依赖版本未对齐
-
-| | |
-|---|---|
-| **状态** | **待修**（2026-09-24，用户决定在 Task 4 前只对齐 Agent 模块；因限额警报留待下次实施） |
-| **发现于** | 2026-09-24，计划 C Task 1 的依赖核查 |
-| **位置** | 根 `pom.xml` 的 `jackson-databind` 版本管理、`agent/pom.xml` 的 LangChain4j 依赖 |
-| **严重性** | 潜在运行时兼容风险；目前没有复现故障 |
-
-`mvn dependency:tree` 实测 Agent 使用 `jackson-databind:2.17.0`、`jackson-core:2.22.1`、`jackson-annotations:2.22`。LangChain4j 1.20.0 相关 POM 声明的 databind 为 2.22.1，但被父 POM 管理为 2.17.0。Task 2 的 4 个测试只覆盖纯配置，不经过 JSON 或 MCP；因此通过不能证明这组混合版本可运行。当前没有发现明确的 API 冲突。**用户决定**只在 Agent 子 POM 导入 `com.fasterxml.jackson:jackson-bom:2.22.1`，并用 `dependency:tree` 核对实际选中版本（annotations 2.22、core/databind 2.22.1），再做 Task 4/5 的 MCP 验证。
-
----
-
-## K-46 计划 C 的退款执行器把 MCP 错误结果当普通返回值
+## K-46 计划 C 的退款执行异常缺少安全回执
 
 | | |
 |---|---|
 | **状态** | **待修**（2026-09-24，计划 C Task 4 实施前必须修订；限额警报后留待下次） |
 | **发现于** | 2026-09-24，计划 C Task 4 实施前的只读核查 |
 | **位置** | `docs/plans/2026-09-18-plan-c-agent.md` Task 4 的 `RefundExecutor.apply()` 示例 |
-| **严重性** | 高——唯一退款写通路会把失败结果当普通工具输出，影响执行结果解释 |
+| **严重性** | 高——唯一退款写通路在错误或结果不确定时缺少可信解释 |
 
-示例在 `mcp.executeTool(request)` 后直接返回 `result.resultText()`，没有检查 `result == null`、`isError()` 或空响应。MCP Server 已把业务错误、参数错误与内部错误标为 `isError=true`，而 SDK 提供该标记。Task 4 必须让执行器对这些结果失败关闭，且 `RefundRequestTools` 不得宣称退款成功；测试须覆盖 `isError=true`。当前尚未实施 Task 4，不应照抄该示例。
+示例在 `mcp.executeTool(request)` 后直接返回 `result.resultText()`，没有检查 `result == null`、`isError()` 或空响应，也没有在 `RefundRequestTools` 中处理执行器抛出的异常。MCP Server 把业务、参数和内部错误标为 `isError=true`；本地 SDK 默认会对这类结果抛 `ToolExecutionException`，但返回错误标记的替身或配置仍须安全处理。网络超时也可能发生在后端已经写入之后，不能确定性宣称失败。Task 4 必须覆盖「返回错误标记」与「调用抛异常」两条路径，并在结果不确定时提示人工核实，不宣称退款成功或确定失败。当前尚未实施 Task 4，不应照抄该示例。
 
 ---
 
 ## 已处理（保留供追溯）
+
+### K-44 Agent 模块的 Jackson 依赖版本未对齐
+
+| | |
+|---|---|
+| **状态** | **已处理**（2026-09-24，用户裁定 Agent 模块对齐） |
+| **发现于** | 2026-09-24，计划 C Task 1 的依赖核查 |
+| **位置** | 根 `pom.xml` 的 `jackson-databind` 版本管理、`agent/pom.xml` 的 LangChain4j 依赖 |
+| **严重性** | 潜在运行时兼容风险；处理前没有复现故障 |
+
+原依赖树中 Agent 的 databind 为 2.17.0，core 为 2.22.1，annotations 为 2.22。只在 Agent 子 POM 导入 `jackson-bom:2.22.1` 后，父 POM 对 databind 的直接管理仍优先，因此另加一条子 POM 的 databind 2.22.1 覆盖。最终依赖树实测 annotations 2.22、core/databind 2.22.1；Agent 14/14 测试、MCP Server 34/34 测试通过。真实 Agent MCP 路径仍待计划 C Task 4–6 验证。
 
 ### K-45 supermall 的入库配置文件保留本地连接密码字面量
 
