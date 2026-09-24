@@ -1140,47 +1140,6 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 ---
 
-## K-33 supermall 的两份指令文件已漂移，且对项目状态给出相反答案
-
-| | |
-|---|---|
-| **状态** | **待判断**（已核实事实，**未**机械替换——理由见下） |
-| **发现于** | 2026-09-22，准备转交 Codex 时核实 |
-| **位置** | `supermall/CLAUDE.md`（34,545 字节）与 `supermall/AGENTS.md`（51,908 字节） |
-| **严重性** | 中——当前不触发错误行为，但两份文件已经互相矛盾 |
-
-**现状**：两个文件**不是主从关系，是两份独立维护的副本**。
-
-| | `CLAUDE.md` | `AGENTS.md` |
-|---|---|---|
-| 是否分发 | **否**（`.gitignore:41` 的 `/CLAUDE.md` 排除） | **是** |
-| Claude Code 读 | ✅（默认二选一） | ❌ |
-| Codex 读 | ❌ | ✅ |
-
-于是**本机 Claude 与 Codex 读的是两套已经分叉的指令**。
-
-**最要紧的一处**：`CLAUDE.md` 的「待办」写着「原有各项均已处理完毕」，`AGENTS.md` 的「待办」
-列着两条未完成。**两边对项目状态给出相反答案**，且没有任何机制会发现。
-
-这是 **K-29 那个模式在指令文件层面的又一次现身**——同一事实的多个副本各自漂移。只不过 K-29 记的是
-契约文本，这次漂移的是**项目的操作指令本身**。
-
-**已核实：`CLAUDE.md` 不是 `AGENTS.md` 的子集。** 归一化后仍有 189 行在对方文件中没有对应；
-结构上 CLAUDE.md 没有独有章节（差异是标题层级与措辞），但**内容上确有缺口**——已确认的一处：
-它的 KeyPrefix 清单里有 `CouponKey` 及优惠券 hash tag 的理由，`AGENTS.md` 的对应清单没有。
-
-**为什么没有按原计划把 `CLAUDE.md` 改成一行 `@AGENTS.md` 导入**：那会**静默丢掉它独有的内容**。
-189 行的差异里绝大多数是措辞变体（同样的阶段七/八/九叙事换了句读），但「绝大多数」不是「全部」——
-**要把「哪些是变体、哪些是独家事实」分清楚，必须逐节对照代码核实，而那不是一次机械 diff 能完成的**。
-抢时间做这件事，产出的正是一条与事实不符的记录，恰是本文件反复禁止的。
-
-**届时的处理方向**：逐节对照代码核实后合并进 `AGENTS.md`，再替换为导入。**不是**纯文本比对。
-
-**关联**：K-7 已确认 `CLAUDE.md` 有意被 gitignore（该 ignore 是有意为之，不用 `git add -f` 强加）。
-本条**不推翻** K-7——`CLAUDE.md` 保持被忽略；要解决的是**两份文件的内容分歧**，不是它的分发状态。
-
----
-
 ## K-43 Task 6 的管道 smoke 脚本会在收到响应前关闭 MCP stdin
 
 | | |
@@ -1339,6 +1298,25 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 **处理（2026-09-24）**：`get_refund_eligibility` 的描述明确：仅 `eligible=true` 时 `refundableAmount` 才是本次可退金额；否则只是观察值，不能据此执行退款；`refundExists` 只表示已有记录，可能仍为 `PENDING`。`submit_refund` 的描述进一步限定：`refundExists=false` 且 `eligible=true` 才表示本次执行完成；为 `true` 时必须按 `reason` 区分「已有退款申请在处理中」与「已完成退款」，不能只凭该字段声称已退款。
 
 **证据与范围**：`ToolSchemaTest` 锁住资格工具描述中的 `eligible=false`、`refundableAmount`、`观察值`、`refundExists` 与 `PENDING`；上述 Task 5 的 34/34 Maven 测试、JDK 22 jar stdio smoke 和独立 Sol 复审同样适用。JDK 17 运行与 Task 6 的真实后端验证均未在本次接受范围内。
+
+### K-33 supermall 的两份指令文件已漂移，且对项目状态给出相反答案
+
+| | |
+|---|---|
+| **状态** | **已处理**（2026-09-24，supermall `9fe621e`） |
+| **发现于** | 2026-09-22，准备转交 Codex 时核实 |
+| **位置** | 发现时的本地 `supermall/CLAUDE.md` 与受跟踪 `supermall/AGENTS.md`；处理后以 `AGENTS.md` 为分发载体 |
+| **严重性** | 中——指令副本漂移会让不同 Agent 获得不同的操作事实 |
+
+**发现时记录（保留追溯，已订正）**：当时两个文件是独立维护的副本：`CLAUDE.md` 被 `.gitignore` 排除，`AGENTS.md` 随仓库分发；本机 Claude Code 与 Codex 因而会读到不同文本。发现时 `CLAUDE.md` 为 34,545 bytes，`AGENTS.md` 为 **51,908 bytes**；后者是拆分前的历史大小，不能当作当前大小。归一化比较发现 189 行差异，不能据此机械把 `CLAUDE.md` 替换为导入，因为其中有待核实的独有事实。
+
+**对旧“待办对立”结论的订正**：`CLAUDE.md` 的“原有各项均已处理完毕”是其**标题与自身正文**之间的矛盾；它的正文和 `AGENTS.md` 主体列出的两项待办实际一致。发现时不存在“两份文件主体对两项待办给出相反答案”的事实。
+
+**处理（2026-09-24）**：逐节对照 supermall 代码、配置与既有测试报告后，将有效独有事实合并入受跟踪的 `AGENTS.md`：`CouponKey` 及其在 `CouponStockRedisService` 中的使用；C 端默认安全链、商家 `@Order(1)`、管理端 `@Order(2)` 以及商家/管理端共享签名密钥的边界；2026-09-23 既有 Surefire 报告的 228 个测试、38 个测试类（明确不是本次重跑）；以及 2026-09-18 的数据库清理**快照**。同时从 `AGENTS.md` 移除本地数据库明文凭据，改为环境变量覆盖指引，并保留三个必需启动变量。
+
+**分发与本地范围**：supermall `AGENTS.md` 已由 `9fe621e` 提交，当前为 21,808 bytes，低于 Codex 的 32 KiB 上限。当地被忽略的 `CLAUDE.md` 已改为单行 `@AGENTS.md`，未执行 `git add -f`，因此不随仓库分发；新克隆不会自动带有该文件。处理同时保留了 `.gitignore` 对该本地文件的约定（见 K-7）。
+
+**验证**：提交前 `git diff --check` 通过；核对了 `CouponKey`、三条安全过滤器链、`application.yml` 的 datasource/Redis/RabbitMQ 配置键和现有 Surefire 报告。此项只统一指令文档，不重新运行测试或启动服务。
 
 ### Task 3 Step 2 是空操作
 
