@@ -11,12 +11,15 @@
 
     <modules>
         <module>mcp-server</module>
+        <module>agent</module>
     </modules>
 
     <properties>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <mcp.sdk.version>0.10.0</mcp.sdk.version>
+        <langchain4j.version>1.20.0</langchain4j.version>
+        <langchain4j.integration.version>1.20.0-beta30</langchain4j.integration.version>
         <jackson.version>2.17.0</jackson.version>
         <junit.version>5.10.2</junit.version>
     </properties>
@@ -27,6 +30,21 @@
                 <groupId>io.modelcontextprotocol.sdk</groupId>
                 <artifactId>mcp</artifactId>
                 <version>${mcp.sdk.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j</artifactId>
+                <version>${langchain4j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-open-ai</artifactId>
+                <version>${langchain4j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-mcp</artifactId>
+                <version>${langchain4j.integration.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
