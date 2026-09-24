@@ -1140,7 +1140,44 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 ---
 
+## K-44 Agent 模块的 Jackson 依赖版本未对齐
+
+| | |
+|---|---|
+| **状态** | **待修**（2026-09-24，用户决定在 Task 4 前只对齐 Agent 模块；因限额警报留待下次实施） |
+| **发现于** | 2026-09-24，计划 C Task 1 的依赖核查 |
+| **位置** | 根 `pom.xml` 的 `jackson-databind` 版本管理、`agent/pom.xml` 的 LangChain4j 依赖 |
+| **严重性** | 潜在运行时兼容风险；目前没有复现故障 |
+
+`mvn dependency:tree` 实测 Agent 使用 `jackson-databind:2.17.0`、`jackson-core:2.22.1`、`jackson-annotations:2.22`。LangChain4j 1.20.0 相关 POM 声明的 databind 为 2.22.1，但被父 POM 管理为 2.17.0。Task 2 的 4 个测试只覆盖纯配置，不经过 JSON 或 MCP；因此通过不能证明这组混合版本可运行。当前没有发现明确的 API 冲突。**用户决定**只在 Agent 子 POM 导入 `com.fasterxml.jackson:jackson-bom:2.22.1`，并用 `dependency:tree` 核对实际选中版本（annotations 2.22、core/databind 2.22.1），再做 Task 4/5 的 MCP 验证。
+
+---
+
+## K-46 计划 C 的退款执行器把 MCP 错误结果当普通返回值
+
+| | |
+|---|---|
+| **状态** | **待修**（2026-09-24，计划 C Task 4 实施前必须修订；限额警报后留待下次） |
+| **发现于** | 2026-09-24，计划 C Task 4 实施前的只读核查 |
+| **位置** | `docs/plans/2026-09-18-plan-c-agent.md` Task 4 的 `RefundExecutor.apply()` 示例 |
+| **严重性** | 高——唯一退款写通路会把失败结果当普通工具输出，影响执行结果解释 |
+
+示例在 `mcp.executeTool(request)` 后直接返回 `result.resultText()`，没有检查 `result == null`、`isError()` 或空响应。MCP Server 已把业务错误、参数错误与内部错误标为 `isError=true`，而 SDK 提供该标记。Task 4 必须让执行器对这些结果失败关闭，且 `RefundRequestTools` 不得宣称退款成功；测试须覆盖 `isError=true`。当前尚未实施 Task 4，不应照抄该示例。
+
+---
+
 ## 已处理（保留供追溯）
+
+### K-45 supermall 的入库配置文件保留本地连接密码字面量
+
+| | |
+|---|---|
+| **状态** | **已处理**（2026-09-24，supermall `9d45f49`） |
+| **发现于** | 2026-09-24，计划 B 真实环境验证后检查启动配置 |
+| **位置** | `supermall/mall-server/src/main/resources/application.yml` 的 datasource 与 RabbitMQ 密码字段 |
+| **严重性** | 与项目明确的凭据管理约定冲突 |
+
+两个入库密码字面量已分别改为 `${SPRING_DATASOURCE_PASSWORD}`、`${SPRING_RABBITMQ_PASSWORD}`，无入库默认值。独立临时目录 Maven 打包成功；显式注入本地凭据后，应用在 18081 端口出现 `Started MallApplication` 且 Hikari 建立数据库连接。现有 8081 进程保持运行。健康端点受鉴权限制，未宣称其 200 验证通过。本次未把密码值写入文档或日志；若旧值曾用于共享环境，仍需按实际使用范围轮换。
 
 ### K-37 设计中的拒绝用例与当前资格契约没有对齐
 

@@ -11,7 +11,7 @@
 [supermall](https://github.com/breadhou/Supermall)（本地 `D:\sourcecode\supermall`），两者通过 **MCP** 通信，
 **本项目不直连它的数据库**——直连会绕过业务规则，而业务规则正是评测的判定依据。
 
-> **计划 A 的代码改动在 supermall；计划 B/C 的代码改动在本仓库**（`mcp-server` 与 `agent`）。计划 B 的 `mcp-server` 已完成 Task 1–6；计划 C 仍是设计与计划。
+> **计划 A 的代码改动在 supermall；计划 B/C 的代码改动在本仓库**（`mcp-server` 与 `agent`）。计划 B 的 `mcp-server` 已完成 Task 1–6；计划 C 的 Task 1–3 已完成。
 
 | 文档 | 内容 |
 |---|---|
@@ -55,7 +55,8 @@
 `supermall/docs/plan-a-task8-validation-2026-09-22.md`。
 实现、验证与 K-36 的架构验收均已完成：supermall `bf2d59a` 已使政策条款与当前执行语义对齐。
 Task 7 已实现不可变政策目录快照及其指纹；K-13 的 Agent 消费者仍待计划 C 的 RAG 阶段落地。
-**计划 B：Task 1–6 已完成**（实现 `2e026da`、修复 `0391378`）。Task 6 的真实环境响应与数据库核对见 `docs/plan-b-task6-validation-2026-09-24.md`；34/34 Maven 测试通过。运行验证使用 JDK 22，JDK 17 运行尚未验证。**下一步实施计划 C。**
+**计划 B：Task 1–6 已完成**（实现 `2e026da`、修复 `0391378`）。Task 6 的真实环境响应与数据库核对见 `docs/plan-b-task6-validation-2026-09-24.md`；34/34 Maven 测试通过。运行验证使用 JDK 22，JDK 17 运行尚未验证。
+**计划 C：Task 1–3 已完成**（`62621da`、`e8cd154`、`0656eca`）；Task 3 的 10 个指定测试通过。下一步按用户裁定先处理 K-44 的 Agent 模块 Jackson 版本对齐，再实施 Task 4。Task 4 的计划示例存在 K-46 错误回执缺口，实施前必须修订。收尾与接续见 `docs/plan-c-handoff-2026-09-24.md`。
 
 > ⚠️ **计划里的复选框没有被回填**（53 个全部未勾）——**不要拿它当进度依据**，否则会从 Task 1 重做。
 
