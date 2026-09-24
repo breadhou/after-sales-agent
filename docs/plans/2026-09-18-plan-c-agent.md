@@ -1217,8 +1217,8 @@ import dev.langchain4j.agent.tool.Tool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 /**
@@ -1234,7 +1234,7 @@ public class EscalationTools {
     private static final Logger log = LoggerFactory.getLogger(EscalationTools.class);
 
     private final String sessionId;
-    private final List<EscalationRecord> records = new ArrayList<>();
+    private final List<EscalationRecord> records = new CopyOnWriteArrayList<>();
     private final Consumer<EscalationRecord> sink;
 
     public EscalationTools(String sessionId, Consumer<EscalationRecord> sink) {

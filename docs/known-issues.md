@@ -1140,20 +1140,18 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 ---
 
-## K-46 计划 C 的退款执行异常缺少安全回执
+## 已处理（保留供追溯）
+
+### K-46 计划 C 的退款执行异常缺少安全回执
 
 | | |
 |---|---|
-| **状态** | **修复中**（2026-09-24，计划 C Task 4 已启动，先补失败测试并修订示例） |
+| **状态** | **已处理**（2026-09-24，计划 C Task 4 `72fad2d`） |
 | **发现于** | 2026-09-24，计划 C Task 4 实施前的只读核查 |
-| **位置** | `docs/plans/2026-09-18-plan-c-agent.md` Task 4 的 `RefundExecutor.apply()` 示例 |
+| **位置** | `RefundExecutor.apply()`、`RefundRequestTools.requestRefund()` 与对应测试 |
 | **严重性** | 高——唯一退款写通路在错误或结果不确定时缺少可信解释 |
 
-示例在 `mcp.executeTool(request)` 后直接返回 `result.resultText()`，没有检查 `result == null`、`isError()` 或空响应，也没有在 `RefundRequestTools` 中处理执行器抛出的异常。MCP Server 把业务、参数和内部错误标为 `isError=true`；本地 SDK 默认会对这类结果抛 `ToolExecutionException`，但返回错误标记的替身或配置仍须安全处理。网络超时也可能发生在后端已经写入之后，不能确定性宣称失败。Task 4 必须覆盖「返回错误标记」与「调用抛异常」两条路径，并在结果不确定时提示人工核实，不宣称退款成功或确定失败。当前尚未实施 Task 4，不应照抄该示例。
-
----
-
-## 已处理（保留供追溯）
+原计划直接返回 MCP `resultText()`，没有检查 null、`isError()` 或空响应，也未处理 SDK 抛出的异常。当前执行器已对返回错误失败关闭；复核通过后若执行调用抛异常，模型只收到「提交结果无法确认，请联系人工客服核实」，不被告知成功或确定失败。测试覆盖返回错误标记、空回执和抛异常；Task 4 指定测试 19/19、根 Maven reactor 测试 67/67 通过。真实 MCP/后端结果仍待 Task 6 验证。
 
 ### K-44 Agent 模块的 Jackson 依赖版本未对齐
 
