@@ -1348,6 +1348,21 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 **处理与证据**：Plan B Task 6 改用双向驱动，写入握手消息后保持 stdin，等到指定 id 的工具响应再关闭；检查响应内容、stdout 严格 UTF-8/JSON-RPC、stderr 不含令牌。真实 supermall 上取得了 `tools/list`、政策、资格、首次退款执行和跨用户业务错误共五份响应，记录于 `docs/plan-b-task6-responses-2026-09-24.jsonl`。订单状态由 `RECEIVED` 变为 `REFUNDED`，退款行数由 0 变为 1；详见 `docs/plan-b-task6-validation-2026-09-24.md`。这一验证使用 JDK 22，JDK 17 运行仍未验证。
 
+### K-47 Agent 启动环境会把后端与模型密钥传给错误进程
+
+| | |
+|---|---|
+| **状态** | **已处理**（2026-09-24，计划 C Task 5 环境隔离） |
+| **发现于** | 2026-09-24，计划 C Task 5 独立安全审查 |
+| **位置** | `scripts/run_agent.py`、`AgentMain`、`AgentConfig.mcpClient` 及计划 C Task 6 启动说明 |
+| **严重性** | 高——Agent 不持有服务端高权限身份是设计基线的认证边界 |
+
+**触发条件**：本机同一份被忽略的 `.env` 可同时包含 supermall 后端凭据与 `MODEL_*`。若把整份文件加载到 Agent 进程，Agent 便持有后端高权限密钥；LangChain4j MCP stdio transport 用 `ProcessBuilder.environment().putAll(...)`，子进程还会继承 Agent 的模型 API 密钥。仅向 transport map 放入用户 JWT 不能清除继承变量。
+
+**处理**：仓库根启动器只从 `.env` 挑选三个模型变量，从当前进程环境或独立的被忽略文件读取测试用户 JWT，再以白名单环境启动 Agent。`AgentMain` 在读到非空后端密钥时拒绝启动；MCP transport 的环境覆盖映射把模型 API 密钥及已知后端密钥置为空，同时保留用户 JWT 与后端地址。AGENTS、计划 C Task 5/6 和交接说明已统一到该启动方式。
+
+**证据与范围**：先见到 Java 新测试因缺方法而编译失败、Python 启动器测试因白名单缺失而失败；实施后 Agent 定向测试 13/13、Python 4/4（用临时虚构凭据实际启动子进程检查环境）、根 Maven reactor 81/81 通过，JDK 22 打包成功。真实模型、MCP 与订单路径仍由 Task 6 验证；这里的测试没有读取真实密钥，也没有触碰真实订单。
+
 ### Task 3 Step 2 是空操作
 
 计划要求把 `init.sql` 的 `order.status` 注释改为含 `REFUNDED` 的版本，但该文件**已经是** `PENDING/PAID/SHIPPED/DELIVERED/RECEIVED/REFUNDED/CANCELLED`。**跳过**即可。

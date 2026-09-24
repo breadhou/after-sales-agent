@@ -56,7 +56,7 @@
 实现、验证与 K-36 的架构验收均已完成：supermall `bf2d59a` 已使政策条款与当前执行语义对齐。
 Task 7 已实现不可变政策目录快照及其指纹；K-13 的 Agent 消费者仍待计划 C 的 RAG 阶段落地。
 **计划 B：Task 1–6 已完成**（实现 `2e026da`、修复 `0391378`）。Task 6 的真实环境响应与数据库核对见 `docs/plan-b-task6-validation-2026-09-24.md`；34/34 Maven 测试通过。运行验证使用 JDK 22，JDK 17 运行尚未验证。
-**计划 C：Task 1–4 已完成**（`62621da`、`e8cd154`、`0656eca`、`72fad2d`）；K-44 的 Agent 模块 Jackson 版本已对齐，K-46 的执行异常回执已在 Task 4 修复。Task 4 指定测试 19/19，通过根 Maven reactor 测试合计 67/67。下一步实施 Task 5 的 Agent 装配与 CLI；真实退款端到端验证仍在 Task 6。接续见 `docs/plan-c-handoff-2026-09-24.md`。
+**计划 C：Task 1–5 已完成**（Task 1–4 为 `62621da`、`e8cd154`、`0656eca`、`72fad2d`）；Task 5 已装配隔离工具面的双 Agent、CLI 与白名单环境启动器。根 Maven reactor 81/81、启动器测试 5/5 通过，仓库根目录 CLI 启动和中文输出已验证。下一步 Task 6 用新订单做真实模型、MCP 与退款端到端验证。接续见 `docs/plan-c-handoff-2026-09-24.md`。
 
 > ⚠️ **计划里的复选框没有被回填**（53 个全部未勾）——**不要拿它当进度依据**，否则会从 Task 1 重做。
 
@@ -88,7 +88,7 @@ superpowers:executing-plans`——那是 Claude Code 的插件技能，**Codex �
 - MySQL 是 Windows 服务，Redis / RabbitMQ 是 WSL 容器；**WSL 会在最后一条 `wsl.exe` 结束后约 60 秒关掉整个 VM**
 - 模型走**任意 OpenAI 兼容端点**（DeepSeek、OpenRouter 均可），配 `MODEL_BASE_URL` / `MODEL_API_KEY` / `MODEL_NAME`
 - **凭据一律走环境变量，不入库。** 这是本项目的硬约定
-- 本工作区的本地启动变量保存在仓库根目录 `.env`，已被 `.gitignore` 排除。启动时须显式加载到进程环境；不要打印文件内容或提交它。
+- 本工作区的本地启动变量保存在仓库根目录 `.env`，已被 `.gitignore` 排除。**supermall** 启动时加载后端所需变量；**Agent** 从仓库根目录运行 `python scripts/run_agent.py`，启动器只向 Agent 传入 `MODEL_*`、用户 `SUPERMALL_TOKEN` 和可选 `SUPERMALL_BASE_URL`，不会把后端密钥交给 Agent。用户令牌可由当前进程环境或被忽略的 `agent/target/task6.env`、`agent-token.env` 提供。不要打印或提交这些文件。
 
 ### Maven
 

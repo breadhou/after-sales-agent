@@ -24,9 +24,9 @@ public class EscalationTools {
         this.sink = sink;
     }
 
-    @Tool("记录本次会话的人工升级请求，并引导用户联系人工客服。用于你无法按政策处理、或用户对政策解释不接受时。")
-    public String escalateToHuman(@P("订单 ID，没有明确订单时传 0") Long orderId,
-                                  @P("升级原因摘要，一句话说明为什么需要人工介入") String summary) {
+    @Tool(name = "escalate_to_human", value = "记录本次会话的人工升级请求，并引导用户联系人工客服。用于你无法按政策处理、或用户对政策解释不接受时。")
+    public String escalateToHuman(@P(name = "orderId", value = "订单 ID，没有明确订单时传 0") Long orderId,
+                                  @P(name = "summary", value = "升级原因摘要，一句话说明为什么需要人工介入") String summary) {
         EscalationRecord record = EscalationRecord.of(sessionId, orderId, summary);
         records.add(record);
         sink.accept(record);

@@ -52,4 +52,15 @@ class ModelPropertiesTest {
 
         assertThrows(IllegalArgumentException.class, () -> ModelProperties.from(p));
     }
+
+    @Test
+    void shouldRejectUnresolvedEnvironmentPlaceholder() {
+        Properties p = base();
+        p.setProperty("model.apiKey", "${MODEL_API_KEY}");
+
+        IllegalArgumentException e = assertThrows(
+                IllegalArgumentException.class, () -> ModelProperties.from(p));
+
+        assertTrue(e.getMessage().contains("model.apiKey"), e.getMessage());
+    }
 }

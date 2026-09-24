@@ -43,12 +43,12 @@ public class RefundRequestTools {
         this.sessionId = sessionId;
     }
 
-    @Tool("""
+    @Tool(name = "request_refund", value = """
          提交退款申请。系统会对该申请进行合规复核，复核通过后才会真正执行；
          复核未通过会记录人工升级请求，并引导用户联系人工客服。调用前你必须已经用 get_refund_eligibility
          确认过该订单符合退款条件。""")
-    public String requestRefund(@P("订单 ID") Long orderId,
-                                @P("退款原因，来自用户的说明") String reason) {
+    public String requestRefund(@P(name = "orderId", value = "订单 ID") Long orderId,
+                                @P(name = "reason", value = "退款原因，来自用户的说明") String reason) {
         ReviewState previous = reviewStates.putIfAbsent(orderId, ReviewState.IN_REVIEW);
         if (previous == ReviewState.REJECTED) {
             return "该订单在本次会话中已记录人工升级请求。请引导用户联系人工客服继续处理。";

@@ -23,10 +23,15 @@ public record ModelProperties(String baseUrl, String apiKey, String name, double
 
     private static String require(Properties properties, String key) {
         String value = properties.getProperty(key);
-        if (value == null || value.isBlank()) {
+        if (value == null || value.isBlank() || isUnresolvedPlaceholder(value)) {
             throw new IllegalArgumentException(
                     "缺少配置 " + key + "。模型必须显式配置，不回落到默认值。");
         }
         return value.trim();
+    }
+
+    private static boolean isUnresolvedPlaceholder(String value) {
+        String trimmed = value.trim();
+        return trimmed.startsWith("${") && trimmed.endsWith("}");
     }
 }
