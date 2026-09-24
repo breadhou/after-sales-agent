@@ -14,10 +14,10 @@
 
 **命令约定**：Task 6 需要查库核对状态，先定义：
 
-```bash
-mysql_q() {
-  "/d/MySQL/MySQL Server 8.0/bin/mysql" -uroot -p123456 -N -B \
-    --default-character-set=utf8mb4 -e "$1" 2>/dev/null
+```powershell
+function mysql_q([string]$query) {
+  if (-not $env:MYSQL_PWD) { throw 'MYSQL_PWD 未在环境变量中设置' }
+  & 'D:\MySQL\MySQL Server 8.0\bin\mysql.exe' -uroot -N -B --default-character-set=utf8mb4 -e $query
 }
 ```
 
@@ -1126,79 +1126,76 @@ git commit -m "feat: wire tools into a stdio mcp server"
 
 - [ ] **Step 1: 拿一个真实用户令牌**
 
-用 Plan A 的 Task 8 里创建的那个用户（口令在你本地记录里，本项目约定不入库）：
+测试用户口令通过当前 PowerShell 会话的 `AFTERSALES_TEST_PASSWORD` 环境变量提供，不写入仓库或令牌文件：
 
-```bash
-BASE=http://localhost:8081
-PW=$(grep '^PW_A=' /c/Users/hou16/AppData/Local/Temp/mall-itest/merchant-credentials.txt | cut -d= -f2-)
-CT=$(curl -s -X POST $BASE/api/auth/login -H 'Content-Type: application/json' \
-  -d "{\"username\":\"aftersales_t1\",\"password\":\"$PW\"}" | sed -E 's/.*"accessToken":"([^"]+)".*/\1/')
-echo "$CT" > /tmp/ct.txt
+```powershell
+$BASE = 'http://localhost:8081'
+if (-not $env:AFTERSALES_TEST_PASSWORD) { throw '测试用户口令未设置' }
+$body = @{username='aftersales_t1'; password=$env:AFTERSALES_TEST_PASSWORD} | ConvertTo-Json -Compress
+$login = Invoke-RestMethod -Uri "$BASE/api/auth/login" -Method Post `
+  -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
+if ($login.code -ne 0 -or -not $login.data.accessToken) { throw '测试用户登录失败' }
+$env:SUPERMALL_TOKEN = $login.data.accessToken
+$env:SUPERMALL_BASE_URL = $BASE
 ```
 
-> 若该用户已不存在（库被清理过），按 Plan A Task 8 Step 2 重新造一个，并用同样的用户名，或把上面命令里的用户名换掉。
+> 若该用户已不存在，按 Plan A Task 8 Step 2 通过业务接口重新注册，并造新订单；不要复用已退款的订单号。
 
-- [ ] **Step 2: 手工走一次 MCP 握手**
+- [ ] **Step 2: 走一次真实 MCP 握手并列工具**
 
-stdio 协议是行分隔的 JSON-RPC。用管道验证：
-
-```bash
-printf '%s\n' \
- '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}' \
- '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
- '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-| SUPERMALL_TOKEN=$(cat /tmp/ct.txt) SUPERMALL_BASE_URL=$BASE java -jar mcp-server/target/mcp-server.jar 2>/dev/null
+```powershell
+python scripts/mcp_stdio_smoke.py
 ```
 
-Expected: 第二行响应包含 `tools` 数组，且**恰好 6 个工具**，名称与设计一致
+驱动发送 `initialize`、`notifications/initialized`、`tools/list`，**保持 stdin 打开直到收到 id=2 的响应**，再检查 stdout 全是 JSON-RPC、stderr 未泄漏令牌。Expected: 恰好 6 个不同工具，`submit_refund` 的 schema 只有 `orderId` 与 `reason`。
 
 - [ ] **Step 3: 调用只读工具**
 
-```bash
-printf '%s\n' \
- '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}' \
- '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
- '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_policy_clauses","arguments":{}}}' \
-| SUPERMALL_TOKEN=$(cat /tmp/ct.txt) SUPERMALL_BASE_URL=$BASE java -jar mcp-server/target/mcp-server.jar 2>/dev/null
+```powershell
+python scripts/mcp_stdio_smoke.py --tool list_policy_clauses
 ```
 
-Expected: 返回三条政策的 `code` / `title` / `clauseText`，**且 code 与 supermall 的枚举名一致**（这是"判定与解释同源"的实证）
+Expected: 三条政策的 `code` / `title` / `clauseText` 和指纹，code 与 supermall 枚举名一致，中文没有替换字符。
 
 - [ ] **Step 4: 调用写工具并验证落库**
 
-用一张 `RECEIVED` 订单（Plan A 的 Task 8 已造过）：
+用业务接口新造一张 `RECEIVED` 订单，写入前确认尚无退款行；先查资格，再执行：
 
-```bash
-printf '%s\n' \
- '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}' \
- '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
- "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"submit_refund\",\"arguments\":{\"orderId\":$ORDER_ID,\"reason\":\"端到端验证\"}}}" \
-| SUPERMALL_TOKEN=$(cat /tmp/ct.txt) SUPERMALL_BASE_URL=$BASE java -jar mcp-server/target/mcp-server.jar 2>/dev/null
+```powershell
+$ORDER_ID = <新订单 ID>
+python scripts/mcp_stdio_smoke.py --tool get_refund_eligibility --order-id $ORDER_ID
+python scripts/mcp_stdio_smoke.py --tool submit_refund --order-id $ORDER_ID --reason '端到端验证'
 ```
 
-Expected: `isError` 为 false；随后
+Expected: 资格 `eligible=true`、`refundExists=false`；写调用 `isError=false`。数据库只读核对：
 
-```bash
-mysql_q "SELECT status FROM mall.\`order\` WHERE id=$ORDER_ID;"
+```powershell
+mysql_q ('SELECT status FROM mall.`order` WHERE id=' + $ORDER_ID + ';')
+mysql_q ('SELECT COUNT(*), MAX(status), MAX(amount) FROM mall.refund WHERE order_id=' + $ORDER_ID + ';')
 ```
 
-Expected: `REFUNDED`
+Expected: 订单 `REFUNDED`，退款行恰好 1 条且金额为订单实付金额。
 
 - [ ] **Step 5: 验证业务错误被正确翻译**
 
-用一个**别人的**订单号调用 `get_order`。
+用数据库只读查询找到确实属于另一用户的订单号：
 
-Expected: 返回 `isError: true`，内容里有 `"code":50000` 与中文消息，**且没有 Java 异常类名**
+```powershell
+$FOREIGN_ORDER_ID = <另一用户的订单 ID>
+python scripts/mcp_stdio_smoke.py --tool get_order --order-id $FOREIGN_ORDER_ID `
+  --expect-error --expect-code 50000
+```
+
+Expected: `isError=true`、`code=50000`、中文消息，且没有 Java 异常类名。
 
 - [ ] **Step 6: 记录验证结果并提交**
 
-在 `docs/` 下记录：每个调用的原始响应、数据库最终状态、stdout 是否干净。
+在 `docs/` 记录 JSON-RPC 响应、数据库前后状态、stdout/stderr 检查和运行 JDK 版本。驱动将中文转义为 `\uXXXX` 以便跨 Windows shell 保真；不记录 JWT 或口令。
 
 ```bash
-git add docs/
+git add docs/ scripts/mcp_stdio_smoke.py
 git commit -m "docs: record mcp server end-to-end verification"
 ```
-
 ---
 
 ## 完成标准

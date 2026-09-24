@@ -1140,22 +1140,6 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 ---
 
-## K-43 Task 6 的管道 smoke 脚本会在收到响应前关闭 MCP stdin
-
-| | |
-|---|---|
-| **状态** | **待修** |
-| **发现于** | 2026-09-23，Plan B Task 5/6 只读预检，核对 MCP SDK 0.10.0 的 stdio 生命周期 |
-| **位置** | 计划 B Task 6：initialize、`notifications/initialized` 与 `tools/call` 的 `printf | java` 验证命令 |
-| **严重性** | 中高——会使端到端验证丢失响应，不能作为工具链正确的证据 |
-| **处理时机** | Plan B Task 6 |
-
-**已核实的前提与计划风险**：计划的管道在 `printf` 写完三条 JSON-RPC 消息后立即关闭 stdin。SDK 0.10.0 的 stdio 传输在 stdin EOF 后可能在异步工具响应写出前结束，因此调用方可能收不到指定请求 id 的响应；这不是已经发生的生产故障，而是当前验证脚本的生命周期风险。
-
-**处理方向**：Task 6 的 smoke 驱动必须持续保持 stdin，直到读到指定 `id` 的响应后才结束，并对该响应的 `isError` 与内容断言。可用能双向读写子进程 stdin/stdout 的小型驱动或等价机制；不能以管道进程退出且没有输出作为通过证据。
-
----
-
 ## 已处理（保留供追溯）
 
 ### K-37 设计中的拒绝用例与当前资格契约没有对齐
@@ -1317,6 +1301,19 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 **分发与本地范围**：supermall `AGENTS.md` 已由 `9fe621e` 提交，当前为 21,808 bytes，低于 Codex 的 32 KiB 上限。当地被忽略的 `CLAUDE.md` 已改为单行 `@AGENTS.md`，未执行 `git add -f`，因此不随仓库分发；新克隆不会自动带有该文件。处理同时保留了 `.gitignore` 对该本地文件的约定（见 K-7）。
 
 **验证**：提交前 `git diff --check` 通过；核对了 `CouponKey`、三条安全过滤器链、`application.yml` 的 datasource/Redis/RabbitMQ 配置键和现有 Surefire 报告。此项只统一指令文档，不重新运行测试或启动服务。
+
+### K-43 Task 6 的管道 smoke 脚本会在收到响应前关闭 MCP stdin
+
+| | |
+|---|---|
+| **状态** | **已处理**（2026-09-24，Plan B Task 6 真实环境验证） |
+| **发现于** | 2026-09-23，Plan B Task 5/6 只读预检，核对 MCP SDK 0.10.0 的 stdio 生命周期 |
+| **位置** | Plan B Task 6；`scripts/mcp_stdio_smoke.py` |
+| **严重性** | 中高——旧管道可能在异步响应发出前结束，不能作为工具链正确的证据 |
+
+**发现时的风险**：原计划把固定的 initialize、initialized、tools/call 消息通过 `printf | java` 一次写完，随即关闭 stdin。SDK 0.10.0 可能在响应写出前结束 stdio 会话；进程退出或空输出不构成工具链正确的证据。
+
+**处理与证据**：Plan B Task 6 改用双向驱动，写入握手消息后保持 stdin，等到指定 id 的工具响应再关闭；检查响应内容、stdout 严格 UTF-8/JSON-RPC、stderr 不含令牌。真实 supermall 上取得了 `tools/list`、政策、资格、首次退款执行和跨用户业务错误共五份响应，记录于 `docs/plan-b-task6-responses-2026-09-24.jsonl`。订单状态由 `RECEIVED` 变为 `REFUNDED`，退款行数由 0 变为 1；详见 `docs/plan-b-task6-validation-2026-09-24.md`。这一验证使用 JDK 22，JDK 17 运行仍未验证。
 
 ### Task 3 Step 2 是空操作
 

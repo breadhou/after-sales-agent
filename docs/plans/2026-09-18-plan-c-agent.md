@@ -16,7 +16,8 @@
 
 ```bash
 mysql_q() {
-  "/d/MySQL/MySQL Server 8.0/bin/mysql" -uroot -p123456 -N -B \
+  : "${MYSQL_PWD:?Set MYSQL_PWD in environment}"
+  "/d/MySQL/MySQL Server 8.0/bin/mysql" -uroot -N -B \
     --default-character-set=utf8mb4 -e "$1" 2>/dev/null
 }
 ```
