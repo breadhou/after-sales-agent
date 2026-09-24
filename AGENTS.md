@@ -11,7 +11,7 @@
 [supermall](https://github.com/breadhou/Supermall)（本地 `D:\sourcecode\supermall`），两者通过 **MCP** 通信，
 **本项目不直连它的数据库**——直连会绕过业务规则，而业务规则正是评测的判定依据。
 
-> **计划 A 的代码改动在 supermall；计划 B/C 的代码改动在本仓库**（`mcp-server` 与 `agent`）。本仓库目前只有文档。
+> **计划 A 的代码改动在 supermall；计划 B/C 的代码改动在本仓库**（`mcp-server` 与 `agent`）。计划 B 的 `mcp-server` 已完成 Task 1–5；计划 C 仍是设计与计划。
 
 | 文档 | 内容 |
 |---|---|
@@ -54,8 +54,8 @@
 **计划 A：Task 1–8 已完成。** Task 7 的实现提交为 supermall `b1ff494`；Task 8 的验证记录见
 `supermall/docs/plan-a-task8-validation-2026-09-22.md`。
 实现、验证与 K-36 的架构验收均已完成：supermall `bf2d59a` 已使政策条款与当前执行语义对齐。
-Task 7 已实现不可变政策目录快照及其指纹；K-13 的 Agent 消费者仍待计划 B/C 落地。
-下一步实施计划 B（本仓库的 MCP Server）。
+Task 7 已实现不可变政策目录快照及其指纹；K-13 的 Agent 消费者仍待计划 C 的 RAG 阶段落地。
+**计划 B：Task 1–5 已完成并接受**（`2e026da`、`0391378`）；34/34 Maven 测试与 JDK 22 打包 jar 的 stdio smoke 已通过。**Task 6（真实 supermall 端到端验证）待做**；JDK 17 运行尚未验证。
 
 > ⚠️ **计划里的复选框没有被回填**（53 个全部未勾）——**不要拿它当进度依据**，否则会从 Task 1 重做。
 

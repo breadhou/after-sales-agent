@@ -1181,38 +1181,6 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 ---
 
-## K-41 MCP SDK 不按工具 schema 验参，计划的订单 ID 转换会改变请求含义
-
-| | |
-|---|---|
-| **状态** | **待修** |
-| **发现于** | 2026-09-23，Plan B Task 5/6 只读预检，核对 MCP SDK 0.10.0 的工具调用行为 |
-| **位置** | 计划 B Task 5：`McpServerMain.longArg`、工具注册与 `spec` 错误分支 |
-| **严重性** | 高——工具面是三道防线的入口，错误参数不能改变订单目标或以未结构化异常结束 |
-| **处理时机** | Plan B Task 5 |
-
-**已核实的前提与计划风险**：MCP SDK 0.10.0 的 `tools/call` 不会按 `inputSchema` 自动验证调用参数；schema 是给客户端和模型的声明，不是服务端防线。计划中的 `longArg` 对任何 `Number` 调用 `longValue()`，小数会被截断，超出 `long` 范围的数会溢出，从而可能把调用路由到与调用方所给值不同的订单。缺少 `orderId`、传入非整数或缺少 `reason` 也会落入 `Long.parseLong` 或后续调用的非业务异常路径；计划的 `spec` 只把 `SupermallException` 转成 `isError=true`。
-
-**处理方向**：Task 5 必须在本地精确验证必填字段、JSON 值类型、整数范围和字符串要求，拒绝小数、溢出、缺失及非法值；校验失败应返回结构化的 `CallToolResult`，并设置 `isError=true`，不得请求 supermall。补充直接驱动 `tools/call` 的测试，证明不能依赖 `inputSchema` 代替服务端校验。
-
----
-
-## K-42 Task 5 的资格工具描述会把观察值和退款状态说成可执行结论
-
-| | |
-|---|---|
-| **状态** | **待修** |
-| **发现于** | 2026-09-23，Plan B Task 5/6 只读预检 |
-| **位置** | 计划 B Task 5：`get_refund_eligibility` 的工具描述与返回文本 |
-| **严重性** | 高——模型依靠工具描述决定是否执行，错误说明会绕开已实现的资格与幂等语义 |
-| **处理时机** | Plan B Task 5 |
-
-**计划风险**：资格接口在 `eligible=false` 时仍可能带有 `refundableAmount`，该值是订单实付金额的观察值，不表示当前可退；已有退款记录时也可能是仍为 `PENDING` 的记录，不能据此说退款已经完成。若 Task 5 将这些字段概括为「可退金额」或把「已有退款记录」解释为退款完成，模型会得到与 supermall 契约相反的行动和解释依据。
-
-**处理方向**：工具描述和返回文本必须保留限定词：以 `eligible` 决定当前是否可执行，`refundableAmount` 仅在符合资格时才是本次可退金额；`refundExists` 只说明已有记录，不能区分 `PENDING` 与已完成。复用或补充覆盖这两种响应形态的测试，防止文本再次丢失限定词。
-
----
-
 ## K-43 Task 6 的管道 smoke 脚本会在收到响应前关闭 MCP stdin
 
 | | |
@@ -1341,6 +1309,36 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 **发现时的事实**：record 组件 `boolean approved` 需要布尔访问器 `approved()`；原示例同时声明无参静态工厂 `ReviewVerdict approved()`，名称与签名冲突。以本机 JDK 22.0.2 提取编译时，`javac` 退出码为 1，并报 `invalid accessor method in record ReviewVerdict`。
 
 **处理与验证要求（2026-09-24）**：静态工厂改为 `approvedVerdict()`，所有计划调用点同步改名；新增 `ReviewVerdictTest`，断言工厂生成的实例仍可通过 record 访问器 `approved()` 读取。Task 3 的 Maven 测试命令同时运行该测试，主源码编译也会阻止同名访问器再次出现。
+
+### K-41 MCP SDK 不按工具 schema 验参，计划的订单 ID 转换会改变请求含义
+
+| | |
+|---|---|
+| **状态** | **已处理**（2026-09-24，Plan B Task 5 接受；提交 `2e026da`、`0391378`） |
+| **发现于** | 2026-09-23，Plan B Task 5/6 只读预检，核对 MCP SDK 0.10.0 的工具调用行为 |
+| **位置** | `mcp-server/.../McpServerMain.java` 的请求反序列化、本地校验与工具结果分支；`McpProtocolTest` |
+| **严重性** | 高——工具面是三道防线的入口，错误参数不能改变订单目标或以未结构化异常结束 |
+
+**发现时的事实**：MCP SDK 0.10.0 的 `tools/call` 不会按 `inputSchema` 自动验证调用参数；schema 是给客户端和模型的声明，不是服务端防线。原计划的 `longArg` 对任意 `Number` 调用 `longValue()`，小数会被截断，超出 `long` 范围会溢出；缺失、非整数或非法 `reason` 也可能以非业务异常结束。
+
+**处理（2026-09-24）**：Task 5 的本地防线接受且只接受正的 `Integer`、`Long` 或范围内 `BigInteger` 订单 ID；拒绝小数、溢出、缺失、`null`、布尔、字符串和对象。字段校验同时拒绝缺失/非对象参数及 schema 外字段，`reason` 必须是非空且不超过 512 字符的字符串。`CallToolRequestDeserializer` 将非对象 `arguments` 保留在本地校验路径；所有这些错误返回结构化 `isError=true`、业务码 `10000` 的工具结果，且不请求 supermall。
+
+**证据与范围**：`McpProtocolTest` 直接驱动 `tools/call`，覆盖小数、溢出、缺失、显式 `null`、非对象参数、非法原因和额外 `amount`，并断言 fake backend 未收到请求、响应不泄漏输入或转换异常。Task 5 接受记录为 Maven **34/34** 测试通过及 JDK 22 打包 jar 的 stdio smoke；独立 Sol 复审关闭两项 Important 和一项 Minor。JDK 17 的运行尚未验证；Task 6 的真实 supermall 端到端验证仍待执行，见 K-43。
+
+### K-42 Task 5 的资格工具描述会把观察值和退款状态说成可执行结论
+
+| | |
+|---|---|
+| **状态** | **已处理**（2026-09-24，Plan B Task 5 接受；提交 `2e026da`、`0391378`） |
+| **发现于** | 2026-09-23，Plan B Task 5/6 只读预检 |
+| **位置** | `mcp-server/.../McpServerMain.java` 的 `get_refund_eligibility` 与 `submit_refund` 工具描述；`ToolSchemaTest` |
+| **严重性** | 高——模型依靠工具描述决定是否执行，错误说明会绕开已实现的资格与幂等语义 |
+
+**发现时的事实**：资格接口在 `eligible=false` 时仍可能带有 `refundableAmount`，该值是订单实付金额的观察值，不表示当前可退；已有退款记录也可能仍为 `PENDING`，不能据此说退款已经完成。
+
+**处理（2026-09-24）**：`get_refund_eligibility` 的描述明确：仅 `eligible=true` 时 `refundableAmount` 才是本次可退金额；否则只是观察值，不能据此执行退款；`refundExists` 只表示已有记录，可能仍为 `PENDING`。`submit_refund` 的描述进一步限定：`refundExists=false` 且 `eligible=true` 才表示本次执行完成；为 `true` 时必须按 `reason` 区分「已有退款申请在处理中」与「已完成退款」，不能只凭该字段声称已退款。
+
+**证据与范围**：`ToolSchemaTest` 锁住资格工具描述中的 `eligible=false`、`refundableAmount`、`观察值`、`refundExists` 与 `PENDING`；上述 Task 5 的 34/34 Maven 测试、JDK 22 jar stdio smoke 和独立 Sol 复审同样适用。JDK 17 运行与 Task 6 的真实后端验证均未在本次接受范围内。
 
 ### Task 3 Step 2 是空操作
 
