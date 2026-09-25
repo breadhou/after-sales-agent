@@ -8,8 +8,15 @@ import dev.langchain4j.agent.tool.Tool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
@@ -31,6 +38,11 @@ public class RefundRequestTools {
 
     /** 每个会话独有的工具实例；同订单复核中只允许一次请求，驳回状态保留到会话结束。 */
     private final ConcurrentMap<Long, ReviewState> reviewStates = new ConcurrentHashMap<>();
+    /** 同一轮每笔退款请求都保留，避免后续驳回或异常掩盖已执行的退款。 */
+    private final AtomicLong nextCallSequence = new AtomicLong();
+    private final ConcurrentLinkedQueue<RefundReply> authoritativeReplies = new ConcurrentLinkedQueue<>();
+
+    private record RefundReply(long sequence, Long orderId, String message, boolean inReview) { }
 
     public RefundRequestTools(BiFunction<Long, String, RefundReviewContext> contextFactory,
                               Function<RefundReviewContext, ReviewVerdict> reviewer,
@@ -51,14 +63,17 @@ public class RefundRequestTools {
     public String requestRefund(@P(name = "orderId", value = "订单 ID") Long orderId,
                                 @P(name = "reason", value = "退款原因，来自用户的说明") String reason) {
         ToolTrace.record("request_refund", ToolTrace.Status.CALLED);
+        long callSequence = nextCallSequence.getAndIncrement();
         ReviewState previous = reviewStates.putIfAbsent(orderId, ReviewState.IN_REVIEW);
         if (previous == ReviewState.REJECTED) {
             ToolTrace.record("request_refund", ToolTrace.Status.ERROR);
-            return "该订单在本次会话中已记录人工升级请求。请引导用户联系人工客服继续处理。";
+            return recordReply(callSequence, orderId,
+                    "订单 " + orderId + " 在本次会话中已记录人工升级请求。请联系人工客服继续处理。");
         }
         if (previous == ReviewState.IN_REVIEW) {
             ToolTrace.record("request_refund", ToolTrace.Status.ERROR);
-            return "该订单正在复核，本次重复请求未提交。";
+            return recordReply(callSequence, orderId,
+                    "订单 " + orderId + " 正在复核，本次重复请求未提交。", true);
         }
 
         try {
@@ -90,24 +105,59 @@ public class RefundRequestTools {
                 } finally {
                     ToolTrace.record("request_refund", ToolTrace.Status.ERROR);
                 }
-                return "该退款申请未通过合规复核，已记录人工升级请求。"
-                        + "请引导用户联系人工客服继续处理，不要承诺退款一定成功。";
+                return recordReply(callSequence, orderId,
+                        "订单 " + orderId + " 的退款申请未通过合规复核，本次申请未执行退款。"
+                                + "已记录人工升级请求，请联系人工客服核实订单当前退款状态。");
             }
 
             log.info("退款复核通过");
             try {
                 String result = executor.apply(orderId, reason);
                 ToolTrace.record("request_refund", ToolTrace.Status.OK);
-                return result;
+                return recordReply(callSequence, orderId, result);
             } catch (RuntimeException e) {
                 // MCP 错误或超时可能发生在后端写入之后，只能说结果不确定。
                 log.error("退款提交结果无法确认");
                 ToolTrace.record("request_refund", ToolTrace.Status.ERROR);
-                return "该退款申请的提交结果无法确认。请引导用户联系人工客服核实退款状态。";
+                return recordReply(callSequence, orderId,
+                        "订单 " + orderId + " 的退款申请提交结果无法确认。请联系人工客服核实退款状态。");
             }
         } finally {
             // 通过或执行不确定时释放进行中标记；已驳回状态不会被清除。
             reviewStates.remove(orderId, ReviewState.IN_REVIEW);
         }
+    }
+
+    /** 取出本轮全部可信回执，按调用顺序逐条呈现并清空。 */
+    public String takeAuthoritativeReply() {
+        List<RefundReply> replies = new ArrayList<>();
+        RefundReply reply;
+        while ((reply = authoritativeReplies.poll()) != null) {
+            replies.add(reply);
+        }
+        if (replies.isEmpty()) {
+            return null;
+        }
+        replies.sort(Comparator.comparingLong(RefundReply::sequence));
+        Set<Long> ordersWithFinalReply = new HashSet<>();
+        for (RefundReply item : replies) {
+            if (!item.inReview()) {
+                ordersWithFinalReply.add(item.orderId());
+            }
+        }
+        return String.join("\n", replies.stream()
+                .filter(item -> !item.inReview() || !ordersWithFinalReply.contains(item.orderId()))
+                .map(RefundReply::message).toList());
+    }
+
+    private String recordReply(long sequence, Long orderId, String message) {
+        return recordReply(sequence, orderId, message, false);
+    }
+
+    private String recordReply(long sequence, Long orderId, String message, boolean inReview) {
+        String identifiedMessage = message.startsWith("订单 " + orderId)
+                ? message : "订单 " + orderId + "：" + message;
+        authoritativeReplies.add(new RefundReply(sequence, orderId, identifiedMessage, inReview));
+        return identifiedMessage;
     }
 }

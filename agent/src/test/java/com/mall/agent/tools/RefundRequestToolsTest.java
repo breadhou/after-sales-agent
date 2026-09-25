@@ -145,6 +145,37 @@ class RefundRequestToolsTest {
             assertEquals(1, reviewed.get());
             assertEquals(1, escalated.get());
             assertEquals(0, executed.get());
+            String finalReply = tools.takeAuthoritativeReply();
+            assertTrue(finalReply.contains("未通过合规复核"), finalReply);
+            assertFalse(finalReply.contains("正在复核"), finalReply);
+        } finally {
+            releaseReview.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void overlappingRequestMustNotLeaveStaleReviewMessageAfterSuccess() throws Exception {
+        CountDownLatch enteredReview = new CountDownLatch(1);
+        CountDownLatch releaseReview = new CountDownLatch(1);
+        tools = build(context -> {
+            enteredReview.countDown();
+            await(releaseReview);
+            return ReviewVerdict.approvedVerdict();
+        });
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<String> first = pool.submit(() -> tools.requestRefund(9001L, "初次理由"));
+            await(enteredReview);
+            Future<String> overlapping = pool.submit(() -> tools.requestRefund(9001L, "重复理由"));
+            assertTrue(overlapping.get(5, TimeUnit.SECONDS).contains("正在复核"));
+            releaseReview.countDown();
+            assertTrue(first.get(5, TimeUnit.SECONDS).contains("ok"));
+            assertEquals(1, reviewed.get());
+            assertEquals(1, executed.get());
+            String finalReply = tools.takeAuthoritativeReply();
+            assertTrue(finalReply.contains("ok"), finalReply);
+            assertFalse(finalReply.contains("正在复核"), finalReply);
         } finally {
             releaseReview.countDown();
             pool.shutdownNow();

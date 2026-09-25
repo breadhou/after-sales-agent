@@ -43,10 +43,10 @@ class PromptTest {
     void decisionPrompt_shouldInterpretExistingRefundThroughItsReason() throws IOException {
         String prompt = load("decision-system.txt");
 
-        assertTrue(prompt.contains("refundExists=true") && prompt.contains("reason"),
-                "既有退款记录必须结合执行回执的 reason 解释");
+        assertTrue(prompt.contains("request_refund") && prompt.contains("已归一化"),
+                "决策提示词应以本地工具归一化后的执行结论为准");
         assertTrue(prompt.contains("处理中") && prompt.contains("已完成"),
-                "执行回执必须区分处理中和已完成退款");
+                "本地工具回执必须区分处理中和已完成退款");
     }
 
     @Test

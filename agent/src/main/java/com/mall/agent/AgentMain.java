@@ -53,7 +53,7 @@ public final class AgentMain {
             DecisionAgent agent = AgentConfig.decisionAgent(model, mcp, refundTools, escalation);
 
             System.out.println("售后客服已就绪（会话 " + sessionId + "）。输入 exit 退出。");
-            runSession(agent, sessionId, originalUserRequest);
+            runSession(agent, refundTools, sessionId, originalUserRequest);
         } finally {
             mcp.close();
         }
@@ -100,7 +100,7 @@ public final class AgentMain {
         return properties;
     }
 
-    private static void runSession(DecisionAgent agent, String sessionId,
+    private static void runSession(DecisionAgent agent, RefundRequestTools refundTools, String sessionId,
                                    AtomicReference<String> originalUserRequest) throws IOException {
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
@@ -113,9 +113,15 @@ public final class AgentMain {
                     break;
                 }
                 originalUserRequest.set(line);
-                System.out.println("\n客服：" + agent.handle(sessionId, line) + "\n");
+                String modelResponse = agent.handle(sessionId, line);
+                System.out.println("\n客服：" + finalResponse(modelResponse, refundTools) + "\n");
             }
         }
+    }
+
+    static String finalResponse(String modelResponse, RefundRequestTools refundTools) {
+        String trustedReply = refundTools.takeAuthoritativeReply();
+        return trustedReply != null ? trustedReply : modelResponse;
     }
 
     private static void copyRequiredModelEnvironment(Properties properties,
