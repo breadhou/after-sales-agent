@@ -6,6 +6,7 @@ import com.mall.agent.model.RefundReviewContext;
 import com.mall.agent.model.ReviewVerdict;
 import com.mall.agent.tools.EscalationTools;
 import com.mall.agent.tools.RefundRequestTools;
+import com.mall.agent.trace.ToolTrace;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.mcp.McpToolProvider;
 import dev.langchain4j.mcp.client.DefaultMcpClient;
@@ -60,6 +61,7 @@ public final class AgentConfig {
                 .clientName("after-sales-agent")
                 .clientVersion("1.0.0")
                 .toolExecutionTimeout(Duration.ofSeconds(30))
+                .addListener(new McpToolTraceListener())
                 .build();
     }
 
@@ -135,9 +137,14 @@ public final class AgentConfig {
                     context.trustedEligibility(),
                     context.candidateAction().orderId(),
                     context.candidateAction().reason()));
-            return verdict == null ? ReviewVerdict.rejected("复核未返回结论") : verdict;
+            if (verdict == null) {
+                ToolTrace.record("review", ToolTrace.Status.TRANSPORT_ERROR);
+                return ReviewVerdict.rejected("复核未返回结论");
+            }
+            return verdict;
         } catch (Exception e) {
-            log.error("复核调用失败，按驳回处理", e);
+            ToolTrace.record("review", ToolTrace.Status.TRANSPORT_ERROR);
+            log.error("复核调用失败，按驳回处理");
             return ReviewVerdict.rejected("复核系统异常");
         }
     }

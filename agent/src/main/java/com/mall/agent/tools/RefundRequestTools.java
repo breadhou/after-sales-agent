@@ -2,6 +2,7 @@ package com.mall.agent.tools;
 
 import com.mall.agent.model.RefundReviewContext;
 import com.mall.agent.model.ReviewVerdict;
+import com.mall.agent.trace.ToolTrace;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import org.slf4j.Logger;
@@ -49,16 +50,20 @@ public class RefundRequestTools {
          确认过该订单符合退款条件。""")
     public String requestRefund(@P(name = "orderId", value = "订单 ID") Long orderId,
                                 @P(name = "reason", value = "退款原因，来自用户的说明") String reason) {
+        ToolTrace.record("request_refund", ToolTrace.Status.CALLED);
         ReviewState previous = reviewStates.putIfAbsent(orderId, ReviewState.IN_REVIEW);
         if (previous == ReviewState.REJECTED) {
+            ToolTrace.record("request_refund", ToolTrace.Status.ERROR);
             return "该订单在本次会话中已记录人工升级请求。请引导用户联系人工客服继续处理。";
         }
         if (previous == ReviewState.IN_REVIEW) {
+            ToolTrace.record("request_refund", ToolTrace.Status.ERROR);
             return "该订单正在复核，本次重复请求未提交。";
         }
 
         try {
             ReviewVerdict verdict;
+            ToolTrace.record("review", ToolTrace.Status.CALLED);
             try {
                 RefundReviewContext context = contextFactory.apply(orderId, reason);
                 if (context == null) {
@@ -66,28 +71,38 @@ public class RefundRequestTools {
                 }
                 verdict = reviewer.apply(context);
                 if (verdict == null) {
+                    ToolTrace.record("review", ToolTrace.Status.TRANSPORT_ERROR);
                     verdict = ReviewVerdict.rejected("复核未返回结论");
                 }
             } catch (Exception e) {
-                log.error("退款复核未完成，按驳回处理 session={} orderId={}", sessionId, orderId, e);
+                ToolTrace.record("review", ToolTrace.Status.TRANSPORT_ERROR);
+                log.error("退款复核未完成，按驳回处理");
                 verdict = ReviewVerdict.rejected("复核未完成");
             }
+            ToolTrace.record("review", verdict.approved() ? ToolTrace.Status.OK : ToolTrace.Status.ERROR);
 
             if (!verdict.approved()) {
                 // 先终止该订单，再升级；重入请求无法在升级过程中重新送审。
                 reviewStates.replace(orderId, ReviewState.IN_REVIEW, ReviewState.REJECTED);
-                log.warn("退款复核驳回 session={} orderId={} faults={}", sessionId, orderId, verdict.faults());
-                escalation.apply(orderId, "退款复核未通过");
+                log.warn("退款复核驳回");
+                try {
+                    escalation.apply(orderId, "退款复核未通过");
+                } finally {
+                    ToolTrace.record("request_refund", ToolTrace.Status.ERROR);
+                }
                 return "该退款申请未通过合规复核，已记录人工升级请求。"
                         + "请引导用户联系人工客服继续处理，不要承诺退款一定成功。";
             }
 
-            log.info("退款复核通过 session={} orderId={}", sessionId, orderId);
+            log.info("退款复核通过");
             try {
-                return executor.apply(orderId, reason);
+                String result = executor.apply(orderId, reason);
+                ToolTrace.record("request_refund", ToolTrace.Status.OK);
+                return result;
             } catch (RuntimeException e) {
                 // MCP 错误或超时可能发生在后端写入之后，只能说结果不确定。
-                log.error("退款提交结果无法确认 session={} orderId={}", sessionId, orderId, e);
+                log.error("退款提交结果无法确认");
+                ToolTrace.record("request_refund", ToolTrace.Status.ERROR);
                 return "该退款申请的提交结果无法确认。请引导用户联系人工客服核实退款状态。";
             }
         } finally {

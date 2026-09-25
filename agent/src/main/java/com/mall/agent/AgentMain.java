@@ -43,7 +43,7 @@ public final class AgentMain {
             String sessionId = UUID.randomUUID().toString();
             AtomicReference<String> originalUserRequest = new AtomicReference<>();
             EscalationTools escalation = new EscalationTools(sessionId, record ->
-                    System.err.println("[升级人工] " + record));
+                    System.err.println("[升级人工] 请求已记录"));
             RefundRequestTools refundTools = new RefundRequestTools(
                     new RefundReviewContextFactory(mcp, originalUserRequest::get),
                     context -> AgentConfig.reviewSafely(reviewer, context),
