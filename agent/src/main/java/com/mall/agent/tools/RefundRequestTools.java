@@ -21,8 +21,8 @@ import java.util.function.BiFunction;
 import java.util.function.Function;
 
 /**
- * 退款申请的复核与执行通路。决策 Agent 只持有本工具，不持有 MCP 的 submit_refund。
- * 复核所需的事实由可信代码重读，不接收决策 Agent 的推理过程。
+ * 旧退款申请复核与执行通路，仅为 Task 7 迁移保留。
+ * 决策 Agent 的当前工具集中没有本工具；确认后的可信流程将替代此入口。
  */
 public class RefundRequestTools {
 

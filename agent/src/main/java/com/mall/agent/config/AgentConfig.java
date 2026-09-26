@@ -5,7 +5,7 @@ import com.mall.agent.agent.ReviewAgent;
 import com.mall.agent.model.RefundReviewContext;
 import com.mall.agent.model.ReviewVerdict;
 import com.mall.agent.tools.EscalationTools;
-import com.mall.agent.tools.RefundRequestTools;
+import com.mall.agent.tools.RefundHandoffTools;
 import com.mall.agent.trace.ToolTrace;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.mcp.McpToolProvider;
@@ -32,8 +32,7 @@ public final class AgentConfig {
 
     /** 决策 Agent 唯一可见的 MCP 工具，全部只读。 */
     static final List<String> READ_ONLY_TOOLS = List.of(
-            "get_order", "list_user_orders", "get_logistics",
-            "get_refund_eligibility", "list_policy_clauses");
+            "get_order", "list_user_orders", "get_logistics");
 
     private AgentConfig() {
     }
@@ -77,7 +76,7 @@ public final class AgentConfig {
     }
 
     public static DecisionAgent decisionAgent(ChatModel model, McpClient mcp,
-                                              RefundRequestTools refundTools,
+                                              RefundHandoffTools handoffTools,
                                               EscalationTools escalationTools) {
         requireReadOnlyTools(mcp);
         McpToolProvider readOnlyTools = McpToolProvider.builder()
@@ -89,7 +88,7 @@ public final class AgentConfig {
         return AiServices.builder(DecisionAgent.class)
                 .chatModel(model)
                 .toolProvider(readOnlyTools)
-                .tools(refundTools, escalationTools)
+                .tools(handoffTools, escalationTools)
                 .chatMemory(MessageWindowChatMemory.withMaxMessages(20))
                 .maxToolCallingRoundTrips(10)
                 .build();

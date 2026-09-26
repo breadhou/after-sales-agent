@@ -5,7 +5,7 @@ import com.mall.agent.model.CandidateRefundAction;
 import com.mall.agent.model.RefundReviewContext;
 import com.mall.agent.model.ReviewVerdict;
 import com.mall.agent.tools.EscalationTools;
-import com.mall.agent.tools.RefundRequestTools;
+import com.mall.agent.tools.RefundHandoffTools;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.agent.tool.ToolSpecifications;
@@ -78,46 +78,54 @@ class AgentConfigTest {
 
     @Test
     void localToolNamesMustMatchDecisionPrompt() throws NoSuchMethodException {
-        Tool requestRefund = RefundRequestTools.class
-                .getMethod("requestRefund", Long.class, String.class).getAnnotation(Tool.class);
+        Tool handoff = RefundHandoffTools.class
+                .getMethod("handoffRefund", Long.class, String.class).getAnnotation(Tool.class);
+        Tool eligibility = RefundHandoffTools.class
+                .getMethod("askRefundEligibility", Long.class).getAnnotation(Tool.class);
         Tool escalate = EscalationTools.class
                 .getMethod("escalateToHuman", Long.class, String.class).getAnnotation(Tool.class);
 
-        assertEquals("request_refund", requestRefund.name());
+        assertEquals("handoff_refund", handoff.name());
+        assertEquals("ask_refund_eligibility", eligibility.name());
         assertEquals("escalate_to_human", escalate.name());
     }
 
     @Test
     void localToolParameterNamesMustMatchTheirContracts() throws NoSuchMethodException {
-        ToolSpecification refund = ToolSpecifications.toolSpecificationFrom(RefundRequestTools.class
-                .getMethod("requestRefund", Long.class, String.class));
+        ToolSpecification refund = ToolSpecifications.toolSpecificationFrom(RefundHandoffTools.class
+                .getMethod("handoffRefund", Long.class, String.class));
+        ToolSpecification eligibility = ToolSpecifications.toolSpecificationFrom(RefundHandoffTools.class
+                .getMethod("askRefundEligibility", Long.class));
         ToolSpecification escalation = ToolSpecifications.toolSpecificationFrom(EscalationTools.class
                 .getMethod("escalateToHuman", Long.class, String.class));
 
         assertEquals(List.of("orderId", "reason"),
                 refund.parameters().properties().keySet().stream().sorted().toList());
+        assertEquals(List.of("orderId"),
+                eligibility.parameters().properties().keySet().stream().sorted().toList());
         assertEquals(List.of("orderId", "summary"),
                 escalation.parameters().properties().keySet().stream().sorted().toList());
     }
 
     @Test
-    void decisionModelReceivesOnlyFiveReadOnlyMcpToolsAndTwoLocalTools() {
-        CapturingChatModel model = new CapturingChatModel("已处理");
+    void decisionToolsExcludeLegacyRefundAndPolicy() {
+        CapturingChatModel model = new CapturingChatModel("请提供订单号");
         List<ToolSpecification> advertised = List.of(
                 tool("get_order"), tool("list_user_orders"), tool("get_logistics"),
                 tool("get_refund_eligibility"), tool("list_policy_clauses"), tool("submit_refund"));
         DecisionAgent decision = AgentConfig.decisionAgent(model, mcpClient(advertised),
-                refundTools(), new EscalationTools("session-1", ignored -> { }));
+                new RefundHandoffTools(), new EscalationTools("session-1", ignored -> { }));
 
-        decision.handle("session-1", "请帮我退款");
+        decision.handle("session-1", "请查询订单物流");
 
-        List<ToolSpecification> tools = model.request().toolSpecifications();
-        assertEquals(7, tools.size());
+        Set<String> visible = model.request().toolSpecifications().stream()
+                .map(ToolSpecification::name).collect(java.util.stream.Collectors.toSet());
         assertEquals(Set.of("get_order", "list_user_orders", "get_logistics",
-                        "get_refund_eligibility", "list_policy_clauses",
-                        "request_refund", "escalate_to_human"),
-                tools.stream().map(ToolSpecification::name).collect(java.util.stream.Collectors.toSet()));
-        assertFalse(tools.stream().map(ToolSpecification::name).anyMatch("submit_refund"::equals));
+                "handoff_refund", "ask_refund_eligibility", "escalate_to_human"), visible);
+        assertFalse(visible.contains("request_refund"));
+        assertFalse(visible.contains("submit_refund"));
+        assertFalse(visible.contains("get_refund_eligibility"));
+        assertFalse(visible.contains("list_policy_clauses"));
     }
 
     @Test
@@ -140,15 +148,6 @@ class AgentConfigTest {
                 "SPRING_DATASOURCE_PASSWORD", "SPRING_RABBITMQ_PASSWORD")) {
             assertEquals("", environment.get(key), key + " must be cleared in the MCP child");
         }
-    }
-
-    private static RefundRequestTools refundTools() {
-        return new RefundRequestTools(
-                (orderId, reason) -> null,
-                review -> ReviewVerdict.rejected("不应调用"),
-                (orderId, reason) -> "不应调用",
-                (orderId, summary) -> "不应调用",
-                "session-1");
     }
 
     private static McpClient mcpClient(List<ToolSpecification> tools) {

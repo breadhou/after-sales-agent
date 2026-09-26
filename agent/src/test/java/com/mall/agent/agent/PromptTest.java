@@ -22,51 +22,34 @@ class PromptTest {
     }
 
     @Test
-    void decisionPrompt_shouldRequireEligibilityCheckBeforeRefund() throws IOException {
+    void decisionPrompt_shouldDescribeOnlyHandoffAndEligibilityMarkers() throws IOException {
         String prompt = load("decision-system.txt");
 
-        assertTrue(prompt.contains("get_refund_eligibility"),
-                "决策提示词必须要求执行退款前先查资格");
+        assertTrue(prompt.contains("handoff_refund"));
+        assertTrue(prompt.contains("ask_refund_eligibility"));
+        assertTrue(prompt.contains("escalate_to_human"));
+        assertFalse(prompt.contains("request_refund"));
+        assertFalse(prompt.contains("submit_refund"));
+        assertFalse(prompt.contains("get_refund_eligibility"));
+        assertFalse(prompt.contains("list_policy_clauses"));
     }
 
     @Test
-    void decisionPrompt_shouldRequireFreshEligibilityWithoutExistingRefundBeforeRequest() throws IOException {
+    void decisionPrompt_shouldTreatHandoffAsAnUnconfirmedCandidate() throws IOException {
         String prompt = load("decision-system.txt");
 
-        assertTrue(prompt.contains("eligible=true") && prompt.contains("refundExists=false"),
-                "提交申请前必须同时确认本次资格可退且没有既有退款记录");
-        assertTrue(prompt.contains("不表示已退款"),
-                "资格查询通过不能被解释为退款已经完成");
+        assertTrue(prompt.contains("候选"));
+        assertTrue(prompt.contains("用户确认"));
+        assertTrue(prompt.contains("不能声称已退款"));
     }
 
     @Test
-    void decisionPrompt_shouldInterpretExistingRefundThroughItsReason() throws IOException {
+    void decisionPrompt_shouldKeepOrdinaryConversationAndReadOnlyQueries() throws IOException {
         String prompt = load("decision-system.txt");
 
-        assertTrue(prompt.contains("request_refund") && prompt.contains("已归一化"),
-                "决策提示词应以本地工具归一化后的执行结论为准");
-        assertTrue(prompt.contains("处理中") && prompt.contains("已完成"),
-                "本地工具回执必须区分处理中和已完成退款");
-    }
-
-    @Test
-    void decisionPrompt_shouldGroundPolicyExplanationInEligibilityResult() throws IOException {
-        String prompt = load("decision-system.txt");
-
-        assertTrue(prompt.contains("完整目录") && prompt.contains("policyCode"),
-                "可退资格必须按 policyCode 在完整目录中匹配条款");
-        assertTrue(prompt.contains("eligibility.reason") && prompt.contains("不得随意选择"),
-                "不可退时必须解释资格 reason，不能从目录中任意挑选条款");
-    }
-
-    @Test
-    void decisionPrompt_shouldNotMentionTheRawRefundTool() throws IOException {
-        String prompt = load("decision-system.txt");
-
-        // submit_refund 不在决策 Agent 的工具集里，提示词里也不该出现，
-        // 否则模型可能试图调用一个不存在的工具
-        assertFalse(prompt.contains("submit_refund"),
-                "决策提示词提到了它根本调用不到的工具");
+        assertTrue(prompt.contains("get_order"));
+        assertTrue(prompt.contains("list_user_orders"));
+        assertTrue(prompt.contains("get_logistics"));
     }
 
     @Test

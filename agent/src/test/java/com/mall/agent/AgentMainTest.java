@@ -1,16 +1,29 @@
 package com.mall.agent;
 
 import com.mall.agent.config.ModelProperties;
+import com.mall.agent.flow.ConversationCoordinator;
 import com.mall.agent.model.CandidateRefundAction;
 import com.mall.agent.model.RefundReviewContext;
 import com.mall.agent.model.ReviewVerdict;
 import com.mall.agent.tools.RefundRequestTools;
+import com.mall.agent.tools.RefundHandoffTools;
+import com.mall.agent.tools.EscalationTools;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.service.tool.ToolExecutionResult;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.ArrayList;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
@@ -19,6 +32,68 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgentMainTest {
+
+    @Test
+    void trustedOrderAndEligibilityQueriesUseMcpFacts() {
+        List<ToolExecutionRequest> calls = new ArrayList<>();
+        List<Long> listed = AgentMain.listedOrderIds(request -> {
+            calls.add(request);
+            return ToolExecutionResult.builder().isError(false)
+                    .resultText("{\"records\":[{\"id\":9001},{\"id\":9002},{\"id\":9001}]}")
+                    .build();
+        });
+        assertEquals(List.of(9001L, 9002L), listed);
+        assertEquals("list_user_orders", calls.get(0).name());
+
+        String reply = AgentMain.eligibilityReply(9001L, request -> {
+            calls.add(request);
+            return ToolExecutionResult.builder().isError(false)
+                    .resultText("{\"orderId\":9001,\"eligible\":false,\"refundExists\":false,"
+                            + "\"reason\":\"已超过期限\"}")
+                    .build();
+        });
+        assertEquals("订单 9001 当前不可退：已超过期限。本次未提交退款。", reply);
+        assertEquals("get_refund_eligibility", calls.get(1).name());
+        assertEquals("{\"orderId\":9001}", calls.get(1).arguments());
+        assertTrue(!reply.contains("已退款"), reply);
+    }
+
+    @Test
+    void malformedQualificationOrOrderListCannotBecomeTrustedReply() {
+        assertEquals(List.of(), AgentMain.listedOrderIds(request ->
+                ToolExecutionResult.builder().isError(false)
+                        .resultText("{\"records\":[{\"id\":0},{\"id\":\"9001\"}]}").build()));
+        String wrongOrder = AgentMain.eligibilityReply(9001L, request ->
+                ToolExecutionResult.builder().isError(false)
+                        .resultText("{\"orderId\":9002,\"eligible\":true,\"refundExists\":false}")
+                        .build());
+        assertTrue(wrongOrder.contains("无法确认"), wrongOrder);
+        assertTrue(!wrongOrder.contains("可申请"), wrongOrder);
+    }
+
+    @Test
+    void cliUsesCoordinatorTrustedReply() throws Exception {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger workflowCalls = new AtomicInteger();
+        ConversationCoordinator coordinator = new ConversationCoordinator((session, input) -> {
+            handoff.handoffRefund(9001L, "不想要了");
+            return "退款已完成";
+        }, handoff, new EscalationTools("session-1", ignored -> { }),
+                () -> List.of(9001L), id -> "未提交退款", (session, request) -> {
+                    workflowCalls.incrementAndGet();
+                    return "不应调用";
+                });
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+
+        AgentMain.runSession(coordinator, "session-1",
+                new BufferedReader(new StringReader("请退订单 9001\nexit\n")),
+                new PrintStream(bytes, true, StandardCharsets.UTF_8));
+
+        String output = bytes.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("/confirm-refund 9001"), output);
+        assertTrue(!output.contains("退款已完成"), output);
+        assertEquals(0, workflowCalls.get());
+    }
 
     @Test
     void unresolvedModelPlaceholdersMustStopStartup() {
