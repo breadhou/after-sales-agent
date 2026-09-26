@@ -38,7 +38,7 @@ class RefundToolsTest {
     @Test
     void eligibilityRetainsCatalogFingerprint() throws Exception {
         fake.respondWith(200, "{\"code\":0,\"message\":\"成功\",\"data\":{"
-                + "\"eligible\":true,\"reason\":null,\"policyCode\":\"SEVEN_DAY_NO_REASON\","
+                + "\"orderId\":9001,\"eligible\":true,\"reason\":null,\"policyCode\":\"SEVEN_DAY_NO_REASON\","
                 + "\"policyTitle\":\"签收 7 天内整单退款\",\"refundableAmount\":199.99,"
                 + "\"refundExists\":false,\"catalogFingerprint\":\"catalog-v1\","
                 + "\"orderStatus\":\"SHIPPED\",\"internalReviewer\":\"staff-01\"}}");
@@ -55,6 +55,33 @@ class RefundToolsTest {
         assertEquals(9001L, result.get("orderId").asLong());
         assertEquals("catalog-v1", result.get("catalogFingerprint").asText());
         assertEquals("SHIPPED", result.get("orderStatus").asText());
+    }
+
+    @Test
+    void eligibilityPreservesBackendOrderIdEvenWhenItDiffersFromRequest() throws Exception {
+        fake.respondWith(200, "{\"code\":0,\"message\":\"成功\",\"data\":{"
+                + "\"orderId\":9002,\"eligible\":true,\"reason\":null,"
+                + "\"policyCode\":\"SEVEN_DAY_NO_REASON\",\"policyTitle\":\"签收 7 天内整单退款\","
+                + "\"refundableAmount\":199.99,\"refundExists\":false,"
+                + "\"catalogFingerprint\":\"catalog-v1\",\"orderStatus\":\"RECEIVED\"}}");
+
+        JsonNode result = MAPPER.readTree(tools.getRefundEligibility(9001L));
+
+        assertEquals("/api/orders/9001/refund-eligibility", fake.receivedPaths.get(0));
+        assertEquals(9002L, result.path("orderId").longValue());
+    }
+
+    @Test
+    void eligibilityDoesNotSynthesizeMissingBackendOrderId() throws Exception {
+        fake.respondWith(200, "{\"code\":0,\"message\":\"成功\",\"data\":{"
+                + "\"eligible\":true,\"reason\":null,"
+                + "\"policyCode\":\"SEVEN_DAY_NO_REASON\",\"policyTitle\":\"签收 7 天内整单退款\","
+                + "\"refundableAmount\":199.99,\"refundExists\":false,"
+                + "\"catalogFingerprint\":\"catalog-v1\",\"orderStatus\":\"RECEIVED\"}}");
+
+        JsonNode result = MAPPER.readTree(tools.getRefundEligibility(9001L));
+
+        assertFalse(result.has("orderId"));
     }
 
     @Test

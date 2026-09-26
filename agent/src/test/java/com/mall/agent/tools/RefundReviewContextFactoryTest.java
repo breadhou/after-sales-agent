@@ -162,6 +162,20 @@ class RefundReviewContextFactoryTest {
     }
 
     @Test
+    void deniedEligibilityWithMismatchedAmountIsUnavailable() {
+        String denial = CHECKED_ELIGIBILITY.replace("\"eligible\":true", "\"eligible\":false")
+                .replace("\"reason\":null", "\"reason\":\"订单当前不可退\"")
+                .replace("\"refundableAmount\":99.00", "\"refundableAmount\":98.00")
+                .replace("\"policyCode\":\"SEVEN_DAY_NO_REASON\"", "\"policyCode\":null")
+                .replace("\"policyTitle\":\"已签收（完整天数不超过 7）整单退款\"", "\"policyTitle\":null");
+        RefundReviewContextFactory factory = factory(ORDER, denial, false, new ArrayList<>());
+
+        assertThrows(RefundReviewContextFactory.RefundFactsUnavailableException.class,
+                () -> factory.requireEligible(9001L, "退款", "原话"));
+        assertNoReviewOrExecution(factory);
+    }
+
+    @Test
     void rejectsMismatchedAmountOrOrderStatus() {
         for (String eligibility : List.of(
                 CHECKED_ELIGIBILITY.replace("\"refundableAmount\":99.00", "\"refundableAmount\":98.00"),

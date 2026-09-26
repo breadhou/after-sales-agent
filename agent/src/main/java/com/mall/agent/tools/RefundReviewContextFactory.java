@@ -70,6 +70,12 @@ public final class RefundReviewContextFactory
         if (!orderStatus.equals(eligibility.path("orderStatus").textValue())) {
             throw new RefundFactsUnavailableException("两次查询的订单状态不一致");
         }
+        BigDecimal paidAmount = order.path("totalAmount").decimalValue();
+        BigDecimal refundableAmount = eligibility.path("refundableAmount").decimalValue();
+        if (paidAmount.signum() <= 0 || refundableAmount.signum() <= 0
+                || paidAmount.compareTo(refundableAmount) != 0) {
+            throw new RefundFactsUnavailableException("退款资格金额与订单实付金额不一致");
+        }
 
         boolean eligible = eligibility.path("eligible").booleanValue();
         boolean refundExists = eligibility.path("refundExists").booleanValue();
@@ -83,12 +89,8 @@ public final class RefundReviewContextFactory
             throw new RefundNotEligibleException(eligibility.path("reason").textValue());
         }
 
-        BigDecimal paidAmount = order.path("totalAmount").decimalValue();
-        BigDecimal refundableAmount = eligibility.path("refundableAmount").decimalValue();
-        if (paidAmount.signum() <= 0 || refundableAmount.signum() <= 0
-                || paidAmount.compareTo(refundableAmount) != 0
-                || !text(eligibility, "policyCode") || !text(eligibility, "policyTitle")) {
-            throw new RefundFactsUnavailableException("可退资格金额或政策与订单事实不一致");
+        if (!text(eligibility, "policyCode") || !text(eligibility, "policyTitle")) {
+            throw new RefundFactsUnavailableException("可退资格缺少政策");
         }
         return new CheckedRefundFacts(originalUserRequest, order.toString(), eligibility.toString(),
                 new CandidateRefundAction(orderId, reason), orderStatus,

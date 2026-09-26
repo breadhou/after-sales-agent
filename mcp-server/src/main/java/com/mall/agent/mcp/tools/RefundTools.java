@@ -25,13 +25,12 @@ public class RefundTools {
     public String getRefundEligibility(Long orderId) {
         JsonNode data = client.get("/api/orders/" + orderId + "/refund-eligibility");
         ObjectNode picked = MAPPER.createObjectNode();
-        for (String field : new String[]{"eligible", "reason", "policyCode", "policyTitle",
+        for (String field : new String[]{"orderId", "eligible", "reason", "policyCode", "policyTitle",
                 "refundableAmount", "refundExists", "catalogFingerprint", "orderStatus"}) {
             if (data.has(field)) {
                 picked.set(field, data.get(field));
             }
         }
-        picked.put("orderId", orderId);
         return picked.toString();
     }
 
