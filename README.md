@@ -16,7 +16,7 @@
 
 **计划 C 的 Task 1–6 已完成**：真实模型、MCP 与退款端到端验证见[验证记录](docs/plan-c-task6-validation-2026-09-25.md)。根 Maven reactor 98/98、启动器测试 5/5 通过；运行验证使用 JDK 22，JDK 17 尚未验证。
 
-**阶段 3 的新设计已形成，代码尚未实施**：对话 Agent 在明确退款诉求下只转接；可信代码确认请求并执行资格门槛；同源政策 RAG 进入独立复核。K-13 的目录消费者仍待实现。
+**阶段 3 的设计与实施计划已写，代码尚未实施**：对话 Agent 在明确退款诉求下只转接；可信代码确认请求并执行资格门槛；同源政策 RAG 进入独立复核。实施分为退款复核 3A 与资料问答 3B，按此顺序验收。K-13 的目录消费者仍待实现。
 
 ### 文档地图
 
@@ -28,6 +28,8 @@
 | [`docs/plans/2026-09-18-plan-a-supermall-after-sales.md`](docs/plans/2026-09-18-plan-a-supermall-after-sales.md) | 计划 A：supermall 售后能力（8 任务） |
 | [`docs/plans/2026-09-18-plan-b-mcp-server.md`](docs/plans/2026-09-18-plan-b-mcp-server.md) | 计划 B：MCP Server（6 任务） |
 | [`docs/plans/2026-09-18-plan-c-agent.md`](docs/plans/2026-09-18-plan-c-agent.md) | 计划 C：决策 + 复核 Agent（6 任务） |
+| [`docs/plans/2026-09-26-phase3a-rag-refund-review.md`](docs/plans/2026-09-26-phase3a-rag-refund-review.md) | 阶段 3A：确定性退款编排与 RAG 政策复核（8 任务） |
+| [`docs/plans/2026-09-26-phase3b-knowledge-qa.md`](docs/plans/2026-09-26-phase3b-knowledge-qa.md) | 阶段 3B：FAQ 与当前演示商品问答（6 任务，依赖 3A） |
 
 ### 进度
 
@@ -36,7 +38,8 @@
 | A | supermall 售后能力 | 政策判定 + 资格查询 + 退款执行 + 幂等 | ✅ 已写 | ✅ Task 1–8 已实现并验证 |
 | B | MCP Server | 6 个工具，stdio 传输 | ✅ 已写 | ✅ Task 1–6 已完成并验证 |
 | C | Agent | 决策 Agent + 复核 Agent + 升级人工 | ✅ 已写 | ✅ Task 1–6 已完成并验证 |
-| 3 | RAG 政策复核与解释 | 确定性编排、同源政策复核、FAQ/商品解释 | 设计已写，实施计划待写 | ⏸ 待实施 |
+| 3A | RAG 政策复核 | 确定性编排、同源政策复核、后端写入前版本校验 | ✅ 已写（8 任务） | ⏸ 待实施 |
+| 3B | 资料问答 | 原创 FAQ、当前演示商品、无动作解释 | ✅ 已写（6 任务） | ⏸ 待 3A 验收 |
 | 4 | 评测集 | 240 条场景 + 自动判定 + 回归 | ❌ 未写 | ⏸ 待设计 |
 
 阶段 3 的权威政策只有三条，因此退款复核按政策编号精确检索；FAQ 与当前演示商品用于资料问答。阶段 4 的系统评测仍待阶段 3 运行后设计。
@@ -45,7 +48,7 @@
 
 ## 下一步
 
-核对[阶段 3 当前设计](docs/specs/2026-09-26-rag-policy-review-design.md)，然后编写实施计划。计划 A/B/C 已完成；历史计划复选框未回填，不作为进度依据。
+核对[阶段 3 当前设计](docs/specs/2026-09-26-rag-policy-review-design.md)与[3A 实施计划](docs/plans/2026-09-26-phase3a-rag-refund-review.md)，然后从 3A Task 1 开始实施；3A 验收后执行[3B 实施计划](docs/plans/2026-09-26-phase3b-knowledge-qa.md)。计划 A/B/C 已完成；历史计划复选框未回填，不作为进度依据。
 
 ### 环境要求
 
