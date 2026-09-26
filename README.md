@@ -1,6 +1,6 @@
 # after-sales-agent
 
-一个**能真正执行售后动作**的电商客服 Agent：理解用户诉求 → 查明事实 → 选择政策 → **执行**（退款 / 拒绝 / 升级人工）。
+一个**能真正执行售后动作**的电商客服系统：对话 Agent 理解诉求，可信代码查证并编排退款，独立复核 Agent 审查敏感动作，supermall 最终执行。
 
 业务后端是独立的另一个项目 [supermall](https://github.com/breadhou/Supermall)，两者通过 **MCP** 通信，本项目不直连它的数据库。
 
@@ -12,15 +12,19 @@
 
 **计划 A 的 Task 1–8 均已实现并完成验收**，代码位于 supermall 的 `feat/after-sales-capability` 分支。Task 7 的实现提交为 `b1ff494`；Task 8 的验证记录在 [`supermall/docs/plan-a-task8-validation-2026-09-22.md`](../supermall/docs/plan-a-task8-validation-2026-09-22.md)；政策条款与执行语义的最终对齐提交为 `bf2d59a`。
 
-**计划 B 的 Task 1–6 已完成**：MCP Server 的实现提交为 `2e026da`，参数校验修复为 `0391378`；Task 6 的真实环境响应与数据库核对见[验证记录](docs/plan-b-task6-validation-2026-09-24.md)。34/34 Maven 测试通过；运行验证使用 JDK 22，JDK 17 尚未验证。K-13 的 Agent 消费者仍待计划 C 的 RAG 阶段落地。执行中发现的问题与取舍记录在 [`docs/known-issues.md`](docs/known-issues.md)。
+**计划 B 的 Task 1–6 已完成**：MCP Server 的实现提交为 `2e026da`，参数校验修复为 `0391378`；Task 6 的真实环境响应与数据库核对见[验证记录](docs/plan-b-task6-validation-2026-09-24.md)。34/34 Maven 测试通过；运行验证使用 JDK 22，JDK 17 尚未验证。K-13 的 Agent 消费者仍待阶段 3 落地。执行中发现的问题与取舍记录在 [`docs/known-issues.md`](docs/known-issues.md)。
 
-**计划 C 的 Task 1–4 已完成**：Agent 模块骨架为 `62621da`，模型配置为 `e8cd154`，结论模型与提示词为 `0656eca`，复核与退款唯一通路为 `72fad2d`。根 Maven reactor 67/67 测试通过；接续步骤见[交接记录](docs/plan-c-handoff-2026-09-24.md)。
+**计划 C 的 Task 1–6 已完成**：真实模型、MCP 与退款端到端验证见[验证记录](docs/plan-c-task6-validation-2026-09-25.md)。根 Maven reactor 98/98、启动器测试 5/5 通过；运行验证使用 JDK 22，JDK 17 尚未验证。
+
+**阶段 3 的新设计已形成，代码尚未实施**：对话 Agent 在明确退款诉求下只转接；可信代码确认请求并执行资格门槛；同源政策 RAG 进入独立复核。K-13 的目录消费者仍待实现。
 
 ### 文档地图
 
 | 文档 | 内容 |
 |---|---|
 | [`docs/specs/2026-09-18-after-sales-agent-design.md`](docs/specs/2026-09-18-after-sales-agent-design.md) | **设计基线**。职责边界、三道防线、评测设计 |
+| [`docs/specs/2026-09-26-rag-policy-review-design.md`](docs/specs/2026-09-26-rag-policy-review-design.md) | **阶段 3 当前设计**：确定性退款编排与 RAG 政策复核 |
+| [`docs/specs/2026-09-26-rag-explanation-design.md`](docs/specs/2026-09-26-rag-explanation-design.md) | 阶段 3 历史方案，已被上项取代 |
 | [`docs/plans/2026-09-18-plan-a-supermall-after-sales.md`](docs/plans/2026-09-18-plan-a-supermall-after-sales.md) | 计划 A：supermall 售后能力（8 任务） |
 | [`docs/plans/2026-09-18-plan-b-mcp-server.md`](docs/plans/2026-09-18-plan-b-mcp-server.md) | 计划 B：MCP Server（6 任务） |
 | [`docs/plans/2026-09-18-plan-c-agent.md`](docs/plans/2026-09-18-plan-c-agent.md) | 计划 C：决策 + 复核 Agent（6 任务） |
@@ -31,45 +35,17 @@
 |---|---|---|---|---|
 | A | supermall 售后能力 | 政策判定 + 资格查询 + 退款执行 + 幂等 | ✅ 已写 | ✅ Task 1–8 已实现并验证 |
 | B | MCP Server | 6 个工具，stdio 传输 | ✅ 已写 | ✅ Task 1–6 已完成并验证 |
-| C | Agent | 决策 Agent + 复核 Agent + 升级人工 | ✅ 已写 | 🔄 Task 1–4 已完成，Task 5–6 待实施 |
-| 3 | RAG 解释层 | 政策条款与 FAQ 的检索，**只解释不判定** | ❌ 未写 | ⏸ 待设计 |
+| C | Agent | 决策 Agent + 复核 Agent + 升级人工 | ✅ 已写 | ✅ Task 1–6 已完成并验证 |
+| 3 | RAG 政策复核与解释 | 确定性编排、同源政策复核、FAQ/商品解释 | 设计已写，实施计划待写 | ⏸ 待实施 |
 | 4 | 评测集 | 240 条场景 + 自动判定 + 回归 | ❌ 未写 | ⏸ 待设计 |
 
-> **阶段 3、4 为什么不先写计划**：RAG 的语料需要做厚（3 条政策做检索没有意义，会被问"为什么不直接塞进 prompt"），而评测集的用例必须**以真实运行结果为依据**——现在写会脱离实际。两者都要等 A/B/C 跑通。
+阶段 3 的权威政策只有三条，因此退款复核按政策编号精确检索；FAQ 与当前演示商品用于资料问答。阶段 4 的系统评测仍待阶段 3 运行后设计。
 
 ---
 
 ## 下一步
 
-从本目录开会话，说：
-
-> 按 `docs/plan-c-handoff-2026-09-24.md` 接续计划 C 的 Task 5
-
-计划头部声明了该用哪个子技能（`executing-plans` 或 `subagent-driven-development`），新会话读到即可接续，**跨会话不受影响**。
-
-> **当前进度：计划 A 的 Task 1–8 均已实现并验收。** Task 7 的实现提交为 supermall `b1ff494`；Task 8 的验证记录在 `supermall/docs/plan-a-task8-validation-2026-09-22.md`；K-36 的条款与执行语义对齐提交为 `bf2d59a`。
->
-> 计划 B 的 **Task 1–6 已完成**；计划 C 的 **Task 1–4 已完成**（`62621da`、`e8cd154`、`0656eca`、`72fad2d`）。K-44、K-46 已处理，接续 Task 5。K-13 的 Agent 消费者仍待阶段 3 RAG 落地。
->
-> **Task 5 的提交链**（supermall，按顺序）：
-> `8c52d91`（主实现）→ `e070723`（并发兜底修复）→ `b43e161`（注释订正）→ `bc94d5e`（返回契约 + 测试缺口）→ `71d8537`（PENDING 措辞）。
->
-> **Task 6 的提交链**（supermall，按顺序）：
-> `e15c05b`（两个端点 + DTO + 测试）→ `2a792c0` / `62e6ae1` / `d48a3d2` / `ecb7f37`（契约文本四轮订正）→ `e9adfa5`（校验失败返 `10000` + 补限定词）。
->
-> ⚠️ **Task 6 的契约文本改了五轮**，每一轮修的都是「文本声称的事与代码实际行为不符」——
-> 详见 `docs/known-issues.md` 的 K-28 / K-29 / K-30 / K-31。**读那几段比读代码更快理解这里的坑在哪。**
->
-> ⚠️ **计划里的复选框没有被回填**（仍是初始状态，53 个全部未勾）——**不要拿它当进度依据**，否则会从 Task 1 重做。可靠的进度依据是 supermall 仓库的分支历史：
->
-> ```bash
-> git -C D:/sourcecode/supermall log --oneline main..feat/after-sales-capability
-> ```
->
-> 按提交信息与任务一一对应即可看出做到哪。
-> Task 5 的代码块里有两处注释说明了两个坑（`@Transactional` 下的 read view 不会刷新、唯一索引才是并发裁判），照它写即可。
-
-**顺序不能乱**：A → B → C。B 依赖 A 的三个新端点，C 依赖 B 能跑起来。
+核对[阶段 3 当前设计](docs/specs/2026-09-26-rag-policy-review-design.md)，然后编写实施计划。计划 A/B/C 已完成；历史计划复选框未回填，不作为进度依据。
 
 ### 环境要求
 
@@ -90,9 +66,9 @@
 
 ### 职责边界
 
-> **LLM 决定「该走哪条路」，代码决定「这条路怎么走、能不能走」。**
+> **计划 C 的当前实现**：LLM 提出退款动作，可信工具强制经过复核与后端执行。**阶段 3 的目标**：对话 Agent 只转接退款意图，可信代码确认并查证，政策 RAG 进入独立复核。
 
-金额、资格、状态机、幂等全在 supermall（确定性代码）；意图理解、政策选择、工具编排在本项目。
+金额、资格、状态机、幂等全在 supermall（确定性代码）；对话、转接、政策复核与工具编排在本项目。
 
 ### 三道防线
 
@@ -106,7 +82,7 @@
 
 ### 复核是结构上不可绕过的
 
-**决策 Agent 的工具集里根本没有 `submit_refund`。** 它的 MCP 工具被过滤为 5 个只读工具，退款走本地工具 `request_refund`，复核与执行都在其内部：
+**计划 C 当前实现**：决策 Agent 的工具集里没有 `submit_refund`。它的 MCP 工具被过滤为 5 个只读工具，退款走本地工具 `request_refund`，复核与执行都在其内部：
 
 ```
 决策 Agent 可见：get_order / list_user_orders / get_logistics /
@@ -118,6 +94,8 @@
 ```
 
 若模型手里就有 `submit_refund`，复核只是它"记得要调用"的一步，可以被跳过。现在它是唯一通路。
+
+阶段 3 将把 `request_refund` 换成无执行能力的转接：用户确认订单和理由后，可信代码先核验后端资格和政策目录，再调用独立 RAG 复核 Agent；只有复核通过才调用后端退款工具。
 
 ### 已知的坑
 
