@@ -100,6 +100,8 @@ class PolicyCatalogConsumerTest {
                 new InvalidResponse("null result text", resultWithNullText()),
                 new InvalidResponse("blank result text", success("   ")),
                 new InvalidResponse("malformed JSON", success("not JSON")),
+                new InvalidResponse("valid JSON followed by trailing garbage",
+                        success(CATALOG_V1 + "garbage")),
                 new InvalidResponse("blank fingerprint", success("""
                         {"fingerprint":"  ","clauses":[
                           {"code":"SHIPPED_NOT_RECEIVED","title":"已发货退款","clauseText":"条款。"}

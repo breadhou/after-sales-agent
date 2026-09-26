@@ -1,6 +1,7 @@
 package com.mall.agent.policy;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -17,7 +18,8 @@ import java.util.function.Function;
 /** Retrieves complete policy catalog generations and resolves only exact policy codes. */
 public final class PolicyCatalogConsumer {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
     private final Function<ToolExecutionRequest, ToolExecutionResult> toolCaller;
     private volatile CatalogSnapshot currentSnapshot;
