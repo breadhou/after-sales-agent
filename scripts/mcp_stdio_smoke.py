@@ -23,6 +23,8 @@ def parse_args():
     parser.add_argument("--tool", help="MCP tool name; omit to request tools/list")
     parser.add_argument("--order-id", type=int)
     parser.add_argument("--reason")
+    parser.add_argument("--expected-fingerprint")
+    parser.add_argument("--expected-policy-code")
     parser.add_argument("--expect-error", action="store_true")
     parser.add_argument("--expect-code", type=int)
     return parser.parse_args()
@@ -39,6 +41,10 @@ def main():
         arguments["orderId"] = args.order_id
     if args.reason is not None:
         arguments["reason"] = args.reason
+    if args.expected_fingerprint is not None:
+        arguments["expectedCatalogFingerprint"] = args.expected_fingerprint
+    if args.expected_policy_code is not None:
+        arguments["expectedPolicyCode"] = args.expected_policy_code
     params = {"name": args.tool, "arguments": arguments} if args.tool else None
     request = {"jsonrpc": "2.0", "id": 2,
                "method": "tools/call" if args.tool else "tools/list"}
@@ -118,7 +124,12 @@ def main():
             if len(tools) != 6 or len({tool["name"] for tool in tools}) != 6:
                 raise RuntimeError("expected exactly six distinct MCP tools")
             submit = next(tool for tool in tools if tool["name"] == "submit_refund")
-            if set(submit["inputSchema"]["properties"]) != {"orderId", "reason"}:
+            schema = submit["inputSchema"]
+            reviewed_fields = {
+                    "orderId", "reason", "expectedCatalogFingerprint", "expectedPolicyCode"}
+            if set(schema["properties"]) != reviewed_fields \
+                    or set(schema.get("required", [])) != reviewed_fields \
+                    or schema.get("additionalProperties") is not False:
                 raise RuntimeError("submit_refund schema widened")
         if "\ufffd" in json.dumps(response, ensure_ascii=False):
             raise RuntimeError("replacement character in MCP response")

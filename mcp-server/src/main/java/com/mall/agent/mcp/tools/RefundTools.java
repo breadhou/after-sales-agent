@@ -26,7 +26,7 @@ public class RefundTools {
         JsonNode data = client.get("/api/orders/" + orderId + "/refund-eligibility");
         ObjectNode picked = MAPPER.createObjectNode();
         for (String field : new String[]{"eligible", "reason", "policyCode", "policyTitle",
-                "refundableAmount", "refundExists"}) {
+                "refundableAmount", "refundExists", "catalogFingerprint", "orderStatus"}) {
             if (data.has(field)) {
                 picked.set(field, data.get(field));
             }
@@ -36,8 +36,13 @@ public class RefundTools {
     }
 
     /** Submits a refund request; Supermall determines the amount from the order. */
-    public String submitRefund(Long orderId, String reason) {
-        String body = MAPPER.createObjectNode().put("reason", reason).toString();
+    public String submitRefund(Long orderId, String reason, String expectedCatalogFingerprint,
+                               String expectedPolicyCode) {
+        String body = MAPPER.createObjectNode()
+                .put("reason", reason)
+                .put("expectedCatalogFingerprint", expectedCatalogFingerprint)
+                .put("expectedPolicyCode", expectedPolicyCode)
+                .toString();
         return client.post("/api/orders/" + orderId + "/refund/execute", body).toString();
     }
 }

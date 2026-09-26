@@ -38,7 +38,7 @@ class ToolSchemaTest {
     }
 
     @Test
-    void submitRefundAdvertisesOnlyOrderIdAndReason() throws Exception {
+    void submitRefundRequiresExactlyTheReviewedPair() throws Exception {
         var definition = McpServerMain.toolDefinitions().stream()
                 .filter(tool -> tool.name().equals("submit_refund"))
                 .findFirst().orElseThrow();
@@ -46,11 +46,15 @@ class ToolSchemaTest {
         Set<String> fields = new HashSet<>();
         schema.path("properties").fieldNames().forEachRemaining(fields::add);
 
-        assertEquals(Set.of("orderId", "reason"), fields);
+        assertEquals(Set.of("orderId", "reason", "expectedCatalogFingerprint", "expectedPolicyCode"), fields);
         assertEquals("integer", schema.path("properties").path("orderId").path("type").asText());
         assertEquals("string", schema.path("properties").path("reason").path("type").asText());
-        assertEquals(Set.of("orderId", "reason"), Set.of(
-                schema.path("required").get(0).asText(), schema.path("required").get(1).asText()));
+        assertEquals("string", schema.path("properties").path("expectedCatalogFingerprint").path("type").asText());
+        assertEquals("string", schema.path("properties").path("expectedPolicyCode").path("type").asText());
+        Set<String> required = new HashSet<>();
+        schema.path("required").forEach(field -> required.add(field.asText()));
+        assertEquals(Set.of("orderId", "reason", "expectedCatalogFingerprint", "expectedPolicyCode"), required);
+        assertFalse(schema.path("additionalProperties").asBoolean(true));
     }
 
     @Test

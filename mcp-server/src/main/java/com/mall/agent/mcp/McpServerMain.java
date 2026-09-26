@@ -73,6 +73,7 @@ public final class McpServerMain {
                     """),
             new ToolDefinition("submit_refund",
                     "按订单执行退款；金额由系统根据订单确定，调用方无法指定。"
+                            + "必须提供本次复核所用的政策目录指纹和适用政策代码。"
                             + "首次执行前须先用 get_refund_eligibility 确认 eligible=true；重复调用会返回既有记录而不重复退款。"
                             + "返回的 refundExists 表示本次调用前是否已有退款记录；false 且 eligible=true 表示本次执行完成。"
                             + "true 表示返回既有记录，须按 reason 区分 PENDING 的「该订单已有退款申请在处理中」"
@@ -80,8 +81,10 @@ public final class McpServerMain {
                     """
                     {"type":"object","properties":{
                       "orderId":{"type":"integer","minimum":1,"maximum":9223372036854775807,"description":"订单 ID"},
-                      "reason":{"type":"string","minLength":1,"maxLength":512,"description":"退款原因，最多 512 字符"}},
-                     "required":["orderId","reason"],"additionalProperties":false}
+                      "reason":{"type":"string","minLength":1,"maxLength":512,"description":"退款原因，最多 512 字符"},
+                      "expectedCatalogFingerprint":{"type":"string","minLength":1,"description":"本次复核所用的政策目录指纹"},
+                      "expectedPolicyCode":{"type":"string","minLength":1,"description":"本次复核确认的适用政策代码"}},
+                     "required":["orderId","reason","expectedCatalogFingerprint","expectedPolicyCode"],"additionalProperties":false}
                     """));
 
     public static List<ToolDefinition> toolDefinitions() {
@@ -113,7 +116,9 @@ public final class McpServerMain {
                 spec("get_refund_eligibility", args -> refunds.getRefundEligibility(longArg(args, "orderId"))),
                 spec("list_policy_clauses", args -> policies.listPolicyClauses()),
                 spec("submit_refund", args -> refunds.submitRefund(
-                        longArg(args, "orderId"), requiredReason(args))));
+                        longArg(args, "orderId"), requiredReason(args),
+                        requiredNonBlankString(args, "expectedCatalogFingerprint"),
+                        requiredNonBlankString(args, "expectedPolicyCode"))));
 
         return McpServer.sync(transport)
                 .objectMapper(new ObjectMapper().registerModule(new SimpleModule()
@@ -199,6 +204,14 @@ public final class McpServerMain {
             return text;
         }
         throw new InvalidToolArguments("参数不合法：reason 必须是非空且不超过 512 字符的字符串");
+    }
+
+    private static String requiredNonBlankString(Map<String, Object> args, String key) {
+        Object value = args.get(key);
+        if (value instanceof String text && !text.isBlank()) {
+            return text;
+        }
+        throw new InvalidToolArguments("参数不合法：" + key + " 必须是非空字符串");
     }
 
     /** Keeps malformed argument shapes inside the tool-result validation path. */
