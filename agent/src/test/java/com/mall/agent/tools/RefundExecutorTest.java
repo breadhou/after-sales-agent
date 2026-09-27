@@ -16,7 +16,47 @@ class RefundExecutorTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @Test
-    void callsOnlySubmitRefundWithOrderIdAndReason() throws Exception {
+    void executorPostsReviewedPair() throws Exception {
+        List<ToolExecutionRequest> calls = new ArrayList<>();
+        RefundExecutor executor = new RefundExecutor(request -> {
+            calls.add(request);
+            return ToolExecutionResult.builder().isError(false)
+                    .resultText("{\"orderId\":9001,\"refundExists\":false,\"eligible\":true,\"refundableAmount\":199.99}")
+                    .build();
+        });
+        executor.apply(9001L, "未收到货", "fp-1", "SHIPPED_NOT_RECEIVED");
+        JsonNode args = MAPPER.readTree(calls.get(0).arguments());
+        assertEquals(4, args.size());
+        assertEquals("fp-1", args.path("expectedCatalogFingerprint").asText());
+        assertEquals("SHIPPED_NOT_RECEIVED", args.path("expectedPolicyCode").asText());
+    }
+
+    @Test
+    void staleReviewCodeIsDefiniteRejection() {
+        RefundExecutor executor = new RefundExecutor(request -> ToolExecutionResult.builder().isError(true)
+                .resultText("{\"code\":50005,\"message\":\"复核依据已过期\"}").build());
+        assertThrows(RefundExecutor.StaleReviewException.class,
+                () -> executor.apply(9001L, "未收到货", "fp-1", "SHIPPED_NOT_RECEIVED"));
+    }
+
+    @Test
+    void transportFailureIsUnknownOutcome() {
+        for (String error : new String[]{"{\"code\":-1,\"message\":\"timeout\"}",
+                "{\"code\":-502,\"message\":\"HTTP\"}", "malformed", "{\"code\":50005} extra",
+                "{\"code\":4295017301,\"message\":\"different code\"}"}) {
+            RefundExecutor executor = new RefundExecutor(request -> ToolExecutionResult.builder()
+                    .isError(true).resultText(error).build());
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> executor.apply(9001L, "未收到货", "fp-1", "SHIPPED_NOT_RECEIVED"));
+            assertFalse(failure instanceof RefundExecutor.StaleReviewException, error);
+        }
+        RefundExecutor timeout = new RefundExecutor(request -> { throw new IllegalStateException("timeout"); });
+        assertThrows(IllegalStateException.class,
+                () -> timeout.apply(9001L, "未收到货", "fp-1", "SHIPPED_NOT_RECEIVED"));
+    }
+
+    @Test
+    void callsOnlySubmitRefundWithReviewedInputs() throws Exception {
         List<ToolExecutionRequest> calls = new ArrayList<>();
         RefundExecutor executor = new RefundExecutor(request -> {
             calls.add(request);
@@ -26,7 +66,7 @@ class RefundExecutorTest {
                     .isError(false).build();
         });
 
-        String result = executor.apply(9001L, "不想要了");
+        String result = executor.apply(9001L, "不想要了", "fp-1", "SHIPPED_NOT_RECEIVED");
 
         assertTrue(result.contains("订单 9001 的退款已完成"), result);
         assertTrue(result.contains("199.99 元"), result);
@@ -35,7 +75,7 @@ class RefundExecutorTest {
         assertEquals(1, calls.size());
         assertEquals("submit_refund", calls.get(0).name());
         JsonNode arguments = MAPPER.readTree(calls.get(0).arguments());
-        assertEquals(2, arguments.size(), "调用方不能指定退款金额");
+        assertEquals(4, arguments.size(), "调用方不能指定退款金额");
         assertEquals(9001L, arguments.path("orderId").longValue());
         assertEquals("不想要了", arguments.path("reason").textValue());
     }
@@ -47,7 +87,7 @@ class RefundExecutorTest {
                         + "\"refundableAmount\":199.99,\"reason\":\"该订单已有退款申请在处理中\"}")
                 .isError(false).build());
 
-        String result = executor.apply(9001L, "不想要了");
+        String result = executor.apply(9001L, "不想要了", "fp-1", "SHIPPED_NOT_RECEIVED");
 
         assertTrue(result.contains("在处理中"), result);
         assertFalse(result.contains("已完成退款") || result.contains("REFUNDED"), result);
@@ -60,7 +100,7 @@ class RefundExecutorTest {
                         + "\"refundableAmount\":199.99,\"reason\":\"该订单已完成退款\"}")
                 .isError(false).build());
 
-        String result = executor.apply(9001L, "不想要了");
+        String result = executor.apply(9001L, "不想要了", "fp-1", "SHIPPED_NOT_RECEIVED");
 
         assertTrue(result.contains("此前已完成退款"), result);
         assertTrue(result.contains("199.99 元"), result);
@@ -76,7 +116,7 @@ class RefundExecutorTest {
                 "accepted"}) {
             RefundExecutor executor = new RefundExecutor(request -> ToolExecutionResult.builder()
                     .resultText(text).isError(false).build());
-            assertThrows(IllegalStateException.class, () -> executor.apply(9001L, "不想要了"), text);
+            assertThrows(IllegalStateException.class, () -> executor.apply(9001L, "不想要了", "fp-1", "SHIPPED_NOT_RECEIVED"), text);
         }
     }
 
@@ -86,21 +126,21 @@ class RefundExecutorTest {
                 .resultText("{\"error\":true,\"message\":\"退款失败\"}")
                 .isError(true).build());
 
-        assertThrows(IllegalStateException.class, () -> executor.apply(9001L, "不想要了"));
+        assertThrows(IllegalStateException.class, () -> executor.apply(9001L, "不想要了", "fp-1", "SHIPPED_NOT_RECEIVED"));
     }
 
     @Test
     void rejectsMissingOrBlankResult() {
         assertThrows(IllegalStateException.class,
-                () -> new RefundExecutor(request -> null).apply(9001L, "不想要了"));
+                () -> new RefundExecutor(request -> null).apply(9001L, "不想要了", "fp-1", "SHIPPED_NOT_RECEIVED"));
         // SDK 不允许直接用 resultText(null) 构造结果；惰性空文本同样不能作为成功回执。
         assertThrows(IllegalStateException.class, () -> new RefundExecutor(request ->
                 ToolExecutionResult.builder().resultTextSupplier(() -> null).build())
-                .apply(9001L, "不想要了"));
+                .apply(9001L, "不想要了", "fp-1", "SHIPPED_NOT_RECEIVED"));
         for (String text : new String[]{"", "   "}) {
             RefundExecutor executor = new RefundExecutor(request -> ToolExecutionResult.builder()
                     .resultText(text).isError(false).build());
-            assertThrows(IllegalStateException.class, () -> executor.apply(9001L, "不想要了"));
+            assertThrows(IllegalStateException.class, () -> executor.apply(9001L, "不想要了", "fp-1", "SHIPPED_NOT_RECEIVED"));
         }
     }
 
@@ -110,6 +150,6 @@ class RefundExecutorTest {
             throw new IllegalStateException("MCP 调用失败");
         });
 
-        assertThrows(IllegalStateException.class, () -> executor.apply(9001L, "不想要了"));
+        assertThrows(IllegalStateException.class, () -> executor.apply(9001L, "不想要了", "fp-1", "SHIPPED_NOT_RECEIVED"));
     }
 }

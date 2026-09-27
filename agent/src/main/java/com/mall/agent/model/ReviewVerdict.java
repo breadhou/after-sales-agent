@@ -1,24 +1,32 @@
 package com.mall.agent.model;
 
 import java.util.List;
+import java.util.Set;
 
-/**
- * 复核结论。
- *
- * <p>解析失败时按<b>驳回</b>处理——误放与误驳的代价不对称，见复核提示词。</p>
- */
-public record ReviewVerdict(boolean approved, List<String> faults) {
+/** Structured reviewer result. Only an exact, internally consistent approval can authorize a write. */
+public record ReviewVerdict(boolean approved, String citedPolicyCode, List<ReviewFault> faults) {
+    private static final Set<String> CATEGORIES = Set.of(
+            "FACT_CONFLICT", "POLICY_CONFLICT", "USER_INSTRUCTION_RISK", "UNCERTAIN");
 
     public ReviewVerdict {
-        faults = faults == null ? List.of() : List.copyOf(faults);
+        if (faults != null) faults = List.copyOf(faults);
     }
 
-    /** 解析失败时的安全默认：驳回。 */
-    public static ReviewVerdict rejected(String reason) {
-        return new ReviewVerdict(false, List.of(reason));
+    public boolean validFor(String expectedCode) {
+        if (expectedCode == null || expectedCode.isBlank() || !expectedCode.equals(citedPolicyCode)
+                || faults == null) {
+            return false;
+        }
+        if (approved) {
+            return faults.isEmpty();
+        }
+        return !faults.isEmpty() && faults.stream().allMatch(fault ->
+                fault != null && CATEGORIES.contains(fault.category())
+                        && fault.evidence() != null && !fault.evidence().isBlank()
+                        && expectedCode.equals(fault.policyCode()));
     }
 
-    public static ReviewVerdict approvedVerdict() {
-        return new ReviewVerdict(true, List.of());
+    public boolean authorizes(String expectedCode) {
+        return approved && validFor(expectedCode);
     }
 }

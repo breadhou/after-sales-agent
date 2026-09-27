@@ -4,6 +4,7 @@ import com.mall.agent.agent.DecisionAgent;
 import com.mall.agent.model.CandidateRefundAction;
 import com.mall.agent.model.RefundReviewContext;
 import com.mall.agent.model.ReviewVerdict;
+import com.mall.agent.policy.PolicyEvidence;
 import com.mall.agent.tools.EscalationTools;
 import com.mall.agent.tools.RefundHandoffTools;
 import dev.langchain4j.agent.tool.Tool;
@@ -31,7 +32,8 @@ class AgentConfigTest {
     private final RefundReviewContext context = new RefundReviewContext(
             "用户原话：请退货", "{\"id\":9001,\"status\":\"RECEIVED\"}",
             "{\"orderId\":9001,\"eligible\":true}",
-            new CandidateRefundAction(9001L, "不想要了"));
+            new CandidateRefundAction(9001L, "不想要了"),
+            new PolicyEvidence("fp-1", "SEVEN_DAY_NO_REASON", "七日无理由", "七日内可退"));
 
     @Test
     void reviewExceptionMustReject() {
@@ -39,14 +41,14 @@ class AgentConfigTest {
             throw new IllegalStateException("模型服务异常");
         }, context);
 
-        assertFalse(verdict.approved());
+        assertEquals(null, verdict);
     }
 
     @Test
     void absentVerdictMustReject() {
         ReviewVerdict verdict = AgentConfig.reviewSafely(message -> null, context);
 
-        assertFalse(verdict.approved());
+        assertEquals(null, verdict);
     }
 
     @Test
@@ -130,10 +132,27 @@ class AgentConfigTest {
 
     @Test
     void reviewModelReceivesNoTools() {
-        CapturingChatModel model = new CapturingChatModel("{\"approved\":false,\"faults\":[]}");
+        CapturingChatModel model = new CapturingChatModel("{\"approved\":false,\"citedPolicyCode\":\"SEVEN_DAY_NO_REASON\",\"faults\":[{\"category\":\"UNCERTAIN\",\"evidence\":\"需要核实\",\"policyCode\":\"SEVEN_DAY_NO_REASON\"}]}");
         ReviewVerdict verdict = AgentConfig.reviewAgent(model).review("请复核");
 
         assertFalse(verdict.approved());
+        assertTrue(model.request().toolSpecifications() == null
+                || model.request().toolSpecifications().isEmpty());
+    }
+
+    @Test
+    void policyEvidenceIsDataInReviewerInputOnly() {
+        CapturingChatModel model = new CapturingChatModel("{\"approved\":true,\"citedPolicyCode\":\"SEVEN_DAY_NO_REASON\",\"faults\":[]}");
+        ReviewVerdict verdict = AgentConfig.reviewSafely(AgentConfig.reviewAgent(model), context);
+        assertTrue(verdict.authorizes("SEVEN_DAY_NO_REASON"));
+        String input = model.request().messages()
+                .get(model.request().messages().size() - 1).toString();
+        assertTrue(input.contains("fp-1"));
+        assertTrue(input.contains("SEVEN_DAY_NO_REASON"));
+        assertTrue(input.contains("七日内可退"));
+        assertFalse(input.contains("FAQ"));
+        assertFalse(input.contains("商品描述"));
+        assertFalse(input.contains("决策 Agent 摘要"));
         assertTrue(model.request().toolSpecifications() == null
                 || model.request().toolSpecifications().isEmpty());
     }

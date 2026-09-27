@@ -1,0 +1,142 @@
+package com.mall.agent.flow;
+
+import com.mall.agent.model.CheckedRefundFacts;
+import com.mall.agent.model.RefundRequest;
+import com.mall.agent.model.RefundReviewContext;
+import com.mall.agent.model.ReviewFault;
+import com.mall.agent.model.ReviewVerdict;
+import com.mall.agent.policy.CatalogSnapshot;
+import com.mall.agent.policy.PolicyCatalogConsumer;
+import com.mall.agent.policy.PolicyEvidence;
+import com.mall.agent.tools.EscalationTools;
+import com.mall.agent.tools.RefundExecutor;
+import com.mall.agent.tools.RefundReviewContextFactory;
+import com.mall.agent.trace.ToolTrace;
+import dev.langchain4j.mcp.client.McpClient;
+
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.function.Function;
+
+/** Trusted refund path after a user-confirmed request. The reviewer has no tool access. */
+public final class RefundWorkflow {
+    @FunctionalInterface
+    public interface RefundSubmitter {
+        String apply(Long orderId, String reason, String fingerprint, String policyCode);
+    }
+
+    private enum State { IN_REVIEW, REJECTED }
+    private record Key(String sessionId, Long orderId) { }
+
+    private final RefundReviewContextFactory factsFactory;
+    private final PolicyCatalogConsumer catalog;
+    private final Function<RefundReviewContext, ReviewVerdict> reviewer;
+    private final RefundSubmitter executor;
+    private final EscalationTools escalation;
+    private final ConcurrentMap<Key, State> states = new ConcurrentHashMap<>();
+
+    public RefundWorkflow(McpClient mcp, Function<RefundReviewContext, ReviewVerdict> reviewer,
+                          RefundSubmitter executor, EscalationTools escalation) {
+        this.factsFactory = new RefundReviewContextFactory(mcp, () -> "");
+        this.catalog = new PolicyCatalogConsumer(mcp);
+        this.reviewer = reviewer;
+        this.executor = executor;
+        this.escalation = escalation;
+    }
+
+    public String apply(String sessionId, RefundRequest request) {
+        if (sessionId == null || sessionId.isBlank() || request == null
+                || request.orderId() == null || request.orderId() <= 0) {
+            return "退款申请无法确认，请联系人工客服。";
+        }
+        Long orderId = request.orderId();
+        Key key = new Key(sessionId, orderId);
+        State previous = states.putIfAbsent(key, State.IN_REVIEW);
+        if (previous == State.REJECTED) {
+            return "订单 " + orderId + " 在本次会话中已记录人工升级请求。请联系人工客服继续处理。";
+        }
+        if (previous == State.IN_REVIEW) {
+            return "订单 " + orderId + " 正在复核，本次重复请求未提交。";
+        }
+        try {
+            CheckedRefundFacts facts;
+            try {
+                facts = factsFactory.requireEligible(orderId, request.reason(), request.originalUserRequest());
+            } catch (RefundReviewContextFactory.RefundNotEligibleException e) {
+                return "订单 " + orderId + " 当前不可退：" + e.getMessage() + "。本次未提交退款。";
+            } catch (RuntimeException e) {
+                return rejectAndEscalate(key, orderId, "退款资格事实无法核实", null, null, false);
+            }
+
+            PolicyEvidence evidence;
+            try {
+                CatalogSnapshot snapshot = catalog.refresh();
+                evidence = catalog.requireMatching(snapshot, facts.catalogFingerprint(), facts.policyCode());
+            } catch (RuntimeException e) {
+                return rejectAndEscalate(key, orderId, "政策目录无法核实", null, null, false);
+            }
+
+            RefundReviewContext context = new RefundReviewContext(facts.originalUserRequest(),
+                    facts.trustedOrder(), facts.trustedEligibility(), facts.candidateAction(), evidence);
+            ToolTrace.record("review", ToolTrace.Status.CALLED);
+            ReviewVerdict verdict;
+            try {
+                verdict = reviewer.apply(context);
+            } catch (RuntimeException e) {
+                ToolTrace.record("review", ToolTrace.Status.TRANSPORT_ERROR);
+                return rejectAndEscalate(key, orderId, "复核未完成", null, null, true);
+            }
+            if (verdict == null || !verdict.validFor(evidence.code())) {
+                ToolTrace.record("review", ToolTrace.Status.ERROR);
+                return rejectAndEscalate(key, orderId, "复核结论无法核实", null, null, true);
+            }
+            if (!verdict.approved()) {
+                ToolTrace.record("review", ToolTrace.Status.ERROR);
+                return rejectAndEscalate(key, orderId, "退款复核未通过", verdict, context, true);
+            }
+            ToolTrace.record("review", ToolTrace.Status.OK);
+
+            try {
+                return executor.apply(orderId, request.reason(), evidence.fingerprint(), evidence.code());
+            } catch (RefundExecutor.StaleReviewException e) {
+                return "订单 " + orderId + " 的复核依据已过期，本次未产生新退款记录；请联系人工客服核实。";
+            } catch (RuntimeException e) {
+                return "订单 " + orderId + " 的退款申请提交结果无法确认。请联系人工客服核实退款状态。";
+            }
+        } finally {
+            states.remove(key, State.IN_REVIEW);
+        }
+    }
+
+    private String rejectAndEscalate(Key key, Long orderId, String summary,
+                                     ReviewVerdict verdict, RefundReviewContext context,
+                                     boolean terminal) {
+        if (terminal) states.replace(key, State.IN_REVIEW, State.REJECTED);
+        escalation.escalateToHuman(orderId, summary);
+        String verified = verifiedReason(verdict, context);
+        return "订单 " + orderId + " 的退款申请未执行。" + verified
+                + "已记录，请联系人工客服核实。";
+    }
+
+    private static String verifiedReason(ReviewVerdict verdict, RefundReviewContext context) {
+        if (verdict == null || context == null) return "需要人工核实。";
+        for (ReviewFault fault : verdict.faults()) {
+            String evidence = fault.evidence();
+            boolean grounded = switch (fault.category()) {
+                case "FACT_CONFLICT" -> context.trustedOrder().contains(evidence)
+                        || context.trustedEligibility().contains(evidence);
+                case "POLICY_CONFLICT" -> context.policyEvidence().clauseText().contains(evidence);
+                case "USER_INSTRUCTION_RISK" -> context.originalUserRequest().contains(evidence);
+                default -> false;
+            };
+            if (!grounded) return "需要人工核实。";
+        }
+        ReviewFault first = verdict.faults().get(0);
+        return switch (first.category()) {
+            case "FACT_CONFLICT" -> "复核发现订单或资格事实有冲突。";
+            case "POLICY_CONFLICT" -> "复核发现申请与政策条款不符。";
+            case "USER_INSTRUCTION_RISK" -> "复核发现原始诉求需要人工核查。";
+            default -> "需要人工核实。";
+        };
+    }
+}

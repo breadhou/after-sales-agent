@@ -7,7 +7,7 @@ public final class ToolTrace {
 
     private static final Set<String> NAMES = Set.of(
             "get_order", "list_user_orders", "get_logistics", "get_refund_eligibility",
-            "list_policy_clauses", "submit_refund", "request_refund", "review",
+            "list_policy_clauses", "submit_refund", "review",
             "handoff_refund", "ask_refund_eligibility",
             "escalate_to_human");
 

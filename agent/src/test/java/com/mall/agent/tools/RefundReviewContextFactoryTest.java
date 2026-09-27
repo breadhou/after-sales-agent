@@ -140,7 +140,6 @@ class RefundReviewContextFactoryTest {
         var rejected = assertThrows(RefundReviewContextFactory.RefundNotEligibleException.class,
                 () -> factory.requireEligible(9001L, "退款", "原话"));
         assertEquals("订单当前不可退", rejected.getMessage());
-        assertNoReviewOrExecution(factory);
     }
 
     @Test
@@ -155,7 +154,6 @@ class RefundReviewContextFactoryTest {
         var rejected = assertThrows(RefundReviewContextFactory.RefundNotEligibleException.class,
                 () -> factory.requireEligible(9001L, "退款", "原话"));
         assertEquals("该订单已有退款申请在处理中", rejected.getMessage());
-        assertNoReviewOrExecution(factory);
         assertThrows(RefundReviewContextFactory.RefundFactsUnavailableException.class,
                 () -> factory(ORDER, CHECKED_ELIGIBILITY.replace("\"refundExists\":false", "\"refundExists\":true"),
                         false, new ArrayList<>()).requireEligible(9001L, "退款", "原话"));
@@ -172,7 +170,6 @@ class RefundReviewContextFactoryTest {
 
         assertThrows(RefundReviewContextFactory.RefundFactsUnavailableException.class,
                 () -> factory.requireEligible(9001L, "退款", "原话"));
-        assertNoReviewOrExecution(factory);
     }
 
     @Test
@@ -186,7 +183,6 @@ class RefundReviewContextFactoryTest {
             RefundReviewContextFactory factory = factory(ORDER, eligibility, false, new ArrayList<>());
             assertThrows(RefundReviewContextFactory.RefundFactsUnavailableException.class,
                     () -> factory.requireEligible(9001L, "退款", "原话"));
-            assertNoReviewOrExecution(factory);
         }
     }
 
@@ -200,7 +196,6 @@ class RefundReviewContextFactoryTest {
 
         assertThrows(RefundReviewContextFactory.RefundFactsUnavailableException.class,
                 () -> factory.requireEligible(9001L, "退款", "原话"));
-        assertNoReviewOrExecution(factory);
     }
 
     @Test
@@ -225,21 +220,4 @@ class RefundReviewContextFactoryTest {
                         .requireEligible(9001L, "退款", "原话"));
     }
 
-    private static void assertNoReviewOrExecution(RefundReviewContextFactory factory) {
-        AtomicInteger reviews = new AtomicInteger();
-        AtomicInteger executions = new AtomicInteger();
-        RefundRequestTools tools = new RefundRequestTools(
-                (orderId, reason) -> {
-                    CheckedRefundFacts facts = factory.requireEligible(orderId, reason, "原话");
-                    return new RefundReviewContext(facts.originalUserRequest(), facts.trustedOrder(),
-                            facts.trustedEligibility(), facts.candidateAction());
-                },
-                context -> { reviews.incrementAndGet(); return ReviewVerdict.approvedVerdict(); },
-                (orderId, reason) -> { executions.incrementAndGet(); return "执行成功"; },
-                (orderId, reason) -> "已记录",
-                "session-1");
-        tools.requestRefund(9001L, "退款");
-        assertEquals(0, reviews.get());
-        assertEquals(0, executions.get());
-    }
 }

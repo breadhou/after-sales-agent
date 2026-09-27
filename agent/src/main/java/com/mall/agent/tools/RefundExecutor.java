@@ -9,11 +9,10 @@ import dev.langchain4j.mcp.client.McpClient;
 import dev.langchain4j.service.tool.ToolExecutionResult;
 
 import java.math.BigDecimal;
-import java.util.function.BiFunction;
 import java.util.function.Function;
 
-/** MCP submit_refund 在 Agent 客户端的唯一调用点；只在复核通过后由 RefundRequestTools 使用。 */
-public class RefundExecutor implements BiFunction<Long, String, String> {
+/** MCP submit_refund 在 Agent 客户端的唯一调用点；只接收已复核的政策版本与条款。 */
+public class RefundExecutor {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -28,18 +27,31 @@ public class RefundExecutor implements BiFunction<Long, String, String> {
         this.toolCaller = toolCaller;
     }
 
-    @Override
-    public String apply(Long orderId, String reason) {
+    public String apply(Long orderId, String reason, String expectedCatalogFingerprint,
+                        String expectedPolicyCode) {
+        if (orderId == null || orderId <= 0 || reason == null || reason.isBlank()
+                || expectedCatalogFingerprint == null || expectedCatalogFingerprint.isBlank()
+                || expectedPolicyCode == null || expectedPolicyCode.isBlank()) {
+            throw new IllegalArgumentException("缺少已复核的退款参数");
+        }
         ObjectNode arguments = MAPPER.createObjectNode()
                 .put("orderId", orderId)
-                .put("reason", reason);
+                .put("reason", reason)
+                .put("expectedCatalogFingerprint", expectedCatalogFingerprint)
+                .put("expectedPolicyCode", expectedPolicyCode);
         ToolExecutionRequest request = ToolExecutionRequest.builder()
                 .name("submit_refund")
                 .arguments(arguments.toString())
                 .build();
 
         ToolExecutionResult result = toolCaller.apply(request);
-        if (result == null || result.isError()) {
+        if (result == null) {
+            throw new IllegalStateException("退款提交未返回可确认的执行结果");
+        }
+        if (result.isError()) {
+            if (isStaleReview(result.resultText())) {
+                throw new StaleReviewException();
+            }
             throw new IllegalStateException("退款提交未返回可确认的执行结果");
         }
         String resultText = result.resultText();
@@ -47,6 +59,26 @@ public class RefundExecutor implements BiFunction<Long, String, String> {
             throw new IllegalStateException("退款提交未返回可确认的执行结果");
         }
         return confirmedResult(orderId, resultText);
+    }
+
+    private static boolean isStaleReview(String text) {
+        if (text == null || text.isBlank()) return false;
+        try {
+            JsonNode error = MAPPER.readerFor(JsonNode.class)
+                    .with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readValue(text);
+            return error != null && error.isObject() && error.path("code").isIntegralNumber()
+                    && error.path("code").canConvertToLong()
+                    && error.path("code").longValue() == 50005L
+                    && error.path("message").isTextual();
+        } catch (JsonProcessingException e) {
+            return false;
+        }
+    }
+
+    /** Backend's explicit pre-write 50005 means no new refund was created. */
+    public static final class StaleReviewException extends IllegalStateException {
+        public StaleReviewException() { super("复核依据已过期"); }
     }
 
     /** 后端成功回执的三个确定语义；其余形态的执行结果只能视为不确定。 */

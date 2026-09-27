@@ -7,9 +7,10 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.mall.agent.config.AgentConfig;
 import com.mall.agent.config.ModelProperties;
 import com.mall.agent.flow.ConversationCoordinator;
+import com.mall.agent.flow.RefundWorkflow;
 import com.mall.agent.tools.EscalationTools;
 import com.mall.agent.tools.RefundHandoffTools;
-import com.mall.agent.tools.RefundRequestTools;
+import com.mall.agent.tools.RefundExecutor;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.mcp.client.McpClient;
 import dev.langchain4j.model.chat.ChatModel;
@@ -53,12 +54,15 @@ public final class AgentMain {
                     System.err.println("[升级人工] 请求已记录"));
             RefundHandoffTools handoff = new RefundHandoffTools();
             DecisionAgent agent = AgentConfig.decisionAgent(model, mcp, handoff, escalation);
+            RefundExecutor executor = new RefundExecutor(mcp);
+            RefundWorkflow refundWorkflow = new RefundWorkflow(mcp,
+                    context -> AgentConfig.reviewSafely(AgentConfig.reviewAgent(model), context),
+                    executor::apply, escalation);
             ConversationCoordinator coordinator = new ConversationCoordinator(agent, handoff, escalation,
                     () -> listedOrderIds(mcp::executeTool),
                     orderId -> eligibilityReply(orderId, mcp::executeTool),
                     orderId -> isOrderRefunded(orderId, mcp::executeTool),
-                    (confirmedSession, request) -> "订单 " + request.orderId()
-                            + " 的退款申请已确认；退款流程尚未接入，本次未执行退款。");
+                    refundWorkflow::apply);
 
             System.out.println("售后客服已就绪（会话 " + sessionId + "）。输入 exit 退出。");
             runSession(coordinator, sessionId,
@@ -213,12 +217,6 @@ public final class AgentMain {
         } catch (IOException e) {
             return null;
         }
-    }
-
-    /** 仅为 Task 7 迁移前的旧单元测试保留，CLI 已不再使用旧退款工具。 */
-    static String finalResponse(String modelResponse, RefundRequestTools refundTools) {
-        String trustedReply = refundTools.takeAuthoritativeReply();
-        return trustedReply != null ? trustedReply : modelResponse;
     }
 
     private static void copyRequiredModelEnvironment(Properties properties,

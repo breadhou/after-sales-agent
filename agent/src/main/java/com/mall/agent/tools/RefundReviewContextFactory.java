@@ -47,7 +47,7 @@ public final class RefundReviewContextFactory
                 rawRequest,
                 read("get_order", orderId),
                 read("get_refund_eligibility", orderId),
-                new CandidateRefundAction(orderId, reason));
+                new CandidateRefundAction(orderId, reason), null);
     }
 
     public CheckedRefundFacts requireEligible(Long orderId, String reason, String originalUserRequest) {
