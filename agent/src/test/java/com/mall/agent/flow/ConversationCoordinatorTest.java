@@ -489,6 +489,30 @@ class ConversationCoordinatorTest {
     }
 
     @Test
+    void modelOnlyMoneyReturnParaphraseCannotClaimCompletion() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger statusReads = new AtomicInteger();
+        AtomicInteger workflowCalls = new AtomicInteger();
+        ConversationCoordinator coordinator = new ConversationCoordinator(
+                (session, input) -> "已经打回您卡里了", handoff,
+                new EscalationTools(SESSION, ignored -> { }), () -> List.of(9001L),
+                id -> "不应查询资格", id -> {
+                    assertEquals(9001L, id);
+                    statusReads.incrementAndGet();
+                    return false;
+                }, (session, request) -> {
+                    workflowCalls.incrementAndGet();
+                    return "不应执行退款";
+                });
+
+        String reply = coordinator.handleTurn(SESSION, "把订单 9001 的款打回来");
+        assertTrue(reply.contains("本次未提交退款"), reply);
+        assertFalse(reply.contains("已经打回您卡里了"), reply);
+        assertEquals(1, statusReads.get());
+        assertEquals(0, workflowCalls.get());
+    }
+
+    @Test
     void processOnlyQuestionKeepsNormalAnswer() {
         RefundHandoffTools handoff = new RefundHandoffTools();
         AtomicInteger workflowCalls = new AtomicInteger();
@@ -754,6 +778,28 @@ class ConversationCoordinatorTest {
         String reply = coordinator.handleTurn(SESSION, "查一下订单 9001 物流");
         assertTrue(reply.contains("无法确认"), reply);
         assertFalse(reply.contains("REFUNDED"), reply);
+    }
+
+    @Test
+    void unrelatedShippingAndFreightClausesKeepLogisticsAnswer() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger statusReads = new AtomicInteger();
+        AtomicInteger workflowCalls = new AtomicInteger();
+        String modelReply = "订单 9001 已发货，运费的钱请联系商家核对";
+        ConversationCoordinator coordinator = new ConversationCoordinator(
+                (session, input) -> modelReply, handoff,
+                new EscalationTools(SESSION, ignored -> { }), () -> List.of(9001L),
+                id -> "不应查询资格", id -> {
+                    statusReads.incrementAndGet();
+                    return false;
+                }, (session, request) -> {
+                    workflowCalls.incrementAndGet();
+                    return "不应执行退款";
+                });
+
+        assertEquals(modelReply, coordinator.handleTurn(SESSION, "查一下订单 9001 物流"));
+        assertEquals(0, statusReads.get());
+        assertEquals(0, workflowCalls.get());
     }
 
     @Test

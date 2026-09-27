@@ -35,8 +35,10 @@ public final class ConversationCoordinator {
     private static final Pattern REASON_CUE = Pattern.compile(
             "(?:退款理由|理由|原因)\\s*(?:[:：]|是)\\s*|因为\\s*|由于\\s*");
     private static final Pattern REASON_END = Pattern.compile("[，,。；;！？!?\\r\\n]");
+    private static final Pattern REFUND_CLAUSE_BOUNDARY = Pattern.compile("[，,。；;！？!?\\r\\n]+");
+    private static final Pattern MONEY_RETURN_REQUEST = Pattern.compile("(?:钱|款)\\s*(?:打回|退回)(?:来)?");
     private static final Pattern REFUND_OUTCOME_TOPIC = Pattern.compile(
-            "退款|退货|退回|款项|钱|到账|REFUNDED");
+            "退款|退货|退回|打回|退到|退给|到账");
     private static final Pattern OUTCOME_ASSERTION = Pattern.compile(
             "已|已经|成功|完成|办好|办妥|处理好|到账|退回|提交");
     private static final Set<String> NON_SUBSTANTIVE_REASONS = Set.of(
@@ -146,12 +148,21 @@ public final class ConversationCoordinator {
     private static boolean refundTopic(String text) {
         return text.contains("退款") || text.contains("退货") || text.contains("退回")
                 || text.contains("款项") || text.contains("到账")
-                || (text.contains("钱") && (text.contains("退") || text.contains("还")));
+                || (text.contains("钱") && (text.contains("退") || text.contains("还")))
+                || MONEY_RETURN_REQUEST.matcher(text).find();
     }
 
     private static boolean refundOutcomeClaim(String text) {
-        return text.contains("REFUNDED") || REFUND_OUTCOME_TOPIC.matcher(text).find()
-                && OUTCOME_ASSERTION.matcher(text).find();
+        if (text.contains("REFUNDED")) {
+            return true;
+        }
+        for (String clause : REFUND_CLAUSE_BOUNDARY.split(text)) {
+            if (REFUND_OUTCOME_TOPIC.matcher(clause).find()
+                    && OUTCOME_ASSERTION.matcher(clause).find()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String respondToHandoff(String sessionId, String rawInput,
