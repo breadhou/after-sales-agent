@@ -76,14 +76,11 @@ git -C D:/sourcecode/supermall log --oneline main..feat/after-sales-capability
 
 ## 怎么执行这些计划
 
-三份计划的头部写着 `REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or
-superpowers:executing-plans`——那是 Claude Code 的插件技能，**Codex 没有**。没有该技能时，按此等价做法：
-
-1. 打开计划，**按 Step 逐步执行**，一次一个 Task
-2. **每一步都跑该步给出的验证命令**，以真实输出作为完成依据——不要凭「代码看起来对」宣布通过
-3. 每完成一个 Task 回报用户；发现新问题按上面的「隐患清单纪律」处理
-4. **发现计划文本与磁盘事实不符时，先核实、说出事实、把选择权交回，不要照抄。**
-   本项目已因此发生过两次：一次是照抄一段 javadoc 会漏掉一个象限，一次是照做会产生一个空提交
+执行实施计划时，以 **Superpowers SDD 作为唯一编排流程**；模型选择与升级规则见
+`docs/agent-routing.md`。在 SDD 的各 Task 中按 Step 验证，以命令的真实输出作为完成依据，
+每完成一个 Task 回报结果，并按上面的「隐患清单纪律」处理新发现。
+计划中的契约文字和步骤如与实现或磁盘事实不符，先核实差异，再按 SDD 流程处理；
+不要照抄未经核对的 javadoc，也不要为满足步骤制造空提交。
 
 ## 怎么跑 supermall
 

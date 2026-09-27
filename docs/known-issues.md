@@ -1175,7 +1175,7 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 **但也要承认**：这是该主张延伸到较远处的一条——若条款文本在实际使用中根本不变，
 本条的收益会很低。发现时判断是「值得修」；发布端已完成，消费者当时仍待修。
 
-**阶段 3A 收口证据（2026-09-28）**：同一长期运行的 Agent/MCP 进程在真实 supermall v1→v2→v1 部署期间刷新了目录指纹和条款文本；旧指纹写入返回 50005 且无新退款，断服刷新失败后停止自动退款。详见阶段 3A 验证记录。
+**阶段 3A 收口证据（2026-09-28）**：同一长期运行的 Agent/MCP 进程在真实 supermall v1→v2→v1 部署期间刷新了目录指纹和条款文本；旧指纹写入返回 50005 且无新退款。断服时直接调用消费者刷新会抛错而不返回旧目录；完整退款流程更早在订单事实查询处失败且无写入。隔离的目录刷新失败不返回旧证据由 `PolicyCatalogConsumerTest.failedRefreshNeverReturnsOldEvidence` 覆盖。详见阶段 3A 验证记录。
 
 ---
 
