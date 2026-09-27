@@ -3,6 +3,7 @@ package com.mall.agent.tools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.exception.ToolExecutionException;
 import dev.langchain4j.service.tool.ToolExecutionResult;
 import org.junit.jupiter.api.Test;
 
@@ -34,9 +35,34 @@ class RefundExecutorTest {
     @Test
     void staleReviewCodeIsDefiniteRejection() {
         RefundExecutor executor = new RefundExecutor(request -> ToolExecutionResult.builder().isError(true)
-                .resultText("{\"code\":50005,\"message\":\"复核依据已过期\"}").build());
+                .resultText("{\"error\":true,\"code\":50005,\"message\":\"复核依据已过期\"}").build());
         assertThrows(RefundExecutor.StaleReviewException.class,
                 () -> executor.apply(9001L, "未收到货", "fp-1", "SHIPPED_NOT_RECEIVED"));
+    }
+
+    @Test
+    void sdkApplicationErrorWithStructuredStaleCodeIsDefiniteRejection() {
+        RefundExecutor executor = new RefundExecutor(request -> {
+            throw new ToolExecutionException(
+                    "{\"error\":true,\"code\":50005,\"message\":\"复核依据已过期\"}");
+        });
+        assertThrows(RefundExecutor.StaleReviewException.class,
+                () -> executor.apply(9001L, "未收到货", "fp-1", "SHIPPED_NOT_RECEIVED"));
+    }
+
+    @Test
+    void sdkTransportAndMalformedErrorsRemainUnknown() {
+        for (ToolExecutionException sdkError : List.of(
+                new ToolExecutionException("{\"error\":true,\"code\":-2,\"message\":\"不可用\"}"),
+                new ToolExecutionException("prefix {\"error\":true,\"code\":50005,\"message\":\"x\"}"),
+                new ToolExecutionException("{\"error\":false,\"code\":50005,\"message\":\"x\"}"),
+                new ToolExecutionException("{\"error\":true,\"code\":50005}"),
+                new ToolExecutionException("{\"error\":true,\"code\":50005,\"message\":\"x\"}", -32603))) {
+            RefundExecutor executor = new RefundExecutor(request -> { throw sdkError; });
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> executor.apply(9001L, "未收到货", "fp-1", "SHIPPED_NOT_RECEIVED"));
+            assertFalse(failure instanceof RefundExecutor.StaleReviewException);
+        }
     }
 
     @Test

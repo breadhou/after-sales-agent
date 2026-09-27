@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import dev.langchain4j.exception.ToolExecutionException;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.mcp.client.McpClient;
 import dev.langchain4j.service.tool.ToolExecutionResult;
@@ -44,7 +45,20 @@ public class RefundExecutor {
                 .arguments(arguments.toString())
                 .build();
 
-        ToolExecutionResult result = toolCaller.apply(request);
+        ToolExecutionResult result;
+        try {
+            result = toolCaller.apply(request);
+        } catch (ToolExecutionException e) {
+            // The MCP SDK throws for an application-level isError result, carrying
+            // our server's structured business envelope in its message cause.
+            Throwable cause = e.getCause();
+            if (e.errorCode() == null && cause != null
+                    && cause.getClass() == RuntimeException.class && cause.getCause() == null
+                    && isStaleReview(cause.getMessage())) {
+                throw new StaleReviewException();
+            }
+            throw e;
+        }
         if (result == null) {
             throw new IllegalStateException("退款提交未返回可确认的执行结果");
         }
@@ -67,10 +81,13 @@ public class RefundExecutor {
             JsonNode error = MAPPER.readerFor(JsonNode.class)
                     .with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
                     .readValue(text);
-            return error != null && error.isObject() && error.path("code").isIntegralNumber()
+            return error != null && error.isObject() && error.size() == 3
+                    && error.path("error").isBoolean() && error.path("error").booleanValue()
+                    && error.path("code").isIntegralNumber()
                     && error.path("code").canConvertToLong()
                     && error.path("code").longValue() == 50005L
-                    && error.path("message").isTextual();
+                    && error.path("message").isTextual()
+                    && !error.path("message").textValue().isBlank();
         } catch (JsonProcessingException e) {
             return false;
         }

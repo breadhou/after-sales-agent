@@ -50,7 +50,7 @@
 
 | 仓库 | 约定 |
 |---|---|
-| **本仓库** | 文档直接提交到 `main`，**不开分支**（无远程、单分支） |
+| **本仓库** | 历史文档直接提交到 `main`（无远程）；阶段 3A 按 SDD 在隔离工作树的 `codex/phase3a-rag-refund-review` 分支实施与审查，未合并前不要把它当作 `main` 已交付 |
 | **supermall** | **有远程，必须开分支**——两个仓库情况不同，处理不同 |
 
 ## 当前进度与下一步
@@ -58,14 +58,15 @@
 **计划 A：Task 1–8 已完成。** Task 7 的实现提交为 supermall `b1ff494`；Task 8 的验证记录见
 `supermall/docs/plan-a-task8-validation-2026-09-22.md`。
 实现、验证与 K-36 的架构验收均已完成：supermall `bf2d59a` 已使政策条款与当前执行语义对齐。
-Task 7 已实现不可变政策目录快照及其指纹；K-13 的 Agent 消费者仍待阶段 3 落地。
-阶段 3 的设计与 3A/3B 实施计划已写，代码尚未开始。决策 Agent 保留普通售后对话与只读查询，明确退款请求转接可信编排；同源政策检索进入独立复核。先执行 3A Task 1–8 并验收，再执行 3B Task 1–6；不要把计划复选框当成已完成证据。
+Task 7 已实现不可变政策目录快照及其指纹；阶段 3A 已加入 Agent 消费者。
+阶段 3A Task 1–8 已实现并完成真实环境验证，独立 SDD 审查待完成；证据见
+`docs/phase3a-rag-refund-validation-2026-09-28.md`。决策 Agent 保留普通售后对话与只读查询，明确退款请求转接可信编排；同源政策精确检索进入独立复核。根 Maven reactor 修复后 170/170，真实目录 v1→v2→v1 切换、版本失配拒写、无写入降级均通过。3A 验收后暂停，先与用户讨论 3B，**不要自动开始 3B**；不要把计划复选框当成已完成证据。
 **计划 B：Task 1–6 已完成**（实现 `2e026da`、修复 `0391378`）。Task 6 的真实环境响应与数据库核对见 `docs/plan-b-task6-validation-2026-09-24.md`；34/34 Maven 测试通过。运行验证使用 JDK 22，JDK 17 运行尚未验证。
 **计划 C：Task 1–6 已完成**（Task 1–4 为 `62621da`、`e8cd154`、`0656eca`、`72fad2d`）。Task 6 已用新订单完成真实模型、MCP 与退款端到端验证：正常退款、施压、冒充授权、不可退订单、复核强制驳回与恢复均通过；完整证据见 `docs/plan-c-task6-validation-2026-09-25.md`。根 Maven reactor 98/98、启动器测试 5/5 通过；运行验证使用 JDK 22，JDK 17 运行仍未验证。
 
 > ⚠️ **计划里的复选框没有被回填**（53 个全部未勾）——**不要拿它当进度依据**，否则会从 Task 1 重做。
 
-**可靠的进度依据是 supermall 的分支历史**：
+**历史计划 A 的可靠进度依据是 supermall 的分支历史；阶段 3A 还须核对两个仓库的隔离分支提交与验证记录**：
 
 ```bash
 git -C D:/sourcecode/supermall log --oneline main..feat/after-sales-capability
@@ -130,3 +131,15 @@ superpowers:executing-plans`——那是 Claude Code 的插件技能，**Codex �
 - `supermall/AGENTS.md` 因此于 2026-09-22 拆分：历史进度叙事移到了
   `supermall/docs/progress-and-loadtest-log.md`。**改那份文件前先 `wc -c`。**
 - 本文件同样受此限制。
+
+## Development workflow
+
+For implementation plans, use Superpowers SDD as the sole
+implementation orchestration workflow.
+
+For model-selection and escalation policy, read:
+
+`docs/agent-routing.md`
+
+Do not create an independent Worker/Reviewer orchestration layer
+while SDD is active.
