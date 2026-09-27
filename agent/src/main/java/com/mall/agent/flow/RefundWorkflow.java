@@ -17,9 +17,15 @@ import dev.langchain4j.mcp.client.McpClient;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 
 /** Trusted refund path after a user-confirmed request. The reviewer has no tool access. */
 public final class RefundWorkflow {
+    /** Recognizes explicit role/instruction framing in untrusted catalog text. */
+    private static final Pattern POLICY_ROLE_INSTRUCTION = Pattern.compile(
+            "(?im)^\\s*(?:#{1,6}\\s*)?(?:\\[\\s*)?(?:system|developer|assistant|系统指令|开发者指令)"
+                    + "(?:\\s*\\])?\\s*[:：]|<\\|im_start\\|>\\s*(?:system|developer|assistant)");
+    private static final String GENERIC_REASON = "需要人工核实。";
     @FunctionalInterface
     public interface RefundSubmitter {
         String apply(Long orderId, String reason, String fingerprint, String policyCode);
@@ -75,6 +81,10 @@ public final class RefundWorkflow {
             } catch (RuntimeException e) {
                 return rejectAndEscalate(key, orderId, "政策目录无法核实", null, null, false);
             }
+            if (POLICY_ROLE_INSTRUCTION.matcher(evidence.title()).find()
+                    || POLICY_ROLE_INSTRUCTION.matcher(evidence.clauseText()).find()) {
+                return rejectAndEscalate(key, orderId, "政策条款含有指令式内容", null, null, false);
+            }
 
             RefundReviewContext context = new RefundReviewContext(facts.originalUserRequest(),
                     facts.trustedOrder(), facts.trustedEligibility(), facts.candidateAction(), evidence);
@@ -119,24 +129,30 @@ public final class RefundWorkflow {
     }
 
     private static String verifiedReason(ReviewVerdict verdict, RefundReviewContext context) {
-        if (verdict == null || context == null) return "需要人工核实。";
+        if (verdict == null || context == null) return GENERIC_REASON;
         for (ReviewFault fault : verdict.faults()) {
             String evidence = fault.evidence();
             boolean grounded = switch (fault.category()) {
-                case "FACT_CONFLICT" -> context.trustedOrder().contains(evidence)
-                        || context.trustedEligibility().contains(evidence);
-                case "POLICY_CONFLICT" -> context.policyEvidence().clauseText().contains(evidence);
-                case "USER_INSTRUCTION_RISK" -> context.originalUserRequest().contains(evidence);
+                // CheckedRefundFacts already reconciles the order and eligibility fields we can prove.
+                // A model's quoted token cannot establish a fact or policy contradiction.
+                // Those claims need structured predicates we do not have in this phase.
+                case "FACT_CONFLICT", "POLICY_CONFLICT" -> false;
+                case "USER_INSTRUCTION_RISK" -> explicitUserRisk(evidence)
+                        && context.originalUserRequest().contains(evidence);
                 default -> false;
             };
-            if (!grounded) return "需要人工核实。";
+            if (!grounded) return GENERIC_REASON;
         }
         ReviewFault first = verdict.faults().get(0);
         return switch (first.category()) {
-            case "FACT_CONFLICT" -> "复核发现订单或资格事实有冲突。";
-            case "POLICY_CONFLICT" -> "复核发现申请与政策条款不符。";
             case "USER_INSTRUCTION_RISK" -> "复核发现原始诉求需要人工核查。";
-            default -> "需要人工核实。";
+            default -> GENERIC_REASON;
         };
+    }
+
+    private static boolean explicitUserRisk(String evidence) {
+        return evidence.contains("跳过查证") || evidence.contains("别查")
+                || evidence.contains("不要核实") || evidence.contains("无需核实")
+                || evidence.contains("我是管理员") || evidence.contains("我是老板");
     }
 }

@@ -220,4 +220,23 @@ class RefundReviewContextFactoryTest {
                         .requireEligible(9001L, "退款", "原话"));
     }
 
+    @Test
+    void consistentCancelledOrderCannotBecomeEligibleFacts() {
+        String cancelledOrder = ORDER.replace("RECEIVED", "CANCELLED");
+        String cancelledEligibility = CHECKED_ELIGIBILITY.replace("RECEIVED", "CANCELLED");
+        assertThrows(RefundReviewContextFactory.RefundFactsUnavailableException.class,
+                () -> factory(cancelledOrder, cancelledEligibility, false, new ArrayList<>())
+                        .requireEligible(9001L, "退款", "原话"));
+    }
+
+    @Test
+    void currentBackendRefundableStatusesRemainEligibleFacts() {
+        for (String status : List.of("SHIPPED", "DELIVERED", "RECEIVED")) {
+            var facts = factory(ORDER.replace("RECEIVED", status),
+                    CHECKED_ELIGIBILITY.replace("RECEIVED", status), false, new ArrayList<>())
+                    .requireEligible(9001L, "退款", "原话");
+            assertEquals(status, facts.orderStatus());
+        }
+    }
+
 }

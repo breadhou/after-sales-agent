@@ -13,6 +13,7 @@ import dev.langchain4j.mcp.client.McpClient;
 import dev.langchain4j.service.tool.ToolExecutionResult;
 
 import java.math.BigDecimal;
+import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -22,6 +23,8 @@ public final class RefundReviewContextFactory
         implements BiFunction<Long, String, RefundReviewContext> {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    /** Current backend AfterSalesPolicy.resolve status domain; do not infer finer policy selection here. */
+    private static final Set<String> REFUNDABLE_STATUSES = Set.of("SHIPPED", "DELIVERED", "RECEIVED");
 
     private final Function<ToolExecutionRequest, ToolExecutionResult> toolCaller;
     private final Supplier<String> originalUserRequest;
@@ -87,6 +90,9 @@ public final class RefundReviewContextFactory
                 throw new RefundFactsUnavailableException("不可退资格缺少后端原因");
             }
             throw new RefundNotEligibleException(eligibility.path("reason").textValue());
+        }
+        if (!REFUNDABLE_STATUSES.contains(orderStatus)) {
+            throw new RefundFactsUnavailableException("可退资格与订单状态不一致");
         }
 
         if (!text(eligibility, "policyCode") || !text(eligibility, "policyTitle")) {
