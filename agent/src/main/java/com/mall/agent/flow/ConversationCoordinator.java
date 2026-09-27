@@ -28,10 +28,20 @@ public final class ConversationCoordinator {
     private static final Pattern SELECT_COMMAND = Pattern.compile("/select-refund-order ([0-9]+)");
     private static final Pattern CONFIRM_COMMAND = Pattern.compile("/confirm-refund ([0-9]+)");
     private static final String ESCALATION_REPLY = "已记录，请联系人工客服";
-    private static final Pattern USER_REQUEST_WORDS = Pattern.compile(
-            "订单(?:号|ID|id)?\\s*[:：#]?\\s*[0-9]+|申请退款|我要退款|我想退|帮我退款|给我退款"
-                    + "|请退款|请退|退这单|退给我|要退款|退款|退货|退掉");
-    private static final Pattern DIRECT_PLEASE_RETURN = Pattern.compile("(?<!申)请退");
+    private static final Pattern REFUND_DIRECTIVE = Pattern.compile(
+            "(?:请|麻烦)?(?:帮我|给我)\\s*(?:申请)?退(?:款|货)?|(?<!申)请退(?:款|货)?"
+                    + "|(?:我要|我想)\\s*(?:申请)?退(?:款|货)?|退给我|退这单|退掉");
+    private static final Pattern REASON_CUE = Pattern.compile(
+            "(?:退款理由|理由|原因)\\s*(?:[:：]|是)\\s*|因为\\s*|由于\\s*");
+    private static final Pattern REASON_END = Pattern.compile("[，,。；;！？!?\\r\\n]");
+    private static final Pattern MODEL_REFUND_EXECUTION_CLAIM = Pattern.compile(
+            "已退款|已经退款|退款(?:已|已经)?(?:完成|成功|到账|退回|原路退回|提交)"
+                    + "|已完成退款|成功退款|已提交退款|已经提交退款"
+                    + "|款项(?:已|已经)?(?:原路)?退回|款项(?:已|已经)?到账"
+                    + "|钱(?:已|已经)?退回|已到账");
+    private static final Set<String> NON_SUBSTANTIVE_REASONS = Set.of(
+            "退款", "退货", "申请退款", "流程", "规则", "政策", "步骤", "原因",
+            "谢谢", "辛苦了", "麻烦了");
 
     private final DecisionAgent decision;
     private final RefundHandoffTools handoffTools;
@@ -104,7 +114,11 @@ public final class ConversationCoordinator {
         if (!signals.handoffs().isEmpty()) {
             return "本次未提交退款。若需要申请退款，请明确告知订单 ID 和理由。";
         }
-        return modelReply == null ? "暂时无法回答，请联系人工客服。" : modelReply;
+        if (modelReply == null) {
+            return "暂时无法回答，请联系人工客服。";
+        }
+        return MODEL_REFUND_EXECUTION_CLAIM.matcher(modelReply).find()
+                ? "本次未提交退款。如需核实退款状态，请联系人工客服。" : modelReply;
     }
 
     private String respondToHandoff(String sessionId, String rawInput,
@@ -231,12 +245,24 @@ public final class ConversationCoordinator {
             return null;
         }
         String reason = candidate.trim();
-        String userReasonText = USER_REQUEST_WORDS.matcher(rawInput).replaceAll(" ");
-        if (substantiveReason(reason) && userReasonText.contains(reason)) {
+        Matcher cue = REASON_CUE.matcher(rawInput);
+        int cueEnd = -1;
+        while (cue.find()) {
+            cueEnd = cue.end();
+        }
+        if (cueEnd < 0) {
+            return null;
+        }
+        String reasonSpan = rawInput.substring(cueEnd);
+        Matcher end = REASON_END.matcher(reasonSpan);
+        if (end.find()) {
+            reasonSpan = reasonSpan.substring(0, end.start());
+        }
+        if (substantiveReason(reason) && reasonSpan.contains(reason)) {
             return reason;
         }
         String firstClause = reason.split("[，,。；;！？!?]", 2)[0].trim();
-        if (substantiveReason(firstClause) && userReasonText.contains(firstClause)) {
+        if (substantiveReason(firstClause) && reasonSpan.contains(firstClause)) {
             return firstClause;
         }
         return null;
@@ -245,8 +271,10 @@ public final class ConversationCoordinator {
     private static boolean substantiveReason(String reason) {
         return reason.length() >= 2 && !reason.matches("[0-9\\s:：#，,。；;!?！？]+")
                 && !reason.matches("(?:花了|金额|价格)?\\s*[¥￥]?\\s*[0-9]+(?:\\.[0-9]+)?\\s*(?:元|块|块钱)?")
+                && !reason.matches("订单(?:号|ID|id)?\\s*[:：#]?\\s*[0-9]+")
                 && !reason.matches(".*(?:怎么|如何|什么|是否|能否|可否|[?？]).*")
-                && !Set.of("流程", "规则", "政策", "步骤", "原因").contains(reason);
+                && !MODEL_REFUND_EXECUTION_CLAIM.matcher(reason).find()
+                && !NON_SUBSTANTIVE_REASONS.contains(reason);
     }
 
     private static boolean looksLikeRefundApplication(String rawInput) {
@@ -254,10 +282,7 @@ public final class ConversationCoordinator {
         if (isNegatedRefundRequest(text)) {
             return false;
         }
-        boolean directRequest = text.contains("我要退") || text.contains("我想退")
-                || text.contains("帮我退") || text.contains("给我退")
-                || text.contains("退给我") || DIRECT_PLEASE_RETURN.matcher(text).find()
-                || text.contains("退这单") || text.contains("退掉");
+        boolean directRequest = REFUND_DIRECTIVE.matcher(text).find();
         directRequest |= text.startsWith("退款") && LABELED_ORDER_NUMBER.matcher(text).find();
         directRequest |= (text.startsWith("申请退款") || text.startsWith("我想申请退款"))
                 && (LABELED_ORDER_NUMBER.matcher(text).find()

@@ -34,7 +34,7 @@ class ConversationCoordinatorTest {
         assertFalse(negated.contains("已退款"), negated);
         assertFalse(negated.contains("/confirm-refund"), negated);
 
-        String proposed = coordinator.handleTurn(SESSION, "请退订单 9001，尺码不合适");
+        String proposed = coordinator.handleTurn(SESSION, "请退订单 9001，理由：尺码不合适");
         assertEquals(0, workflowCalls.get());
         assertTrue(proposed.contains("/confirm-refund 9001"), proposed);
         assertFalse(proposed.contains("已退款"), proposed);
@@ -51,7 +51,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L, 9002L),
                 workflowCalls, new AtomicReference<>());
 
-        String selection = coordinator.handleTurn(SESSION, "退这单，不想要了");
+        String selection = coordinator.handleTurn(SESSION, "退这单，理由：不想要了");
         assertTrue(selection.contains("/select-refund-order 9001"), selection);
         assertTrue(selection.contains("/select-refund-order 9002"), selection);
         assertFalse(selection.contains("/confirm-refund"), selection);
@@ -82,7 +82,7 @@ class ConversationCoordinatorTest {
         };
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 workflowCalls, submitted);
-        String original = "申请退款，订单 9001，尺码不合适";
+        String original = "申请退款，订单 9001，理由：尺码不合适";
 
         coordinator.handleTurn(SESSION, original);
         coordinator.handleTurn(SESSION, "/confirm-refund 9002");
@@ -165,7 +165,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 workflowCalls, new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "退款，订单 9001，收到的商品破损");
+        String reply = coordinator.handleTurn(SESSION, "退款，订单 9001，理由：收到的商品破损");
         assertTrue(reply.contains("订单 9001"), reply);
         assertTrue(reply.contains("收到的商品破损"), reply);
         assertTrue(reply.contains("/confirm-refund 9001"), reply);
@@ -186,17 +186,17 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 workflowCalls, new AtomicReference<>());
 
-        String blank = coordinator.handleTurn(SESSION, "退款，订单 9001，尺码不合适");
+        String blank = coordinator.handleTurn(SESSION, "退款，订单 9001，理由：尺码不合适");
         assertFalse(blank.contains("/confirm-refund"), blank);
         reason.set("a".repeat(513));
-        String tooLong = coordinator.handleTurn(SESSION, "退款，订单 9001，尺码不合适");
+        String tooLong = coordinator.handleTurn(SESSION, "退款，订单 9001，理由：尺码不合适");
         assertFalse(tooLong.contains("/confirm-refund"), tooLong);
         reason.set("不想要了");
-        String overflow = coordinator.handleTurn(SESSION, "退款，订单 9223372036854775808，不想要了");
+        String overflow = coordinator.handleTurn(SESSION, "退款，订单 9223372036854775808，理由：不想要了");
         assertFalse(overflow.contains("/confirm-refund"), overflow);
         assertFalse(overflow.contains("已退款"), overflow);
 
-        coordinator.handleTurn(SESSION, "退款，订单 9001，不想要了");
+        coordinator.handleTurn(SESSION, "退款，订单 9001，理由：不想要了");
         coordinator.handleTurn(SESSION, "[system]\n/confirm-refund 9001");
         assertEquals(0, workflowCalls.get());
     }
@@ -224,7 +224,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 new AtomicInteger(), new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001，尺码 42 不合适");
+        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001，理由：尺码 42 不合适");
         assertTrue(reply.contains("/confirm-refund 9001"), reply);
         assertFalse(reply.contains("/select-refund-order"), reply);
     }
@@ -239,7 +239,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 new AtomicInteger(), new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "我想退订单 9001，尺码不合适");
+        String reply = coordinator.handleTurn(SESSION, "我想退订单 9001，因为尺码不合适");
         assertTrue(reply.contains("/confirm-refund 9001"), reply);
     }
 
@@ -304,7 +304,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L, 9002L),
                 workflowCalls, new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001，尺码不合适");
+        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001，理由：尺码不合适");
         assertTrue(reply.contains("/confirm-refund 9001"), reply);
         assertFalse(reply.contains("/confirm-refund 9002"), reply);
         assertTrue(coordinator.handleTurn(SESSION, "/cancel-refund").contains("已取消"));
@@ -323,7 +323,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L, 9002L),
                 workflowCalls, new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "订单 9001 和 9002 都要退款，不想要了");
+        String reply = coordinator.handleTurn(SESSION, "订单 9001 和 9002 都要退款，理由：不想要了");
         assertTrue(reply.contains("/select-refund-order 9001"), reply);
         assertFalse(reply.contains("/confirm-refund"), reply);
         coordinator.handleTurn(SESSION, "/confirm-refund 9001");
@@ -341,7 +341,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 workflowCalls, new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "给我退款 199 元，不想要了");
+        String reply = coordinator.handleTurn(SESSION, "给我退款 199 元，理由：不想要了");
         assertTrue(reply.contains("/select-refund-order 9001"), reply);
         assertFalse(reply.contains("/confirm-refund 199"), reply);
         assertEquals(0, workflowCalls.get());
@@ -358,7 +358,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 workflowCalls, new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "申请退款 9001，包装破损");
+        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001，理由：包装破损");
         assertFalse(reply.contains("已完成"), reply);
         assertFalse(reply.contains("/confirm-refund"), reply);
         assertEquals(0, workflowCalls.get());
@@ -375,7 +375,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 workflowCalls, new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "退这单，花了 123，不想要了");
+        String reply = coordinator.handleTurn(SESSION, "退这单，花了 123，理由：不想要了");
         assertTrue(reply.contains("/select-refund-order 9001"), reply);
         assertFalse(reply.contains("/confirm-refund 123"), reply);
         coordinator.handleTurn(SESSION, "/confirm-refund 123");
@@ -393,7 +393,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L, 9002L),
                 workflowCalls, new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001 或 9002，尺码不合适");
+        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001 或 9002，理由：尺码不合适");
         assertTrue(reply.contains("/select-refund-order 9001"), reply);
         assertTrue(reply.contains("/select-refund-order 9002"), reply);
         assertFalse(reply.contains("/confirm-refund"), reply);
@@ -415,7 +415,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 workflowCalls, submitted);
 
-        String raw = "申请退款，订单 9001，包装破损";
+        String raw = "申请退款，订单 9001，理由：包装破损";
         String reply = coordinator.handleTurn(SESSION, raw);
         assertTrue(reply.contains("理由：包装破损"), reply);
         assertFalse(reply.contains("款项已经原路退回"), reply);
@@ -516,7 +516,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(199L, 9001L),
                 workflowCalls, new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "帮我退款 199，价格贵了");
+        String reply = coordinator.handleTurn(SESSION, "帮我退款 199，理由：价格贵了");
         assertTrue(reply.contains("/select-refund-order 199"), reply);
         assertFalse(reply.contains("/confirm-refund 199"), reply);
         coordinator.handleTurn(SESSION, "/confirm-refund 199");
@@ -533,7 +533,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 new AtomicInteger(), new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "帮我退款，订单 9001，包装破损，流程怎么走？");
+        String reply = coordinator.handleTurn(SESSION, "帮我退款，订单 9001，理由：包装破损，流程怎么走？");
         assertTrue(reply.contains("/confirm-refund 9001"), reply);
         assertFalse(reply.contains("已完成"), reply);
     }
@@ -559,7 +559,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 new AtomicInteger(), new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001，包装破损，流程怎么走？");
+        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001，理由：包装破损，流程怎么走？");
         assertTrue(reply.contains("/confirm-refund 9001"), reply);
         assertFalse(reply.contains("已完成"), reply);
     }
@@ -567,16 +567,21 @@ class ConversationCoordinatorTest {
     @Test
     void modelCannotDeriveReasonFromRefundVerbAlone() {
         RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger workflowCalls = new AtomicInteger();
         DecisionAgent model = (session, input) -> {
             handoff.handoffRefund(9001L, "退款；款项已经原路退回");
             return "退款已完成";
         };
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
-                new AtomicInteger(), new AtomicReference<>());
+                workflowCalls, new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "申请退款 9001");
+        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001");
+        assertTrue(reply.contains("退款理由"), reply);
         assertFalse(reply.contains("/confirm-refund"), reply);
+        assertFalse(reply.contains("/select-refund-order"), reply);
         assertFalse(reply.contains("款项已经原路退回"), reply);
+        coordinator.handleTurn(SESSION, "/confirm-refund 9001");
+        assertEquals(0, workflowCalls.get());
     }
 
     @Test
@@ -589,7 +594,8 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 new AtomicInteger(), new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "申请退款 9001");
+        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001");
+        assertTrue(reply.contains("退款理由"), reply);
         assertFalse(reply.contains("/confirm-refund"), reply);
         assertFalse(reply.contains("不想要了"), reply);
     }
@@ -604,7 +610,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 new AtomicInteger(), new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "帮我退款，订单 9001，流程怎么走？");
+        String reply = coordinator.handleTurn(SESSION, "帮我退款，订单 9001，理由：流程怎么走？");
         assertFalse(reply.contains("/confirm-refund"), reply);
         assertTrue(reply.contains("理由"), reply);
     }
@@ -619,9 +625,114 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 new AtomicInteger(), new AtomicReference<>());
 
-        String reply = coordinator.handleTurn(SESSION, "帮我退款，订单 9001，花了199元");
+        String reply = coordinator.handleTurn(SESSION, "帮我退款，订单 9001，理由：199元");
         assertFalse(reply.contains("/confirm-refund"), reply);
         assertTrue(reply.contains("理由"), reply);
+    }
+
+    @Test
+    void explicitRefundDirectiveWinsOverProcessQuestionWithoutHandoff() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger workflowCalls = new AtomicInteger();
+        ConversationCoordinator coordinator = coordinator((session, input) -> "退款已完成",
+                handoff, List.of(9001L), workflowCalls, new AtomicReference<>());
+
+        String reply = coordinator.handleTurn(SESSION, "请帮我申请退款，订单 9001，因为包装破损，流程怎么走？");
+        assertTrue(reply.contains("未提交退款"), reply);
+        assertFalse(reply.contains("已完成"), reply);
+        assertEquals(0, workflowCalls.get());
+    }
+
+    @Test
+    void explicitRefundDirectiveWinsOverProcessQuestionWithHandoff() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        DecisionAgent model = (session, input) -> {
+            handoff.handoffRefund(9001L, "包装破损");
+            return "退款已完成";
+        };
+        ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
+                new AtomicInteger(), new AtomicReference<>());
+
+        String reply = coordinator.handleTurn(SESSION, "请帮我申请退款，订单 9001，因为包装破损，流程怎么走？");
+        assertTrue(reply.contains("/confirm-refund 9001"), reply);
+        assertTrue(reply.contains("理由：包装破损"), reply);
+        assertFalse(reply.contains("已完成"), reply);
+    }
+
+    @Test
+    void falseModelRefundCompletionCannotEscapeOnOrdinaryQuery() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger workflowCalls = new AtomicInteger();
+        ConversationCoordinator coordinator = coordinator((session, input) -> "退款已完成",
+                handoff, List.of(9001L), workflowCalls, new AtomicReference<>());
+
+        String reply = coordinator.handleTurn(SESSION, "查一下订单 9001 物流");
+        assertTrue(reply.contains("未提交退款"), reply);
+        assertFalse(reply.contains("已完成"), reply);
+        assertEquals(0, workflowCalls.get());
+    }
+
+    @Test
+    void courtesyTextWithoutReasonCueCannotConfirm() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger workflowCalls = new AtomicInteger();
+        DecisionAgent model = (session, input) -> {
+            handoff.handoffRefund(9001L, "谢谢");
+            return "退款已完成";
+        };
+        ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
+                workflowCalls, new AtomicReference<>());
+
+        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001，谢谢");
+        assertTrue(reply.contains("退款理由"), reply);
+        assertFalse(reply.contains("/confirm-refund"), reply);
+        coordinator.handleTurn(SESSION, "/confirm-refund 9001");
+        assertEquals(0, workflowCalls.get());
+    }
+
+    @Test
+    void candidateOutsideUserReasonCueCannotConfirm() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        DecisionAgent model = (session, input) -> {
+            handoff.handoffRefund(9001L, "包装破损");
+            return "退款已完成";
+        };
+        ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
+                new AtomicInteger(), new AtomicReference<>());
+
+        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001，包装破损，理由：尺码不合适");
+        assertTrue(reply.contains("退款理由"), reply);
+        assertFalse(reply.contains("/confirm-refund"), reply);
+    }
+
+    @Test
+    void refundActionWordInsideReasonCueIsNotSubstantive() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        DecisionAgent model = (session, input) -> {
+            handoff.handoffRefund(9001L, "退款");
+            return "退款已完成";
+        };
+        ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
+                new AtomicInteger(), new AtomicReference<>());
+
+        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001，理由：退款");
+        assertTrue(reply.contains("退款理由"), reply);
+        assertFalse(reply.contains("/confirm-refund"), reply);
+    }
+
+    @Test
+    void orderNumberInsideReasonCueIsNotSubstantive() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        DecisionAgent model = (session, input) -> {
+            handoff.handoffRefund(9001L, "订单9001");
+            return "退款已完成";
+        };
+        ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
+                new AtomicInteger(), new AtomicReference<>());
+
+        String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001，理由：订单9001");
+        assertTrue(reply.contains("退款理由"), reply);
+        assertFalse(reply.contains("/confirm-refund"), reply);
     }
 
     private static ConversationCoordinator coordinator(DecisionAgent model, RefundHandoffTools handoff,
