@@ -118,7 +118,7 @@ class ConversationCoordinatorTest {
                 id -> {
                     qualificationReads.incrementAndGet();
                     return "订单 " + id + " 当前不可退：已超过期限；本次未提交退款。";
-                }, (session, request) -> {
+                }, id -> false, (session, request) -> {
                     workflowCalls.incrementAndGet();
                     return "不应调用";
                 });
@@ -143,7 +143,7 @@ class ConversationCoordinatorTest {
             return "退款已完成";
         };
         ConversationCoordinator coordinator = new ConversationCoordinator(model, handoff, escalation,
-                () -> List.of(9001L), id -> "不应调用", (session, request) -> {
+                () -> List.of(9001L), id -> "不应调用", id -> false, (session, request) -> {
                     workflowCalls.incrementAndGet();
                     return "不应调用";
                 });
@@ -255,7 +255,7 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = new ConversationCoordinator(model, handoff,
                 new EscalationTools(SESSION, ignored -> { }), () -> List.of(9001L),
                 id -> { reads.incrementAndGet(); return "订单 9001 当前不可退；本次未提交退款。"; },
-                (session, request) -> "不应调用");
+                id -> false, (session, request) -> "不应调用");
 
         String reply = coordinator.handleTurn(SESSION, "订单 9001 能退款吗");
         assertEquals("订单 9001 当前不可退；本次未提交退款。", reply);
@@ -272,7 +272,8 @@ class ConversationCoordinatorTest {
             throw new IllegalStateException("模型失败");
         };
         ConversationCoordinator coordinator = new ConversationCoordinator(model, handoff, escalation,
-                () -> List.of(9001L), id -> "不应调用", (session, request) -> "不应调用");
+                () -> List.of(9001L), id -> "不应调用", id -> false,
+                (session, request) -> "不应调用");
 
         assertEquals("已记录，请联系人工客服",
                 coordinator.handleTurn(SESSION, "请退订单 9001"));
@@ -286,7 +287,7 @@ class ConversationCoordinatorTest {
                 (session, input) -> "订单已退款成功", handoff,
                 new EscalationTools(SESSION, ignored -> { }), () -> List.of(9001L),
                 id -> { reads.incrementAndGet(); return "订单 9001 当前可申请退款；本次未提交退款。"; },
-                (session, request) -> "不应调用");
+                id -> false, (session, request) -> "不应调用");
 
         String reply = coordinator.handleTurn(SESSION, "订单 9001 能退款吗");
         assertEquals("订单 9001 当前可申请退款；本次未提交退款。", reply);
@@ -475,6 +476,31 @@ class ConversationCoordinatorTest {
     }
 
     @Test
+    void moneyBackRequestCannotLeakNovelModelCompletionWording() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger workflowCalls = new AtomicInteger();
+        ConversationCoordinator coordinator = coordinator((session, input) -> "退款已经办好了",
+                handoff, List.of(9001L), workflowCalls, new AtomicReference<>());
+
+        String reply = coordinator.handleTurn(SESSION, "把订单 9001 的钱还我");
+        assertFalse(reply.contains("办好了"), reply);
+        assertTrue(reply.contains("未提交退款"), reply);
+        assertEquals(0, workflowCalls.get());
+    }
+
+    @Test
+    void processOnlyQuestionKeepsNormalAnswer() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger workflowCalls = new AtomicInteger();
+        ConversationCoordinator coordinator = coordinator((session, input) -> "一般流程先核对订单。",
+                handoff, List.of(9001L), workflowCalls, new AtomicReference<>());
+
+        assertEquals("一般流程先核对订单。",
+                coordinator.handleTurn(SESSION, "我想申请退款的流程怎么走？"));
+        assertEquals(0, workflowCalls.get());
+    }
+
+    @Test
     void mistakenEligibilityMarkerCannotReplaceLogisticsAnswer() {
         RefundHandoffTools handoff = new RefundHandoffTools();
         AtomicInteger qualificationReads = new AtomicInteger();
@@ -483,7 +509,7 @@ class ConversationCoordinatorTest {
             return "订单 9001 的物流状态为运输中";
         }, handoff, new EscalationTools(SESSION, ignored -> { }), () -> List.of(9001L),
                 id -> { qualificationReads.incrementAndGet(); return "不应查询资格"; },
-                (session, request) -> "不应调用");
+                id -> false, (session, request) -> "不应调用");
 
         assertEquals("订单 9001 的物流状态为运输中",
                 coordinator.handleTurn(SESSION, "查一下订单 9001 物流"));
@@ -673,6 +699,64 @@ class ConversationCoordinatorTest {
     }
 
     @Test
+    void verifiedHistoricalRefundIsReportedAsExistingStatusOnly() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger statusReads = new AtomicInteger();
+        AtomicInteger workflowCalls = new AtomicInteger();
+        ConversationCoordinator coordinator = new ConversationCoordinator(
+                (session, input) -> "订单 9001 已退款", handoff,
+                new EscalationTools(SESSION, ignored -> { }), () -> List.of(9001L),
+                id -> "不应查询资格", id -> {
+                    assertEquals(9001L, id);
+                    statusReads.incrementAndGet();
+                    return true;
+                }, (session, request) -> {
+                    workflowCalls.incrementAndGet();
+                    return "不应执行退款";
+                });
+
+        String reply = coordinator.handleTurn(SESSION, "查一下订单 9001 的退款状态");
+        assertTrue(reply.contains("REFUNDED"), reply);
+        assertTrue(reply.contains("本次未提交退款"), reply);
+        assertEquals(1, statusReads.get());
+        assertEquals(0, workflowCalls.get());
+    }
+
+    @Test
+    void nonRefundedOrderCannotVerifyModelCompletionClaim() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger statusReads = new AtomicInteger();
+        ConversationCoordinator coordinator = new ConversationCoordinator(
+                (session, input) -> "订单 9001 已退款", handoff,
+                new EscalationTools(SESSION, ignored -> { }), () -> List.of(9001L),
+                id -> "不应查询资格", id -> {
+                    assertEquals(9001L, id);
+                    statusReads.incrementAndGet();
+                    return false;
+                }, (session, request) -> "不应执行退款");
+
+        String reply = coordinator.handleTurn(SESSION, "查一下订单 9001 的退款状态");
+        assertTrue(reply.contains("无法确认"), reply);
+        assertTrue(reply.contains("本次未提交退款"), reply);
+        assertFalse(reply.contains("已退款"), reply);
+        assertEquals(1, statusReads.get());
+    }
+
+    @Test
+    void unverifiedModelRefundedStatusTokenCannotEscapeOnLogisticsTurn() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        ConversationCoordinator coordinator = new ConversationCoordinator(
+                (session, input) -> "订单 9001 当前状态 REFUNDED", handoff,
+                new EscalationTools(SESSION, ignored -> { }), () -> List.of(9001L),
+                id -> "不应查询资格", id -> false,
+                (session, request) -> "不应执行退款");
+
+        String reply = coordinator.handleTurn(SESSION, "查一下订单 9001 物流");
+        assertTrue(reply.contains("无法确认"), reply);
+        assertFalse(reply.contains("REFUNDED"), reply);
+    }
+
+    @Test
     void courtesyTextWithoutReasonCueCannotConfirm() {
         RefundHandoffTools handoff = new RefundHandoffTools();
         AtomicInteger workflowCalls = new AtomicInteger();
@@ -740,7 +824,7 @@ class ConversationCoordinatorTest {
                                                        AtomicReference<RefundRequest> submitted) {
         return new ConversationCoordinator(model, handoff,
                 new EscalationTools(SESSION, ignored -> { }), () -> listedOrders,
-                id -> "订单 " + id + " 当前可申请退款；本次未提交退款。",
+                id -> "订单 " + id + " 当前可申请退款；本次未提交退款。", id -> false,
                 (session, request) -> {
                     workflowCalls.incrementAndGet();
                     submitted.set(request);

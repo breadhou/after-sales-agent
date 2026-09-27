@@ -3,6 +3,7 @@ package com.mall.agent;
 import com.mall.agent.agent.DecisionAgent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.mall.agent.config.AgentConfig;
 import com.mall.agent.config.ModelProperties;
 import com.mall.agent.flow.ConversationCoordinator;
@@ -55,6 +56,7 @@ public final class AgentMain {
             ConversationCoordinator coordinator = new ConversationCoordinator(agent, handoff, escalation,
                     () -> listedOrderIds(mcp::executeTool),
                     orderId -> eligibilityReply(orderId, mcp::executeTool),
+                    orderId -> isOrderRefunded(orderId, mcp::executeTool),
                     (confirmedSession, request) -> "订单 " + request.orderId()
                             + " 的退款申请已确认；退款流程尚未接入，本次未执行退款。");
 
@@ -178,13 +180,35 @@ public final class AgentMain {
         }
     }
 
+    /** 仅当前用户 JWT 的新鲜 get_order 状态可证明历史上已退款。 */
+    static boolean isOrderRefunded(Long orderId,
+                                   Function<ToolExecutionRequest, ToolExecutionResult> toolCaller) {
+        if (orderId == null || orderId <= 0) {
+            return false;
+        }
+        try {
+            ToolExecutionResult result = toolCaller.apply(ToolExecutionRequest.builder()
+                    .name("get_order").arguments("{\"orderId\":" + orderId + "}").build());
+            JsonNode fact = trustedObject(result);
+            JsonNode id = fact == null ? null : fact.path("id");
+            return id != null && id.isIntegralNumber() && id.canConvertToLong()
+                    && id.longValue() == orderId
+                    && fact.path("status").isTextual()
+                    && "REFUNDED".equals(fact.path("status").textValue());
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
     private static JsonNode trustedObject(ToolExecutionResult result) {
         if (result == null || result.isError() || result.resultText() == null
                 || result.resultText().isBlank()) {
             return null;
         }
         try {
-            JsonNode fact = MAPPER.readTree(result.resultText());
+            JsonNode fact = MAPPER.readerFor(JsonNode.class)
+                    .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readValue(result.resultText());
             return fact != null && fact.isObject() ? fact : null;
         } catch (IOException e) {
             return null;

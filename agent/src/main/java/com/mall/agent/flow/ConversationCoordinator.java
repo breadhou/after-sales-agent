@@ -16,6 +16,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,15 +31,14 @@ public final class ConversationCoordinator {
     private static final String ESCALATION_REPLY = "已记录，请联系人工客服";
     private static final Pattern REFUND_DIRECTIVE = Pattern.compile(
             "(?:请|麻烦)?(?:帮我|给我)\\s*(?:申请)?退(?:款|货)?|(?<!申)请退(?:款|货)?"
-                    + "|(?:我要|我想)\\s*(?:申请)?退(?:款|货)?|退给我|退这单|退掉");
+                    + "|我要\\s*(?:申请)?退(?:款|货)?|退给我|退这单|退掉");
     private static final Pattern REASON_CUE = Pattern.compile(
             "(?:退款理由|理由|原因)\\s*(?:[:：]|是)\\s*|因为\\s*|由于\\s*");
     private static final Pattern REASON_END = Pattern.compile("[，,。；;！？!?\\r\\n]");
-    private static final Pattern MODEL_REFUND_EXECUTION_CLAIM = Pattern.compile(
-            "已退款|已经退款|退款(?:已|已经)?(?:完成|成功|到账|退回|原路退回|提交)"
-                    + "|已完成退款|成功退款|已提交退款|已经提交退款"
-                    + "|款项(?:已|已经)?(?:原路)?退回|款项(?:已|已经)?到账"
-                    + "|钱(?:已|已经)?退回|已到账");
+    private static final Pattern REFUND_OUTCOME_TOPIC = Pattern.compile(
+            "退款|退货|退回|款项|钱|到账|REFUNDED");
+    private static final Pattern OUTCOME_ASSERTION = Pattern.compile(
+            "已|已经|成功|完成|办好|办妥|处理好|到账|退回|提交");
     private static final Set<String> NON_SUBSTANTIVE_REASONS = Set.of(
             "退款", "退货", "申请退款", "流程", "规则", "政策", "步骤", "原因",
             "谢谢", "辛苦了", "麻烦了");
@@ -48,18 +48,21 @@ public final class ConversationCoordinator {
     private final EscalationTools escalationTools;
     private final Supplier<List<Long>> orderLister;
     private final Function<Long, String> eligibilityReply;
+    private final Predicate<Long> historicallyRefunded;
     private final BiFunction<String, RefundRequest, String> workflow;
     private final Map<String, PendingRefund> pendingBySession = new ConcurrentHashMap<>();
 
     public ConversationCoordinator(DecisionAgent decision, RefundHandoffTools handoffTools,
                                    EscalationTools escalationTools, Supplier<List<Long>> orderLister,
                                    Function<Long, String> eligibilityReply,
+                                   Predicate<Long> historicallyRefunded,
                                    BiFunction<String, RefundRequest, String> workflow) {
         this.decision = Objects.requireNonNull(decision);
         this.handoffTools = Objects.requireNonNull(handoffTools);
         this.escalationTools = Objects.requireNonNull(escalationTools);
         this.orderLister = Objects.requireNonNull(orderLister);
         this.eligibilityReply = Objects.requireNonNull(eligibilityReply);
+        this.historicallyRefunded = Objects.requireNonNull(historicallyRefunded);
         this.workflow = Objects.requireNonNull(workflow);
     }
 
@@ -117,8 +120,38 @@ public final class ConversationCoordinator {
         if (modelReply == null) {
             return "暂时无法回答，请联系人工客服。";
         }
-        return MODEL_REFUND_EXECUTION_CLAIM.matcher(modelReply).find()
-                ? "本次未提交退款。如需核实退款状态，请联系人工客服。" : modelReply;
+        if (refundOutcomeClaim(modelReply)
+                || (refundTopic(input) && !isGeneralReturnQuestion(input))) {
+            return verifiedHistoricalStatusReply(rawInput);
+        }
+        return modelReply;
+    }
+
+    private String verifiedHistoricalStatusReply(String rawInput) {
+        ParsedOrderIds ids = explicitOrderIds(rawInput);
+        if (!ids.invalid() && ids.values().size() == 1) {
+            Long orderId = ids.values().get(0);
+            try {
+                if (historicallyRefunded.test(orderId)) {
+                    return "订单 " + orderId + " 当前状态为 REFUNDED；本次未提交退款。";
+                }
+            } catch (RuntimeException ignored) {
+                // 读失败不是退款已完成的证据。
+            }
+            return "订单 " + orderId + " 的退款状态无法确认；本次未提交退款，请联系人工客服核实。";
+        }
+        return "退款状态无法确认；本次未提交退款，请联系人工客服核实。";
+    }
+
+    private static boolean refundTopic(String text) {
+        return text.contains("退款") || text.contains("退货") || text.contains("退回")
+                || text.contains("款项") || text.contains("到账")
+                || (text.contains("钱") && (text.contains("退") || text.contains("还")));
+    }
+
+    private static boolean refundOutcomeClaim(String text) {
+        return text.contains("REFUNDED") || REFUND_OUTCOME_TOPIC.matcher(text).find()
+                && OUTCOME_ASSERTION.matcher(text).find();
     }
 
     private String respondToHandoff(String sessionId, String rawInput,
@@ -273,7 +306,7 @@ public final class ConversationCoordinator {
                 && !reason.matches("(?:花了|金额|价格)?\\s*[¥￥]?\\s*[0-9]+(?:\\.[0-9]+)?\\s*(?:元|块|块钱)?")
                 && !reason.matches("订单(?:号|ID|id)?\\s*[:：#]?\\s*[0-9]+")
                 && !reason.matches(".*(?:怎么|如何|什么|是否|能否|可否|[?？]).*")
-                && !MODEL_REFUND_EXECUTION_CLAIM.matcher(reason).find()
+                && !refundOutcomeClaim(reason)
                 && !NON_SUBSTANTIVE_REASONS.contains(reason);
     }
 
@@ -284,7 +317,8 @@ public final class ConversationCoordinator {
         }
         boolean directRequest = REFUND_DIRECTIVE.matcher(text).find();
         directRequest |= text.startsWith("退款") && LABELED_ORDER_NUMBER.matcher(text).find();
-        directRequest |= (text.startsWith("申请退款") || text.startsWith("我想申请退款"))
+        directRequest |= (text.startsWith("申请退款") || text.startsWith("我想申请退款")
+                || text.startsWith("我想退款"))
                 && (LABELED_ORDER_NUMBER.matcher(text).find()
                 || text.matches("^(?:我想)?申请退款\\s+[0-9].*"));
         if (isGeneralReturnQuestion(text) && !directRequest) {

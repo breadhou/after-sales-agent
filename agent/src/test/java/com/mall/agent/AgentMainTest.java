@@ -72,6 +72,31 @@ class AgentMainTest {
     }
 
     @Test
+    void readOnlyRefundStatusRequiresFreshMatchingGetOrderFact() {
+        List<ToolExecutionRequest> calls = new ArrayList<>();
+        boolean refunded = AgentMain.isOrderRefunded(9001L, request -> {
+            calls.add(request);
+            return ToolExecutionResult.builder().isError(false)
+                    .resultText("{\"id\":9001,\"orderNo\":\"A9001\",\"status\":\"REFUNDED\","
+                            + "\"totalAmount\":199.99,\"createdAt\":\"2026-09-26T10:00:00\"}")
+                    .build();
+        });
+        assertTrue(refunded);
+        assertEquals("get_order", calls.get(0).name());
+        assertEquals("{\"orderId\":9001}", calls.get(0).arguments());
+
+        assertTrue(!AgentMain.isOrderRefunded(9001L, request ->
+                ToolExecutionResult.builder().isError(false)
+                        .resultText("{\"id\":9001,\"status\":\"RECEIVED\"}").build()));
+        assertTrue(!AgentMain.isOrderRefunded(9001L, request ->
+                ToolExecutionResult.builder().isError(false)
+                        .resultText("{\"id\":9002,\"status\":\"REFUNDED\"}").build()));
+        assertTrue(!AgentMain.isOrderRefunded(9001L, request ->
+                ToolExecutionResult.builder().isError(true)
+                        .resultText("{\"id\":9001,\"status\":\"REFUNDED\"}").build()));
+    }
+
+    @Test
     void cliUsesCoordinatorTrustedReply() throws Exception {
         RefundHandoffTools handoff = new RefundHandoffTools();
         AtomicInteger workflowCalls = new AtomicInteger();
@@ -79,7 +104,7 @@ class AgentMainTest {
             handoff.handoffRefund(9001L, "不想要了");
             return "退款已完成";
         }, handoff, new EscalationTools("session-1", ignored -> { }),
-                () -> List.of(9001L), id -> "未提交退款", (session, request) -> {
+                () -> List.of(9001L), id -> "未提交退款", id -> false, (session, request) -> {
                     workflowCalls.incrementAndGet();
                     return "不应调用";
                 });
