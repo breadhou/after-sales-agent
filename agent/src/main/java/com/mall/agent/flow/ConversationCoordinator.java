@@ -24,13 +24,14 @@ import java.util.regex.Pattern;
 public final class ConversationCoordinator {
 
     private static final Pattern LABELED_ORDER_NUMBER = Pattern.compile("订单(?:号|ID|id)?\\s*[:：#]?\\s*([0-9]+)");
-    private static final Pattern UNLABELED_ORDER_NUMBER = Pattern.compile(
-            "(?:申请退款|我要退款|我想退|帮我退款|给我退款|请退款|请退|退款|退)\\s*[:：#]?\\s*([0-9]+)");
     private static final Pattern LINKED_ORDER_NUMBER = Pattern.compile("(?:或者|或|和|及|以及|与|跟|、|,|，|/)\\s*([0-9]+)");
     private static final Pattern SELECT_COMMAND = Pattern.compile("/select-refund-order ([0-9]+)");
     private static final Pattern CONFIRM_COMMAND = Pattern.compile("/confirm-refund ([0-9]+)");
     private static final String ESCALATION_REPLY = "已记录，请联系人工客服";
-    private static final String CODE_OWNED_GENERIC_REASON = "不想要了";
+    private static final Pattern USER_REQUEST_WORDS = Pattern.compile(
+            "订单(?:号|ID|id)?\\s*[:：#]?\\s*[0-9]+|申请退款|我要退款|我想退|帮我退款|给我退款"
+                    + "|请退款|请退|退这单|退给我|要退款|退款|退货|退掉");
+    private static final Pattern DIRECT_PLEASE_RETURN = Pattern.compile("(?<!申)请退");
 
     private final DecisionAgent decision;
     private final RefundHandoffTools handoffTools;
@@ -230,23 +231,41 @@ public final class ConversationCoordinator {
             return null;
         }
         String reason = candidate.trim();
-        if (rawInput.contains(reason)) {
+        String userReasonText = USER_REQUEST_WORDS.matcher(rawInput).replaceAll(" ");
+        if (substantiveReason(reason) && userReasonText.contains(reason)) {
             return reason;
         }
         String firstClause = reason.split("[，,。；;！？!?]", 2)[0].trim();
-        if (firstClause.length() >= 2 && rawInput.contains(firstClause)) {
+        if (substantiveReason(firstClause) && userReasonText.contains(firstClause)) {
             return firstClause;
         }
-        // 没有原话依据时只接受代码定义的中性标签，不能显示任意模型文本。
-        return CODE_OWNED_GENERIC_REASON.equals(reason) ? reason : null;
+        return null;
+    }
+
+    private static boolean substantiveReason(String reason) {
+        return reason.length() >= 2 && !reason.matches("[0-9\\s:：#，,。；;!?！？]+")
+                && !reason.matches("(?:花了|金额|价格)?\\s*[¥￥]?\\s*[0-9]+(?:\\.[0-9]+)?\\s*(?:元|块|块钱)?")
+                && !reason.matches(".*(?:怎么|如何|什么|是否|能否|可否|[?？]).*")
+                && !Set.of("流程", "规则", "政策", "步骤", "原因").contains(reason);
     }
 
     private static boolean looksLikeRefundApplication(String rawInput) {
         String text = rawInput.trim();
-        if (isNegatedRefundRequest(text) || isGeneralReturnQuestion(text)) {
+        if (isNegatedRefundRequest(text)) {
             return false;
         }
-        return text.contains("申请退") || text.contains("我要退")
+        boolean directRequest = text.contains("我要退") || text.contains("我想退")
+                || text.contains("帮我退") || text.contains("给我退")
+                || text.contains("退给我") || DIRECT_PLEASE_RETURN.matcher(text).find()
+                || text.contains("退这单") || text.contains("退掉");
+        directRequest |= text.startsWith("退款") && LABELED_ORDER_NUMBER.matcher(text).find();
+        directRequest |= (text.startsWith("申请退款") || text.startsWith("我想申请退款"))
+                && (LABELED_ORDER_NUMBER.matcher(text).find()
+                || text.matches("^(?:我想)?申请退款\\s+[0-9].*"));
+        if (isGeneralReturnQuestion(text) && !directRequest) {
+            return false;
+        }
+        return directRequest || text.contains("申请退") || text.contains("我要退")
                 || text.contains("要退款") || text.contains("我想退")
                 || text.contains("帮我退") || text.contains("给我退")
                 || text.contains("退给我") || text.contains("请退")
@@ -265,6 +284,9 @@ public final class ConversationCoordinator {
     }
 
     private static boolean isGeneralReturnQuestion(String text) {
+        if (text.contains("如何申请退款") || text.contains("怎么申请退款")) {
+            return true;
+        }
         return (text.contains("退货") || text.contains("退款"))
                 && (text.contains("流程") || text.contains("规则") || text.contains("政策")
                 || text.contains("步骤"))
@@ -279,20 +301,15 @@ public final class ConversationCoordinator {
 
     private static ParsedOrderIds explicitOrderIds(String rawInput) {
         Matcher labeled = LABELED_ORDER_NUMBER.matcher(rawInput);
-        boolean hasLabel = labeled.find();
-        Matcher matcher = hasLabel ? labeled.reset() : UNLABELED_ORDER_NUMBER.matcher(rawInput);
         Set<Long> values = new LinkedHashSet<>();
-        while (matcher.find()) {
-            if (!hasLabel && clearlyNotOrderId(rawInput, matcher.start(1), matcher.end(1))) {
-                continue;
-            }
-            Long id = validLong(matcher.group(1));
+        while (labeled.find()) {
+            Long id = validLong(labeled.group(1));
             if (id == null) {
                 return new ParsedOrderIds(List.of(), true);
             }
             values.add(id);
         }
-        if (hasLabel) {
+        if (!values.isEmpty()) {
             Matcher linked = LINKED_ORDER_NUMBER.matcher(rawInput);
             while (linked.find()) {
                 Long id = validLong(linked.group(1));
@@ -303,17 +320,6 @@ public final class ConversationCoordinator {
             }
         }
         return new ParsedOrderIds(new ArrayList<>(values), false);
-    }
-
-    private static boolean clearlyNotOrderId(String input, int start, int end) {
-        String before = input.substring(Math.max(0, start - 3), start);
-        String after = input.substring(end).stripLeading();
-        return before.endsWith("金额") || before.endsWith("价格")
-                || before.endsWith("尺码") || before.endsWith("￥") || before.endsWith("¥")
-                || after.startsWith("元") || after.startsWith("块")
-                || after.startsWith("件") || after.startsWith("天") || after.startsWith("码")
-                || after.startsWith("年") || after.startsWith("月") || after.startsWith("日")
-                || after.startsWith("-");
     }
 
     private static Long validLong(String digits) {

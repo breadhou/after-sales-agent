@@ -86,7 +86,7 @@ class AgentMainTest {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 
         AgentMain.runSession(coordinator, "session-1",
-                new BufferedReader(new StringReader("请退订单 9001\nexit\n")),
+                new BufferedReader(new StringReader("请退订单 9001，不想要了\nexit\n")),
                 new PrintStream(bytes, true, StandardCharsets.UTF_8));
 
         String output = bytes.toString(StandardCharsets.UTF_8);
