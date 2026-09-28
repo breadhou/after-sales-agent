@@ -7,3 +7,6 @@ target/
 .env
 *.env
 __pycache__/
+data/demo-products.local.json
+data/demo-products.seed-journal.local.json
+data/.demo-products.*.tmp
