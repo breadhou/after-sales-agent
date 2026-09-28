@@ -1119,6 +1119,20 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 ---
 
+## K-52 商品列表工具对畸形成功记录仍返回成功
+
+| | |
+|---|---|
+| **状态** | **待判断** |
+| **发现于** | 2026-09-28，阶段 3B Task 2 独立审查 |
+| **位置** | `mcp-server/src/main/java/com/mall/agent/mcp/tools/ProductTools.java` 列表记录筛选 |
+| **严重性** | 低——正常后端响应不触发；若成功响应含缺 ID 或状态的记录，商品资料消费者可能收到 `{}` |
+
+**现状**：`ProductTools.listOnShelfProducts()` 校验列表分页字段，但单条 `records` 为 `null` 或缺少引用关键字段时，`pick()` 会产生空对象或不完整对象，工具仍返回成功。这不是商品写入或退款授权问题；Task 4 的当前商品索引尚未实现，最终引用前仍需核对清单 ID 与新鲜详情。
+
+**倾向与处理时机**：在 Task 4 检查消费者是否把不完整列表视为不可用，并由最终审查判断是否需要在 Task 2 工具边界直接拒绝畸形页。此前不能把工具成功等同于索引可用。
+
+---
 ## 已处理（保留供追溯）
 
 ### K-13 同源在「时间维度」上会破——Agent 索引尚无目录变更消费
