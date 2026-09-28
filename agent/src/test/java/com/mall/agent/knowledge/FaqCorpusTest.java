@@ -2,9 +2,12 @@ package com.mall.agent.knowledge;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -17,6 +20,7 @@ class FaqCorpusTest {
     @Test
     void loadsExactly32UniqueGroundedFaqs() {
         List<FaqCorpus.FaqDocument> documents = FaqCorpus.load();
+        List<String> invalidReferences = new ArrayList<>();
 
         assertEquals(32, documents.size());
         assertEquals(IntStream.rangeClosed(1, 32)
@@ -28,11 +32,18 @@ class FaqCorpusTest {
             assertFalse(document.basis().isBlank());
             assertFalse(document.reviewedAt().isBlank());
             for (String citation : document.basis().split(";")) {
-                String sourcePath = citation.strip().split("#", 2)[0];
-                assertTrue(Files.isRegularFile(repositoryRoot().resolve(sourcePath)),
-                        () -> document.id() + " basis path does not exist: " + sourcePath);
+                String[] reference = citation.strip().split("#", 2);
+                Path source = repositoryRoot().resolve(reference[0]);
+                // Markdown contracts use file-level citations; #symbol is reserved for Java declarations.
+                if (!Files.isRegularFile(source)) {
+                    invalidReferences.add(document.id() + " missing file: " + reference[0]);
+                } else if (reference.length == 2 && !declaresJavaSymbol(source, reference[1])) {
+                    invalidReferences.add(document.id() + " unresolvable symbol: " + citation.strip());
+                }
             }
         }
+        assertTrue(invalidReferences.isEmpty(),
+                () -> "FAQ corpus has invalid basis references: " + String.join(", ", invalidReferences));
     }
 
     @Test
@@ -67,5 +78,28 @@ class FaqCorpusTest {
         }
         if (current == null) throw new IllegalStateException("repository root not found");
         return current;
+    }
+
+    private static boolean declaresJavaSymbol(Path source, String symbol) {
+        if (!source.toString().endsWith(".java")) return false;
+        final String contents;
+        try {
+            contents = Files.readString(source);
+        } catch (IOException e) {
+            throw new IllegalStateException("could not read basis source: " + source, e);
+        }
+        String name = Pattern.quote(symbol);
+        return Pattern.compile("(?m)^\\s*(?:public|protected|private)\\s+"
+                        + "(?:(?:static|final|synchronized|abstract)\\s+)*"
+                        + "[^;{}=\\n]+?\\b" + name + "\\s*\\(")
+                .matcher(contents).find()
+                || Pattern.compile("(?m)^\\s*(?:public|protected|private)\\s+"
+                        + "(?:(?:static|final|synchronized|abstract)\\s+)*"
+                        + "(?:class|interface|enum|record)\\s+" + name + "\\b")
+                .matcher(contents).find()
+                || Pattern.compile("(?m)^\\s*(?:public|protected|private)\\s+"
+                        + "(?:(?:static|final|synchronized|abstract)\\s+)*"
+                        + "[^;{}=\\n]+?\\b" + name + "\\s*=")
+                .matcher(contents).find();
     }
 }

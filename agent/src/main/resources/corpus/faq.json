@@ -31,7 +31,7 @@
     "id": "FAQ-005",
     "title": "查看订单当前状态",
     "body": "可以读取订单接口本次返回的状态字段；应以本次查询为准，不用旧对话内容代替当前订单状态。",
-    "basis": "mcp-server/src/main/java/com/mall/agent/mcp/tools/OrderTools.java#getOrder;docs/specs/2026-09-26-rag-policy-review-design.md#回复与资料问答",
+    "basis": "mcp-server/src/main/java/com/mall/agent/mcp/tools/OrderTools.java#getOrder;docs/specs/2026-09-26-rag-policy-review-design.md",
     "reviewedAt": "2026-09-28"
   },
   {
@@ -45,7 +45,7 @@
     "id": "FAQ-007",
     "title": "物流承运方与运单号",
     "body": "物流结果包含这些字段时，查询工具会返回承运方和运单号；字段缺失时不能补造。当前接口没有承诺物流信息的更新时间。",
-    "basis": "mcp-server/src/main/java/com/mall/agent/mcp/tools/OrderTools.java#getLogistics;docs/phase3a-rag-refund-validation-2026-09-28.md#阶段3A验收范围",
+    "basis": "mcp-server/src/main/java/com/mall/agent/mcp/tools/OrderTools.java#getLogistics;docs/phase3a-rag-refund-validation-2026-09-28.md",
     "reviewedAt": "2026-09-28"
   },
   {
@@ -66,70 +66,70 @@
     "id": "FAQ-010",
     "title": "退款资格的判定来源",
     "body": "具体订单的资格来自 supermall 售后资格接口和业务规则。模型或 FAQ 不能把后端判定为不可退的结果改成可退；应按本次查询结果说明。",
-    "basis": "agent/src/main/java/com/mall/agent/flow/RefundWorkflow.java#apply;docs/specs/2026-09-26-rag-policy-review-design.md#确定性退款入口",
+    "basis": "agent/src/main/java/com/mall/agent/flow/RefundWorkflow.java#apply;docs/specs/2026-09-26-rag-policy-review-design.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-011",
     "title": "资格响应中的金额",
     "body": "不能只看金额字段；还要结合 eligible 和 refundExists。金额字段本身不证明订单此刻可退，也不证明退款已经完成。",
-    "basis": "mcp-server/src/main/java/com/mall/agent/mcp/tools/RefundTools.java#getRefundEligibility;docs/known-issues.md#K-42",
+    "basis": "mcp-server/src/main/java/com/mall/agent/mcp/tools/RefundTools.java#getRefundEligibility;docs/known-issues.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-012",
     "title": "退款金额由谁确定",
     "body": "当前 Agent 的退款提交工具不接收金额参数，金额由 supermall 根据订单决定。不能通过 FAQ 或对话承诺另一个金额。",
-    "basis": "mcp-server/src/main/java/com/mall/agent/mcp/tools/RefundTools.java#submitRefund;docs/specs/2026-09-18-after-sales-agent-design.md#三道防线",
+    "basis": "mcp-server/src/main/java/com/mall/agent/mcp/tools/RefundTools.java#submitRefund;docs/specs/2026-09-18-after-sales-agent-design.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-013",
     "title": "已有退款记录是否代表已退款",
     "body": "不一定。refundExists=true 只表示已有退款记录，记录可能仍在处理中；资格查询不返回既有退款行的处理状态，需要看可信执行回执中的原因说明或联系人工核实。",
-    "basis": "mcp-server/src/main/java/com/mall/agent/mcp/tools/RefundTools.java#getRefundEligibility;docs/known-issues.md#K-42",
+    "basis": "mcp-server/src/main/java/com/mall/agent/mcp/tools/RefundTools.java#getRefundEligibility;docs/known-issues.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-014",
     "title": "已有退款记录后的处理",
     "body": "当前资格查询会标记已有退款记录，可信退款流程会在资格门槛处停止新的自动退款。这个标记不能单独说明既有记录目前处于什么状态。",
-    "basis": "agent/src/main/java/com/mall/agent/tools/RefundReviewContextFactory.java#requireEligible;docs/specs/2026-09-26-rag-policy-review-design.md#确定性退款入口",
+    "basis": "agent/src/main/java/com/mall/agent/tools/RefundReviewContextFactory.java#requireEligible;docs/specs/2026-09-26-rag-policy-review-design.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-015",
     "title": "确认退款是否完成",
     "body": "只有可信执行回执明确说明退款已完成，或重新查询到订单状态为 REFUNDED 时，才能确认。资格查询中的金额或“已有记录”标记都不能单独证明退款完成；无法确认时应联系人工核实。",
-    "basis": "agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java#verifiedHistoricalStatusReply;docs/phase3a-rag-refund-validation-2026-09-28.md#normal-confirm",
+    "basis": "agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java#verifiedHistoricalStatusReply;docs/phase3a-rag-refund-validation-2026-09-28.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-016",
     "title": "复核驳回后再次申请",
     "body": "同一会话、同一订单的申请一旦被复核驳回，当前流程不会再次自动复核或提交，只返回已记录人工升级的信息。此规则只适用于该会话和订单组合。",
-    "basis": "agent/src/main/java/com/mall/agent/flow/RefundWorkflow.java#apply;docs/specs/2026-09-26-rag-policy-review-design.md#RAG政策复核",
+    "basis": "agent/src/main/java/com/mall/agent/flow/RefundWorkflow.java#apply;docs/specs/2026-09-26-rag-policy-review-design.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-017",
     "title": "查询失败不代表退款成功",
     "body": "查询失败不是退款成功的证据。当前可信回复会把无法确认的退款状态说明为待核实，并提示联系人工客服。",
-    "basis": "agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java#verifiedHistoricalStatusReply;docs/phase3a-rag-refund-validation-2026-09-28.md#查询失败",
+    "basis": "agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java#verifiedHistoricalStatusReply;docs/phase3a-rag-refund-validation-2026-09-28.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-018",
     "title": "提交退款前的流程",
     "body": "已确认的退款请求会先重读订单和资格，再检索当前适用政策并进行独立复核；只有门槛通过后才提交。申请或待确认本身不表示退款已经执行。",
-    "basis": "agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java#confirm;agent/src/main/java/com/mall/agent/flow/RefundWorkflow.java#apply;docs/phase3a-rag-refund-validation-2026-09-28.md#normal-confirm",
+    "basis": "agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java#confirm;agent/src/main/java/com/mall/agent/flow/RefundWorkflow.java#apply;docs/phase3a-rag-refund-validation-2026-09-28.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-019",
     "title": "退款申请为何需要确认",
     "body": "可信入口会展示订单和退款理由，要求你显式确认。确认绑定当前会话、订单和理由；确认之前不会调用退款提交。",
-    "basis": "agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java#respondToHandoff;agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java#confirm;docs/specs/2026-09-26-rag-policy-review-design.md#对话转接与确定性退款入口",
+    "basis": "agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java#respondToHandoff;agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java#confirm;docs/specs/2026-09-26-rag-policy-review-design.md",
     "reviewedAt": "2026-09-28"
   },
   {
@@ -157,70 +157,70 @@
     "id": "FAQ-023",
     "title": "人工升级后的联系安排",
     "body": "当前实现会记录升级并提示联系人工客服；代码没有承诺客服会主动联系，也没有承诺处理时限。",
-    "basis": "agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java#ESCALATION_REPLY;agent/src/main/java/com/mall/agent/tools/EscalationTools.java#escalateToHuman;docs/specs/2026-09-26-rag-policy-review-design.md#RAG政策复核",
+    "basis": "agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java#ESCALATION_REPLY;agent/src/main/java/com/mall/agent/tools/EscalationTools.java#escalateToHuman;docs/specs/2026-09-26-rag-policy-review-design.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-024",
     "title": "退款复核的职责",
     "body": "可信代码负责编排退款流程，独立复核 Agent 检查原始诉求、订单事实和政策条款。复核可以增加拒绝条件，但不能推翻后端不可退结论或自行决定金额。",
-    "basis": "agent/src/main/java/com/mall/agent/flow/RefundWorkflow.java#apply;agent/src/main/java/com/mall/agent/model/RefundReviewContext.java#RefundReviewContext;docs/specs/2026-09-26-rag-policy-review-design.md#RAG政策复核",
+    "basis": "agent/src/main/java/com/mall/agent/flow/RefundWorkflow.java#apply;agent/src/main/java/com/mall/agent/model/RefundReviewContext.java#RefundReviewContext;docs/specs/2026-09-26-rag-policy-review-design.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-025",
     "title": "退款政策的来源",
     "body": "当前退款政策来自 supermall 的政策目录；目录由后端统一构造并通过 MCP 读取。FAQ 是解释资料，不是退款政策来源。",
-    "basis": "mcp-server/src/main/java/com/mall/agent/mcp/tools/PolicyTools.java#listPolicyClauses;agent/src/main/java/com/mall/agent/policy/PolicyCatalogConsumer.java#refresh;docs/specs/2026-09-26-rag-policy-review-design.md#RAG政策复核",
+    "basis": "mcp-server/src/main/java/com/mall/agent/mcp/tools/PolicyTools.java#listPolicyClauses;agent/src/main/java/com/mall/agent/policy/PolicyCatalogConsumer.java#refresh;docs/specs/2026-09-26-rag-policy-review-design.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-026",
     "title": "政策目录版本如何识别",
     "body": "政策目录快照带有根据条款内容计算的指纹，可用于比较使用的目录版本。指纹本身不能证明政策文字与执行规则在语义上完全一致。",
-    "basis": "agent/src/main/java/com/mall/agent/policy/PolicyCatalogConsumer.java#refresh;docs/specs/2026-09-26-rag-policy-review-design.md#现有契约与变更点;docs/phase3a-rag-refund-validation-2026-09-28.md#同一进程中的真实政策目录切换",
+    "basis": "agent/src/main/java/com/mall/agent/policy/PolicyCatalogConsumer.java#refresh;docs/specs/2026-09-26-rag-policy-review-design.md;docs/phase3a-rag-refund-validation-2026-09-28.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-027",
     "title": "网上旧政策能否判断订单",
     "body": "不能用旧截图或转载直接判断当前订单。政策说明应读取后端当前目录；具体订单适用哪条政策，应以当次后端资格响应中的政策码为准。",
-    "basis": "agent/src/main/java/com/mall/agent/policy/PolicyCatalogConsumer.java#requireMatching;agent/src/main/java/com/mall/agent/tools/RefundReviewContextFactory.java#requireEligible;docs/specs/2026-09-26-rag-policy-review-design.md#RAG政策复核",
+    "basis": "agent/src/main/java/com/mall/agent/policy/PolicyCatalogConsumer.java#requireMatching;agent/src/main/java/com/mall/agent/tools/RefundReviewContextFactory.java#requireEligible;docs/specs/2026-09-26-rag-policy-review-design.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-028",
     "title": "政策目录读取失败",
     "body": "退款复核不能在目录读取失败时沿用旧证据继续，流程会停止自动退款并升级人工。普通政策回答也不能用旧目录冒充当前依据；目录无法确认时，应说明缺少可靠依据。",
-    "basis": "agent/src/main/java/com/mall/agent/policy/PolicyCatalogConsumer.java#refresh;agent/src/main/java/com/mall/agent/flow/RefundWorkflow.java#apply;docs/specs/2026-09-26-rag-policy-review-design.md#回复与资料问答",
+    "basis": "agent/src/main/java/com/mall/agent/policy/PolicyCatalogConsumer.java#refresh;agent/src/main/java/com/mall/agent/flow/RefundWorkflow.java#apply;docs/specs/2026-09-26-rag-policy-review-design.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-029",
     "title": "当前商品描述与历史订单",
     "body": "不能只凭当前商品目录还原下单时看到的描述；当前描述只代表当前目录。若要核对历史页面或订单承诺，需要人工查证。",
-    "basis": "docs/specs/2026-09-26-rag-policy-review-design.md#回复与资料问答;docs/plans/2026-09-26-phase3b-knowledge-qa.md#Task-5",
+    "basis": "docs/specs/2026-09-26-rag-policy-review-design.md;docs/plans/2026-09-26-phase3b-knowledge-qa.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-030",
     "title": "查询当前在售演示商品",
     "body": "计划在阶段 3B 商品列表、详情读取和引用复查通过验收后，查询清单内当前上架的演示商品资料；引用前会重新核对详情与上架状态，无法核实的商品不作为答复依据。此能力通过 Task 5/6 验收后才能发布。",
-    "basis": "docs/plans/2026-09-26-phase3b-knowledge-qa.md#Task-2;docs/plans/2026-09-26-phase3b-knowledge-qa.md#Task-4;docs/plans/2026-09-26-phase3b-knowledge-qa.md#Task-5;docs/plans/2026-09-26-phase3b-knowledge-qa.md#Task-6",
+    "basis": "docs/plans/2026-09-26-phase3b-knowledge-qa.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-031",
     "title": "商品价格和库存的核对",
     "body": "计划在阶段 3B 商品详情读取与引用复查通过验收后，以当前详情返回的 SKU 价格和库存为准；不从商品列表摘要推断这些数值。详情无法核实时，不报价格或库存。此能力通过 Task 5/6 验收后才能发布。",
-    "basis": "docs/plans/2026-09-26-phase3b-knowledge-qa.md#Task-2;docs/plans/2026-09-26-phase3b-knowledge-qa.md#Task-4;docs/plans/2026-09-26-phase3b-knowledge-qa.md#Task-5;docs/plans/2026-09-26-phase3b-knowledge-qa.md#Task-6",
+    "basis": "docs/plans/2026-09-26-phase3b-knowledge-qa.md",
     "reviewedAt": "2026-09-28"
   },
   {
     "id": "FAQ-032",
     "title": "商品介绍不是退款或质量依据",
     "body": "不能用当前商品介绍代替退款政策，也不能把它当作质量核验结果。退款资格和金额应以本次后端查询及可信流程为准。",
-    "basis": "docs/specs/2026-09-26-rag-policy-review-design.md#回复与资料问答;docs/specs/2026-09-18-after-sales-agent-design.md#退款规则",
+    "basis": "docs/specs/2026-09-26-rag-policy-review-design.md;docs/specs/2026-09-18-after-sales-agent-design.md",
     "reviewedAt": "2026-09-28"
   }
 ]
