@@ -169,7 +169,8 @@ class CurrentProductIndexTest {
         List<ToolExecutionResult> invalidDetails = List.of(
                 error("detail lookup failed for product 21"),
                 success("null"),
-                success("{\"id\":21,\"name\":\"Missing description\",\"status\":\"ON_SHELF\"}"));
+                success("{\"id\":21,\"name\":\"Missing description\",\"status\":\"ON_SHELF\"}"),
+                success(detail(21, "Unknown status", "GARBAGE")));
 
         for (ToolExecutionResult invalidDetail : invalidDetails) {
             Iterator<ToolExecutionResult> tools = List.of(
@@ -188,22 +189,24 @@ class CurrentProductIndexTest {
     }
 
     @Test
-    void validOffShelfDetailDropsOnlyThatProduct() {
+    void validNonShelfDetailsDropOnlyThoseProducts() {
         Iterator<ToolExecutionResult> tools = List.of(
-                success(page(1, 2, List.of(30L, 31L), Set.of())),
+                success(page(1, 3, List.of(30L, 31L, 32L), Set.of())),
                 success(detail(30, "Current description 30", "OFF_SHELF")),
-                success(detail(31, "Current description 31", "ON_SHELF")),
-                success(detail(31, "Fresh description 31", "ON_SHELF"))).iterator();
+                success(detail(31, "Draft description 31", "DRAFT")),
+                success(detail(32, "Current description 32", "ON_SHELF")),
+                success(detail(32, "Fresh description 32", "ON_SHELF"))).iterator();
         CurrentProductIndex index = new CurrentProductIndex(request -> tools.next());
 
-        CurrentProductIndex.ProductSnapshot snapshot = index.refresh(Set.of(30L, 31L));
+        CurrentProductIndex.ProductSnapshot snapshot = index.refresh(Set.of(30L, 31L, 32L));
 
         assertTrue(snapshot.complete());
-        assertEquals(Set.of(31L), snapshot.productIds());
+        assertEquals(Set.of(32L), snapshot.productIds());
         assertTrue(index.verifyCitation(snapshot, 30L).isEmpty());
-        ProductEvidence fresh = index.verifyCitation(snapshot, 31L).orElseThrow();
-        assertEquals("PRODUCT-31", fresh.sourceId());
-        assertEquals("Fresh description 31", fresh.description());
+        assertTrue(index.verifyCitation(snapshot, 31L).isEmpty());
+        ProductEvidence fresh = index.verifyCitation(snapshot, 32L).orElseThrow();
+        assertEquals("PRODUCT-32", fresh.sourceId());
+        assertEquals("Fresh description 32", fresh.description());
     }
 
     @Test

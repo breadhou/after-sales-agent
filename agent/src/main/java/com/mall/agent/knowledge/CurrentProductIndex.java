@@ -34,6 +34,7 @@ public final class CurrentProductIndex {
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private static final int PAGE_SIZE = 20;
     private static final int MAX_PAGES = 100;
+    private static final Set<String> PRODUCT_STATUSES = Set.of("DRAFT", "ON_SHELF", "OFF_SHELF");
 
     private final Function<ToolExecutionRequest, ToolExecutionResult> toolCaller;
 
@@ -156,7 +157,8 @@ public final class CurrentProductIndex {
                 || record.path("id").longValue() <= 0
                 || !nonblankText(record.get("name"))
                 || !nonblankText(record.get("description"))
-                || !nonblankText(record.get("status"))) {
+                || !nonblankText(record.get("status"))
+                || !PRODUCT_STATUSES.contains(record.path("status").textValue())) {
             throw new ProductIndexException("商品列表含格式不完整的记录");
         }
         return new ProductRow(record.path("id").longValue(), record.path("status").textValue());
@@ -165,9 +167,11 @@ public final class CurrentProductIndex {
     private ProductDetail readProductDetail(long productId) {
         try {
             JsonNode detail = invoke("get_product_detail", "{\"productId\":" + productId + "}");
+            String status = detail != null && detail.isObject()
+                    ? textValue(detail.get("status")) : null;
             if (detail == null || !detail.isObject() || !integral(detail.get("id"))
                     || detail.path("id").longValue() != productId
-                    || !nonblankText(detail.get("status"))
+                    || status == null || !PRODUCT_STATUSES.contains(status)
                     || !nonblankText(detail.get("name"))
                     || !nonblankText(detail.get("description"))) {
                 return ProductDetail.invalid();
@@ -176,7 +180,7 @@ public final class CurrentProductIndex {
             List<ProductEvidence.SkuFact> skus = parseSkus(detail.get("skus"));
             String name = detail.path("name").textValue();
             String description = detail.path("description").textValue();
-            if (!"ON_SHELF".equals(detail.path("status").textValue())) {
+            if (!"ON_SHELF".equals(status)) {
                 return ProductDetail.validWithoutCitation();
             }
             ProductEvidence evidence = new ProductEvidence("PRODUCT-" + productId, productId,
