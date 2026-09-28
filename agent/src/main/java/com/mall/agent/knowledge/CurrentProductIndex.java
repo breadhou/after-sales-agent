@@ -68,11 +68,19 @@ public final class CurrentProductIndex {
         }
 
         Map<Long, ProductEvidence> evidenceById = new LinkedHashMap<>();
-        rows.stream()
+        List<ProductRow> candidates = rows.stream()
                 .filter(row -> "ON_SHELF".equals(row.status()) && allowlist.contains(row.id()))
                 .sorted((left, right) -> Long.compare(left.id(), right.id()))
-                .forEach(row -> readCurrentEvidence(row.id()).ifPresent(evidence ->
-                        evidenceById.put(row.id(), evidence)));
+                .toList();
+        for (ProductRow row : candidates) {
+            ProductDetail detail = readProductDetail(row.id());
+            if (!detail.valid()) {
+                return ProductSnapshot.disabled(allowlist);
+            }
+            if (detail.evidence() != null) {
+                evidenceById.put(row.id(), detail.evidence());
+            }
+        }
 
         return ProductSnapshot.complete(allowlist, evidenceById,
                 summary.total(), summary.current(), PAGE_SIZE);
@@ -85,7 +93,8 @@ public final class CurrentProductIndex {
                 || !snapshot.productIds().contains(productId)) {
             return Optional.empty();
         }
-        return readCurrentEvidence(productId);
+        ProductDetail detail = readProductDetail(productId);
+        return detail.valid() ? Optional.ofNullable(detail.evidence()) : Optional.empty();
     }
 
     private Traversal readCompleteTraversal() {
@@ -153,24 +162,28 @@ public final class CurrentProductIndex {
         return new ProductRow(record.path("id").longValue(), record.path("status").textValue());
     }
 
-    private Optional<ProductEvidence> readCurrentEvidence(long productId) {
+    private ProductDetail readProductDetail(long productId) {
         try {
             JsonNode detail = invoke("get_product_detail", "{\"productId\":" + productId + "}");
             if (detail == null || !detail.isObject() || !integral(detail.get("id"))
                     || detail.path("id").longValue() != productId
-                    || !"ON_SHELF".equals(textValue(detail.get("status")))
+                    || !nonblankText(detail.get("status"))
                     || !nonblankText(detail.get("name"))
                     || !nonblankText(detail.get("description"))) {
-                return Optional.empty();
+                return ProductDetail.invalid();
             }
 
             List<ProductEvidence.SkuFact> skus = parseSkus(detail.get("skus"));
             String name = detail.path("name").textValue();
             String description = detail.path("description").textValue();
-            return Optional.of(new ProductEvidence("PRODUCT-" + productId, productId,
-                    digest(productId, name, description, skus), name, description, skus));
+            if (!"ON_SHELF".equals(detail.path("status").textValue())) {
+                return ProductDetail.validWithoutCitation();
+            }
+            ProductEvidence evidence = new ProductEvidence("PRODUCT-" + productId, productId,
+                    digest(productId, name, description, skus), name, description, skus);
+            return ProductDetail.valid(evidence);
         } catch (RuntimeException e) {
-            return Optional.empty();
+            return ProductDetail.invalid();
         }
     }
 
@@ -277,6 +290,20 @@ public final class CurrentProductIndex {
     }
 
     private record ProductRow(long id, String status) {
+    }
+
+    private record ProductDetail(boolean valid, ProductEvidence evidence) {
+        private static ProductDetail valid(ProductEvidence evidence) {
+            return new ProductDetail(true, evidence);
+        }
+
+        private static ProductDetail validWithoutCitation() {
+            return new ProductDetail(true, null);
+        }
+
+        private static ProductDetail invalid() {
+            return new ProductDetail(false, null);
+        }
     }
 
     private record PageSummary(long total, int current) {

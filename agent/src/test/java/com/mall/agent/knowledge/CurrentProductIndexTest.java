@@ -165,6 +165,48 @@ class CurrentProductIndexTest {
     }
 
     @Test
+    void failedDetailDisablesAllCitationsForRefresh() {
+        List<ToolExecutionResult> invalidDetails = List.of(
+                error("detail lookup failed for product 21"),
+                success("null"),
+                success("{\"id\":21,\"name\":\"Missing description\",\"status\":\"ON_SHELF\"}"));
+
+        for (ToolExecutionResult invalidDetail : invalidDetails) {
+            Iterator<ToolExecutionResult> tools = List.of(
+                    success(page(1, 2, List.of(20L, 21L), Set.of())),
+                    success(detail(20, "Current description 20", "ON_SHELF")),
+                    invalidDetail).iterator();
+            CurrentProductIndex index = new CurrentProductIndex(request -> tools.next());
+
+            CurrentProductIndex.ProductSnapshot snapshot = index.refresh(Set.of(20L, 21L));
+
+            assertFalse(snapshot.complete());
+            assertEquals(Set.of(), snapshot.productIds());
+            assertTrue(index.verifyCitation(snapshot, 20L).isEmpty());
+            assertTrue(index.verifyCitation(snapshot, 21L).isEmpty());
+        }
+    }
+
+    @Test
+    void validOffShelfDetailDropsOnlyThatProduct() {
+        Iterator<ToolExecutionResult> tools = List.of(
+                success(page(1, 2, List.of(30L, 31L), Set.of())),
+                success(detail(30, "Current description 30", "OFF_SHELF")),
+                success(detail(31, "Current description 31", "ON_SHELF")),
+                success(detail(31, "Fresh description 31", "ON_SHELF"))).iterator();
+        CurrentProductIndex index = new CurrentProductIndex(request -> tools.next());
+
+        CurrentProductIndex.ProductSnapshot snapshot = index.refresh(Set.of(30L, 31L));
+
+        assertTrue(snapshot.complete());
+        assertEquals(Set.of(31L), snapshot.productIds());
+        assertTrue(index.verifyCitation(snapshot, 30L).isEmpty());
+        ProductEvidence fresh = index.verifyCitation(snapshot, 31L).orElseThrow();
+        assertEquals("PRODUCT-31", fresh.sourceId());
+        assertEquals("Fresh description 31", fresh.description());
+    }
+
+    @Test
     void changedDescriptionRefreshesDigest() {
         List<String> responses = List.of(
                 page(1, 1, List.of(42L), Set.of()),
