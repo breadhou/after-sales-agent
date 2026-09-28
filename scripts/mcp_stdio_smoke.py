@@ -1,6 +1,6 @@
 """Drive one MCP stdio request while keeping stdin open for its response.
 
-SUPERMALL_TOKEN and SUPERMALL_BASE_URL are inherited from the environment.
+SUPERMALL_TOKEN and SUPERMALL_BASE_URL are passed explicitly to the Java child.
 No credential is written to disk or printed by this script.
 """
 
@@ -15,6 +15,15 @@ from threading import Thread
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CHILD_OS_KEYS = ("PATH", "PATHEXT", "SystemRoot", "WINDIR", "ComSpec",
+                 "TEMP", "TMP", "JAVA_HOME")
+
+
+def child_environment(token, base_url):
+    environment = {key: os.environ[key] for key in CHILD_OS_KEYS if key in os.environ}
+    environment["SUPERMALL_TOKEN"] = token
+    environment["SUPERMALL_BASE_URL"] = base_url
+    return environment
 
 
 def parse_args():
@@ -22,6 +31,9 @@ def parse_args():
     parser.add_argument("--jar", type=Path, default=ROOT / "mcp-server/target/mcp-server.jar")
     parser.add_argument("--tool", help="MCP tool name; omit to request tools/list")
     parser.add_argument("--order-id", type=int)
+    parser.add_argument("--product-id", type=int)
+    parser.add_argument("--page-num", type=int)
+    parser.add_argument("--page-size", type=int)
     parser.add_argument("--reason")
     parser.add_argument("--expected-fingerprint")
     parser.add_argument("--expected-policy-code")
@@ -39,6 +51,12 @@ def main():
     arguments = {}
     if args.order_id is not None:
         arguments["orderId"] = args.order_id
+    if args.product_id is not None:
+        arguments["productId"] = args.product_id
+    if args.page_num is not None:
+        arguments["pageNum"] = args.page_num
+    if args.page_size is not None:
+        arguments["pageSize"] = args.page_size
     if args.reason is not None:
         arguments["reason"] = args.reason
     if args.expected_fingerprint is not None:
@@ -53,7 +71,7 @@ def main():
 
     process = subprocess.Popen(
         [os.environ.get("JAVA_BIN", "java"), "-jar", str(args.jar)],
-        cwd=ROOT, env=os.environ.copy(), stdin=subprocess.PIPE,
+        cwd=ROOT, env=child_environment(token, os.environ["SUPERMALL_BASE_URL"]), stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     lines = Queue()
@@ -121,8 +139,11 @@ def main():
                     raise RuntimeError("unexpected business error code")
         else:
             tools = result.get("tools", [])
-            if len(tools) != 6 or len({tool["name"] for tool in tools}) != 6:
-                raise RuntimeError("expected exactly six distinct MCP tools")
+            expected_names = {"get_order", "list_user_orders", "get_logistics",
+                              "get_refund_eligibility", "list_policy_clauses", "submit_refund",
+                              "list_on_shelf_products", "get_product_detail"}
+            if {tool["name"] for tool in tools} != expected_names or len(tools) != len(expected_names):
+                raise RuntimeError("unexpected MCP tool names or count")
             submit = next(tool for tool in tools if tool["name"] == "submit_refund")
             schema = submit["inputSchema"]
             reviewed_fields = {
@@ -131,6 +152,14 @@ def main():
                     or set(schema.get("required", [])) != reviewed_fields \
                     or schema.get("additionalProperties") is not False:
                 raise RuntimeError("submit_refund schema widened")
+            read_fields = {"list_on_shelf_products": {"pageNum", "pageSize"},
+                           "get_product_detail": {"productId"}}
+            for name, expected_fields in read_fields.items():
+                read_schema = next(tool for tool in tools if tool["name"] == name)["inputSchema"]
+                if set(read_schema["properties"]) != expected_fields \
+                        or set(read_schema.get("required", [])) != expected_fields \
+                        or read_schema.get("additionalProperties") is not False:
+                    raise RuntimeError(f"{name} schema widened")
         if "\ufffd" in json.dumps(response, ensure_ascii=False):
             raise RuntimeError("replacement character in MCP response")
         # ASCII escaping survives Windows shell pipelines with a mismatched code page.

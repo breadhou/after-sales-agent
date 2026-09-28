@@ -50,6 +50,19 @@ public final class FakeSupermall implements AutoCloseable {
     }
 
     private Response defaultResponse(String path) {
+        if ("/api/products".equals(path)) {
+            return success("{\"records\":[{\"id\":101,\"name\":\"Test product\","
+                    + "\"description\":\"Current description\",\"status\":\"ON_SHELF\","
+                    + "\"categoryId\":3,\"merchantId\":7,\"minPrice\":999}],"
+                    + "\"total\":1,\"size\":20,\"current\":2}");
+        }
+        if ("/api/products/101".equals(path)) {
+            return success("{\"id\":101,\"name\":\"Test product\","
+                    + "\"description\":\"Current description\",\"status\":\"ON_SHELF\","
+                    + "\"categoryId\":3,\"merchantId\":7,\"minPrice\":12.50,\"totalStock\":4,"
+                    + "\"skus\":[{\"id\":501,\"specs\":\"Blue\",\"price\":12.50,\"stock\":4,"
+                    + "\"image\":\"https://example.test/sku.png\",\"merchantId\":7}]}");
+        }
         if (path.endsWith("/refund-eligibility")) {
             return success("{\"orderId\":9001,\"eligible\":true,\"reason\":null,"
                     + "\"policyCode\":\"SEVEN_DAY_NO_REASON\",\"policyTitle\":\"签收 7 天内整单退款\","
