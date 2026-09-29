@@ -2,6 +2,7 @@ package com.mall.agent.flow;
 
 import com.mall.agent.agent.DecisionAgent;
 import com.mall.agent.model.RefundRequest;
+import com.mall.agent.tools.ExplanationRequestTools;
 import com.mall.agent.tools.EscalationTools;
 import com.mall.agent.tools.RefundHandoffTools;
 import org.junit.jupiter.api.Test;
@@ -17,6 +18,81 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ConversationCoordinatorTest {
 
     private static final String SESSION = "session-a";
+
+    @Test
+    void refundOrEscalationReplyWinsOverExplanation() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        ExplanationRequestTools explanation = new ExplanationRequestTools();
+        EscalationTools escalation = new EscalationTools(SESSION, ignored -> { });
+        AtomicInteger explanationCalls = new AtomicInteger();
+        ConversationCoordinator coordinator = new ConversationCoordinator((session, input) -> {
+            explanation.requestExplanation(9001L);
+            handoff.handoffRefund(9001L, "包装破损");
+            return "模型解释";
+        }, handoff, escalation, () -> List.of(9001L), id -> "资格答复", id -> false,
+                (session, request) -> "退款执行答复", explanation, (input, orderId) -> {
+                    explanationCalls.incrementAndGet();
+                    return "资料解释";
+                });
+
+        String refund = coordinator.handleTurn(SESSION, "请退订单 9001，理由：包装破损");
+        assertTrue(refund.contains("/confirm-refund 9001"), refund);
+        assertFalse(refund.contains("资料解释"), refund);
+        assertEquals(0, explanationCalls.get());
+
+        ConversationCoordinator escalated = new ConversationCoordinator((session, input) -> {
+            explanation.requestExplanation(9001L);
+            escalation.escalateToHuman(9001L, "需人工核实");
+            return "模型解释";
+        }, handoff, escalation, () -> List.of(), id -> "资格答复", id -> false,
+                (session, request) -> "退款执行答复", explanation, (input, orderId) -> {
+                    explanationCalls.incrementAndGet();
+                    return "资料解释";
+                });
+        assertEquals("已记录，请联系人工客服", escalated.handleTurn(SESSION, "请人工处理"));
+        assertEquals(0, explanationCalls.get());
+    }
+
+    @Test
+    void eligibilityMarkerWinsOverExplanationWithoutGeneratorCall() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        ExplanationRequestTools explanation = new ExplanationRequestTools();
+        AtomicInteger explanationCalls = new AtomicInteger();
+        String trustedEligibilityReply = "订单 9001 当前不可退：超过期限。本次未提交退款。";
+        ConversationCoordinator coordinator = new ConversationCoordinator((session, input) -> {
+            handoff.askRefundEligibility(9001L);
+            explanation.requestExplanation(9001L);
+            return "模型说可退";
+        }, handoff, new EscalationTools(SESSION, ignored -> { }), () -> List.of(),
+                id -> trustedEligibilityReply, id -> false,
+                (session, request) -> "退款执行答复", explanation, (input, orderId) -> {
+                    explanationCalls.incrementAndGet();
+                    return "资料解释";
+                });
+
+        assertEquals(trustedEligibilityReply, coordinator.handleTurn(SESSION, "订单 9001 能退款吗？"));
+        assertEquals(0, explanationCalls.get());
+    }
+
+    @Test
+    void explanationUsesOriginalInputAndKeepsOrdinaryLogisticsReply() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        ExplanationRequestTools explanation = new ExplanationRequestTools();
+        AtomicReference<String> seenInput = new AtomicReference<>();
+        ConversationCoordinator coordinator = new ConversationCoordinator((session, input) -> {
+            if (input.contains("演示商品")) explanation.requestExplanation(null);
+            return "订单物流正常";
+        }, handoff, new EscalationTools(SESSION, ignored -> { }), () -> List.of(),
+                id -> "资格答复", id -> false, (session, request) -> "退款执行答复",
+                explanation, (input, orderId) -> {
+                    seenInput.set(input);
+                    return "有来源的商品解释";
+                });
+
+        assertEquals("有来源的商品解释", coordinator.handleTurn(SESSION, "查询 演示商品 当前价格"));
+        assertEquals("查询 演示商品 当前价格", seenInput.get());
+        assertEquals("订单物流正常", coordinator.handleTurn(SESSION, "查一下物流"));
+    }
 
     @Test
     void unconfirmedHandoffNeverCallsWorkflow() {

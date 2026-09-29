@@ -8,7 +8,10 @@ import com.mall.agent.config.AgentConfig;
 import com.mall.agent.config.ModelProperties;
 import com.mall.agent.flow.ConversationCoordinator;
 import com.mall.agent.flow.RefundWorkflow;
+import com.mall.agent.knowledge.DemoProductManifest;
+import com.mall.agent.knowledge.ExplanationService;
 import com.mall.agent.tools.EscalationTools;
+import com.mall.agent.tools.ExplanationRequestTools;
 import com.mall.agent.tools.RefundHandoffTools;
 import com.mall.agent.tools.RefundExecutor;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -23,10 +26,12 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.InvalidPathException;
 import java.util.Map;
 import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Properties;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 
@@ -53,7 +58,10 @@ public final class AgentMain {
             EscalationTools escalation = new EscalationTools(sessionId, record ->
                     System.err.println("[升级人工] 请求已记录"));
             RefundHandoffTools handoff = new RefundHandoffTools();
-            DecisionAgent agent = AgentConfig.decisionAgent(model, mcp, handoff, escalation);
+            ExplanationRequestTools explanationTools = new ExplanationRequestTools();
+            DecisionAgent agent = AgentConfig.decisionAgent(model, mcp, handoff, escalation,
+                    explanationTools);
+            ExplanationService explanationService = explanationService(mcp, model, System.getenv());
             RefundExecutor executor = new RefundExecutor(mcp);
             RefundWorkflow refundWorkflow = new RefundWorkflow(mcp,
                     context -> AgentConfig.reviewSafely(AgentConfig.reviewAgent(model), context),
@@ -62,7 +70,7 @@ public final class AgentMain {
                     () -> listedOrderIds(mcp::executeTool),
                     orderId -> eligibilityReply(orderId, mcp::executeTool),
                     orderId -> isOrderRefunded(orderId, mcp::executeTool),
-                    refundWorkflow::apply);
+                    refundWorkflow::apply, explanationTools, explanationService::answer);
 
             System.out.println("售后客服已就绪（会话 " + sessionId + "）。输入 exit 退出。");
             runSession(coordinator, sessionId,
@@ -70,6 +78,20 @@ public final class AgentMain {
         } finally {
             mcp.close();
         }
+    }
+
+    /** Optional local manifest only supplies allowlisted IDs; all product facts are freshly read via MCP. */
+    static ExplanationService explanationService(McpClient mcp, ChatModel model,
+                                                 Map<String, String> environment) {
+        String manifest = environment.get("DEMO_PRODUCT_MANIFEST");
+        Set<Long> allowed;
+        try {
+            allowed = manifest == null || manifest.isBlank()
+                    ? Set.of() : DemoProductManifest.load(Path.of(manifest));
+        } catch (InvalidPathException e) {
+            allowed = Set.of();
+        }
+        return new ExplanationService(mcp, allowed, AgentConfig.explanationGenerator(model));
     }
 
     static ModelProperties modelProperties(Properties properties, Map<String, String> environment) {

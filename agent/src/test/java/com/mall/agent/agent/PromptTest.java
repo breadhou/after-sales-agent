@@ -28,6 +28,8 @@ class PromptTest {
         assertTrue(prompt.contains("handoff_refund"));
         assertTrue(prompt.contains("ask_refund_eligibility"));
         assertTrue(prompt.contains("escalate_to_human"));
+        assertTrue(prompt.contains("request_explanation"));
+        assertTrue(prompt.contains("资料解释"));
         assertFalse(prompt.contains("request_refund"));
         assertFalse(prompt.contains("submit_refund"));
         assertFalse(prompt.contains("get_refund_eligibility"));

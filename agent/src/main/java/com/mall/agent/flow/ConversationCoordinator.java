@@ -5,6 +5,7 @@ import com.mall.agent.model.CandidateRefundAction;
 import com.mall.agent.model.PendingRefund;
 import com.mall.agent.model.RefundRequest;
 import com.mall.agent.tools.EscalationTools;
+import com.mall.agent.tools.ExplanationRequestTools;
 import com.mall.agent.tools.RefundHandoffTools;
 
 import java.util.ArrayList;
@@ -52,6 +53,8 @@ public final class ConversationCoordinator {
     private final Function<Long, String> eligibilityReply;
     private final Predicate<Long> historicallyRefunded;
     private final BiFunction<String, RefundRequest, String> workflow;
+    private final ExplanationRequestTools explanationTools;
+    private final BiFunction<String, Long, String> explanation;
     private final Map<String, PendingRefund> pendingBySession = new ConcurrentHashMap<>();
 
     public ConversationCoordinator(DecisionAgent decision, RefundHandoffTools handoffTools,
@@ -59,6 +62,18 @@ public final class ConversationCoordinator {
                                    Function<Long, String> eligibilityReply,
                                    Predicate<Long> historicallyRefunded,
                                    BiFunction<String, RefundRequest, String> workflow) {
+        this(decision, handoffTools, escalationTools, orderLister, eligibilityReply,
+                historicallyRefunded, workflow, new ExplanationRequestTools(),
+                (input, orderId) -> "当前无可靠依据回答该资料问题，请联系人工客服核实。");
+    }
+
+    public ConversationCoordinator(DecisionAgent decision, RefundHandoffTools handoffTools,
+                                   EscalationTools escalationTools, Supplier<List<Long>> orderLister,
+                                   Function<Long, String> eligibilityReply,
+                                   Predicate<Long> historicallyRefunded,
+                                   BiFunction<String, RefundRequest, String> workflow,
+                                   ExplanationRequestTools explanationTools,
+                                   BiFunction<String, Long, String> explanation) {
         this.decision = Objects.requireNonNull(decision);
         this.handoffTools = Objects.requireNonNull(handoffTools);
         this.escalationTools = Objects.requireNonNull(escalationTools);
@@ -66,6 +81,8 @@ public final class ConversationCoordinator {
         this.eligibilityReply = Objects.requireNonNull(eligibilityReply);
         this.historicallyRefunded = Objects.requireNonNull(historicallyRefunded);
         this.workflow = Objects.requireNonNull(workflow);
+        this.explanationTools = Objects.requireNonNull(explanationTools);
+        this.explanation = Objects.requireNonNull(explanation);
     }
 
     /** 同一决策工具实例一次只处理一轮，标记和升级记录不能跨会话串用。 */
@@ -91,16 +108,19 @@ public final class ConversationCoordinator {
         // 一旦用户开始新话题或改变诉求，旧的待确认理由和订单不再有效。
         pendingBySession.remove(sessionId);
         handoffTools.clear();
+        explanationTools.clear();
         int priorEscalations = escalationTools.recordCount();
         final String modelReply;
         try {
             modelReply = decision.handle(sessionId, rawInput);
         } catch (RuntimeException e) {
             handoffTools.clear();
+            explanationTools.clear();
             return escalationTools.recordCount() > priorEscalations
                     ? ESCALATION_REPLY : "本轮请求暂时无法确认，请联系人工客服。";
         }
         RefundHandoffTools.Signals signals = handoffTools.takeSignals();
+        Long explanationOrderMarker = explanationTools.takeOrderId();
         if (escalationTools.recordCount() > priorEscalations) {
             return ESCALATION_REPLY;
         }
@@ -113,11 +133,31 @@ public final class ConversationCoordinator {
         if (looksLikeEligibilityQuestion(input)) {
             return respondToEligibility(rawInput);
         }
+        // A mistaken eligibility marker on a logistics turn must not replace its answer.
+        // It also cannot coexist with a generated explanation on that same turn.
+        if (!signals.eligibilityQuestions().isEmpty()) explanationOrderMarker = null;
         if (isNegatedRefundRequest(input)) {
             return "本次未提交退款。";
         }
         if (!signals.handoffs().isEmpty()) {
             return "本次未提交退款。若需要申请退款，请明确告知订单 ID 和理由。";
+        }
+        if (explanationOrderMarker != null) {
+            if (refundStatusQuestion(input)) return verifiedHistoricalStatusReply(rawInput);
+            ParsedOrderIds ids = explicitOrderIds(rawInput);
+            if (ids.invalid() || ids.values().size() > 1 || explanationOrderMarker < 0
+                    || (explanationOrderMarker > 0 && (ids.values().size() != 1
+                    || !explanationOrderMarker.equals(ids.values().get(0))))) {
+                return "当前无可靠依据回答该资料问题，请联系人工客服核实。";
+            }
+            Long orderId = ids.values().isEmpty() ? null : ids.values().get(0);
+            try {
+                String reply = explanation.apply(rawInput, orderId);
+                return reply == null || reply.isBlank()
+                        ? "当前无可靠依据回答该资料问题，请联系人工客服核实。" : reply;
+            } catch (RuntimeException e) {
+                return "当前无可靠依据回答该资料问题，请联系人工客服核实。";
+            }
         }
         if (modelReply == null) {
             return "暂时无法回答，请联系人工客服。";
@@ -150,6 +190,12 @@ public final class ConversationCoordinator {
                 || text.contains("款项") || text.contains("到账")
                 || (text.contains("钱") && (text.contains("退") || text.contains("还")))
                 || MONEY_RETURN_REQUEST.matcher(text).find();
+    }
+
+    private static boolean refundStatusQuestion(String text) {
+        return text.contains("退款状态") || text.contains("退款进度")
+                || text.contains("已退款") || text.contains("退款成功")
+                || text.contains("到账");
     }
 
     private static boolean refundOutcomeClaim(String text) {

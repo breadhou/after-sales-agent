@@ -6,6 +6,7 @@ import com.mall.agent.model.RefundReviewContext;
 import com.mall.agent.model.ReviewVerdict;
 import com.mall.agent.policy.PolicyEvidence;
 import com.mall.agent.tools.EscalationTools;
+import com.mall.agent.tools.ExplanationRequestTools;
 import com.mall.agent.tools.RefundHandoffTools;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolSpecification;
@@ -86,10 +87,13 @@ class AgentConfigTest {
                 .getMethod("askRefundEligibility", Long.class).getAnnotation(Tool.class);
         Tool escalate = EscalationTools.class
                 .getMethod("escalateToHuman", Long.class, String.class).getAnnotation(Tool.class);
+        Tool explain = ExplanationRequestTools.class
+                .getMethod("requestExplanation", Long.class).getAnnotation(Tool.class);
 
         assertEquals("handoff_refund", handoff.name());
         assertEquals("ask_refund_eligibility", eligibility.name());
         assertEquals("escalate_to_human", escalate.name());
+        assertEquals("request_explanation", explain.name());
     }
 
     @Test
@@ -100,6 +104,8 @@ class AgentConfigTest {
                 .getMethod("askRefundEligibility", Long.class));
         ToolSpecification escalation = ToolSpecifications.toolSpecificationFrom(EscalationTools.class
                 .getMethod("escalateToHuman", Long.class, String.class));
+        ToolSpecification explanation = ToolSpecifications.toolSpecificationFrom(ExplanationRequestTools.class
+                .getMethod("requestExplanation", Long.class));
 
         assertEquals(List.of("orderId", "reason"),
                 refund.parameters().properties().keySet().stream().sorted().toList());
@@ -107,6 +113,7 @@ class AgentConfigTest {
                 eligibility.parameters().properties().keySet().stream().sorted().toList());
         assertEquals(List.of("orderId", "summary"),
                 escalation.parameters().properties().keySet().stream().sorted().toList());
+        assertEquals(List.of("orderId"), explanation.parameters().properties().keySet().stream().sorted().toList());
     }
 
     @Test
@@ -116,14 +123,16 @@ class AgentConfigTest {
                 tool("get_order"), tool("list_user_orders"), tool("get_logistics"),
                 tool("get_refund_eligibility"), tool("list_policy_clauses"), tool("submit_refund"));
         DecisionAgent decision = AgentConfig.decisionAgent(model, mcpClient(advertised),
-                new RefundHandoffTools(), new EscalationTools("session-1", ignored -> { }));
+                new RefundHandoffTools(), new EscalationTools("session-1", ignored -> { }),
+                new ExplanationRequestTools());
 
         decision.handle("session-1", "请查询订单物流");
 
         Set<String> visible = model.request().toolSpecifications().stream()
                 .map(ToolSpecification::name).collect(java.util.stream.Collectors.toSet());
         assertEquals(Set.of("get_order", "list_user_orders", "get_logistics",
-                "handoff_refund", "ask_refund_eligibility", "escalate_to_human"), visible);
+                "handoff_refund", "ask_refund_eligibility", "escalate_to_human",
+                "request_explanation"), visible);
         assertFalse(visible.contains("request_refund"));
         assertFalse(visible.contains("submit_refund"));
         assertFalse(visible.contains("get_refund_eligibility"));
@@ -136,6 +145,15 @@ class AgentConfigTest {
         ReviewVerdict verdict = AgentConfig.reviewAgent(model).review("请复核");
 
         assertFalse(verdict.approved());
+        assertTrue(model.request().toolSpecifications() == null
+                || model.request().toolSpecifications().isEmpty());
+    }
+
+    @Test
+    void explanationModelReceivesNoTools() {
+        CapturingChatModel model = new CapturingChatModel("{\"narrative\":\"当前商品资料\",\"citedSourceIds\":[\"FAQ-001\"]}");
+        var draft = AgentConfig.explanationGenerator(model).generate("只读资料：FAQ-001");
+        assertEquals("当前商品资料", draft.narrative());
         assertTrue(model.request().toolSpecifications() == null
                 || model.request().toolSpecifications().isEmpty());
     }

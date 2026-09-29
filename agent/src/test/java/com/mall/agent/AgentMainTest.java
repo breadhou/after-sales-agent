@@ -4,6 +4,11 @@ import com.mall.agent.config.ModelProperties;
 import com.mall.agent.flow.ConversationCoordinator;
 import com.mall.agent.tools.RefundHandoffTools;
 import com.mall.agent.tools.EscalationTools;
+import dev.langchain4j.mcp.client.McpClient;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.service.tool.ToolExecutionResult;
 import org.junit.jupiter.api.Test;
@@ -20,12 +25,58 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.ArrayList;
+import java.lang.reflect.Proxy;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgentMainTest {
+
+    @Test
+    void runtimeExplanationServiceUsesFaqWithoutMcpTools() {
+        McpClient mcp = (McpClient) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{McpClient.class}, (proxy, method, args) -> {
+                    throw new AssertionError("FAQ answer must not call MCP: " + method.getName());
+                });
+        ChatModel model = new ChatModel() {
+            @Override
+            public ChatResponse doChat(ChatRequest request) {
+                assertTrue(request.toolSpecifications() == null
+                        || request.toolSpecifications().isEmpty());
+                return ChatResponse.builder().aiMessage(new AiMessage(
+                        "{\"narrative\":\"可先核对本次物流查询\",\"citedSourceIds\":[\"FAQ-006\"]}"))
+                        .build();
+            }
+        };
+
+        String reply = AgentMain.explanationService(mcp, model, Map.of())
+                .answer("物流查询失败怎么办？", null);
+
+        assertTrue(reply.contains("[FAQ-006]"), reply);
+    }
+
+    @Test
+    void invalidManifestPathDisablesOnlyProductAnswers() {
+        McpClient mcp = (McpClient) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{McpClient.class}, (proxy, method, args) -> {
+                    throw new AssertionError("invalid manifest must not call product MCP");
+                });
+        ChatModel model = new ChatModel() {
+            @Override
+            public ChatResponse doChat(ChatRequest request) {
+                return ChatResponse.builder().aiMessage(new AiMessage(
+                        "{\"narrative\":\"商品资料\",\"citedSourceIds\":[\"PRODUCT-7\"]}"))
+                        .build();
+            }
+        };
+
+        String reply = AgentMain.explanationService(mcp, model,
+                Map.of("DEMO_PRODUCT_MANIFEST", "invalid" + (char) 0 + "path"))
+                .answer("当前亚麻袋商品价格？", null);
+
+        assertTrue(reply.contains("无可靠依据"), reply);
+    }
 
     @Test
     void trustedOrderAndEligibilityQueriesUseMcpFacts() {

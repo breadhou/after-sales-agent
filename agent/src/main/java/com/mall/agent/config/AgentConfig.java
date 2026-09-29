@@ -4,7 +4,9 @@ import com.mall.agent.agent.DecisionAgent;
 import com.mall.agent.agent.ReviewAgent;
 import com.mall.agent.model.RefundReviewContext;
 import com.mall.agent.model.ReviewVerdict;
+import com.mall.agent.knowledge.ExplanationService;
 import com.mall.agent.tools.EscalationTools;
+import com.mall.agent.tools.ExplanationRequestTools;
 import com.mall.agent.tools.RefundHandoffTools;
 import com.mall.agent.trace.ToolTrace;
 import dev.langchain4j.agent.tool.ToolSpecification;
@@ -77,7 +79,8 @@ public final class AgentConfig {
 
     public static DecisionAgent decisionAgent(ChatModel model, McpClient mcp,
                                               RefundHandoffTools handoffTools,
-                                              EscalationTools escalationTools) {
+                                              EscalationTools escalationTools,
+                                              ExplanationRequestTools explanationTools) {
         requireReadOnlyTools(mcp);
         McpToolProvider readOnlyTools = McpToolProvider.builder()
                 .mcpClients(mcp)
@@ -88,7 +91,7 @@ public final class AgentConfig {
         return AiServices.builder(DecisionAgent.class)
                 .chatModel(model)
                 .toolProvider(readOnlyTools)
-                .tools(handoffTools, escalationTools)
+                .tools(handoffTools, escalationTools, explanationTools)
                 .chatMemory(MessageWindowChatMemory.withMaxMessages(20))
                 .maxToolCallingRoundTrips(10)
                 .build();
@@ -96,6 +99,13 @@ public final class AgentConfig {
 
     public static ReviewAgent reviewAgent(ChatModel model) {
         return AiServices.builder(ReviewAgent.class)
+                .chatModel(model)
+                .build();
+    }
+
+    /** Separate model call with no MCP or local tools. */
+    public static ExplanationService.Generator explanationGenerator(ChatModel model) {
+        return AiServices.builder(ExplanationService.Generator.class)
                 .chatModel(model)
                 .build();
     }
