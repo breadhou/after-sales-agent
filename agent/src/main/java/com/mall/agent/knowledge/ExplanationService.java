@@ -87,7 +87,8 @@ public final class ExplanationService {
         if (historicalDescriptionQuestion(originalInput)) {
             return "无法由当前目录核定商品是否符合下单时描述，请联系人工客服核查历史页面或订单承诺。";
         }
-        if (productQuestion(originalInput) && RETURN_POLICY_TEXT.matcher(originalInput).find()) {
+        if (productQuestion(originalInput) && RETURN_POLICY_TEXT.matcher(originalInput).find()
+                && (!policyQuestion(originalInput) || specificProductQuestion(originalInput))) {
             return PRODUCT_POLICY_LIMIT;
         }
         if (policyQuestion(originalInput)) return policyAnswer(originalInput, orderId);
@@ -311,6 +312,11 @@ public final class ExplanationService {
     private static boolean productQuestion(String input) {
         return input.contains("商品") || input.contains("价格") || input.contains("库存")
                 || input.contains("规格") || input.contains("材质") || input.contains("演示商品");
+    }
+
+    private static boolean specificProductQuestion(String input) {
+        return input.contains("这款") || input.contains("这件") || input.contains("这个商品")
+                || input.contains("该款") || input.contains("该商品") || input.contains("此商品");
     }
 
     private record Eligibility(boolean eligible, String reason, String fingerprint, String policyCode) { }

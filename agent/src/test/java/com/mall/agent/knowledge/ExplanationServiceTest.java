@@ -46,6 +46,41 @@ class ExplanationServiceTest {
     }
 
     @Test
+    void generalProductRefundPolicyQuestionUsesCurrentCatalog() {
+        AtomicInteger catalogCalls = new AtomicInteger();
+        ExplanationService service = service(request -> {
+            assertEquals("list_policy_clauses", request.name());
+            catalogCalls.incrementAndGet();
+            return ok(CATALOG);
+        }, Set.of(), input -> new ExplanationDraft("这些是当前规则。", List.of("C1")));
+
+        String reply = service.answer("商品退款政策有哪些？", null);
+
+        assertEquals(1, catalogCalls.get());
+        assertTrue(reply.contains("[C1] 签收七日内可申请核验。"), reply);
+        assertTrue(reply.contains("不能据此判断具体订单"), reply);
+    }
+
+    @Test
+    void specificProductReturnPolicyQuestionDoesNotUseProductOrGeneralPolicyEvidence() {
+        AtomicInteger toolCalls = new AtomicInteger();
+        AtomicInteger generationCalls = new AtomicInteger();
+        ExplanationService service = service(request -> {
+            toolCalls.incrementAndGet();
+            throw new AssertionError("Unexpected tool: " + request.name());
+        }, Set.of(7L), input -> {
+            generationCalls.incrementAndGet();
+            return new ExplanationDraft("支持七天无理由退换。", List.of("PRODUCT-7"));
+        });
+
+        String reply = service.answer("这款亚麻袋商品适用什么退换政策？", null);
+
+        assertTrue(reply.contains("当前商品资料不能证明退换政策适用"), reply);
+        assertEquals(0, toolCalls.get());
+        assertEquals(0, generationCalls.get());
+    }
+
+    @Test
     void instructionInsidePolicyClauseCannotBecomeAnswerOrGeneratorInput() {
         AtomicInteger generationCalls = new AtomicInteger();
         ExplanationService service = service(request -> {
