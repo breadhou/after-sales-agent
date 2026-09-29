@@ -49,6 +49,9 @@ public final class ExplanationService {
     private static final Pattern MODEL_FACT_TOPIC = Pattern.compile(
             "退款|退货|退回|到账|入账|打回|款项|金额|资格|订单|这单|该单|价格|库存|"
                     + "[¥￥]|[0-9]+(?:\\.[0-9]+)?元");
+    // Generated prose is optional. Keep Latin text and numbers in verified source quotes;
+    // otherwise English transaction claims can evade Chinese-only topic checks.
+    private static final Pattern MODEL_LATIN_OR_NUMBER = Pattern.compile("[\\p{IsLatin}\\p{Nd}]");
     private static final Pattern EMBEDDED_SOURCE = Pattern.compile(
             "FAQ-[0-9]{3}|PRODUCT-[0-9]+|\\[[^]\\r\\n]+]");
     private static final Pattern INSTRUCTION_TEXT = Pattern.compile(
@@ -56,6 +59,11 @@ public final class ExplanationService {
     private static final Pattern SOURCE_OUTCOME = Pattern.compile(
             "已退款|退款成功|已经退款|已到账|"
                     + "(?:订单\\s*[0-9]+|这单|该订单|您的订单).{0,24}(?:可退|不可退|退款金额|到账)");
+    private static final Pattern RETURN_POLICY_TEXT = Pattern.compile(
+            "退款|退货|退换|无理由|政策|资格|(?:能|可|可以|支持)退|返款|退回|"
+                    + "(?i:refunds?|returns?|exchanges?|no[-\\s]?reason|money[-\\s]?back)");
+    private static final String PRODUCT_POLICY_LIMIT =
+            "当前商品资料不能证明退换政策适用；请以当前政策目录和后端资格结果为准。";
 
     private final McpClient mcp;
     private final Set<Long> allowedProductIds;
@@ -78,6 +86,9 @@ public final class ExplanationService {
         if (originalInput == null || originalInput.isBlank()) return NO_BASIS;
         if (historicalDescriptionQuestion(originalInput)) {
             return "无法由当前目录核定商品是否符合下单时描述，请联系人工客服核查历史页面或订单承诺。";
+        }
+        if (productQuestion(originalInput) && RETURN_POLICY_TEXT.matcher(originalInput).find()) {
+            return PRODUCT_POLICY_LIMIT;
         }
         if (policyQuestion(originalInput)) return policyAnswer(originalInput, orderId);
         if (productQuestion(originalInput)) return productAnswer(originalInput);
@@ -140,8 +151,7 @@ public final class ExplanationService {
         Map<String, Source> candidates = new LinkedHashMap<>();
         for (ProductEvidence evidence : snapshot.evidenceByProductId().values()) {
             String body = productText(evidence);
-            if (!safeSource(body) || body.contains("退款") || body.contains("退货")
-                    || body.contains("可退") || body.contains("资格")) continue;
+            if (!safeProductSource(body)) continue;
             texts.put(evidence.sourceId(), body);
             candidates.put(evidence.sourceId(), new Source(evidence.sourceId(), body,
                     evidence.productId(), evidence.digest()));
@@ -206,7 +216,7 @@ public final class ExplanationService {
             try {
                 ProductEvidence checked = products.verifyCitation(snapshot, source.productId()).orElse(null);
                 if (checked != null && checked.digest().equals(source.digest())
-                        && safeSource(productText(checked))) {
+                        && safeProductSource(productText(checked))) {
                     fresh.add(new Source(checked.sourceId(), productText(checked),
                             checked.productId(), checked.digest()));
                 }
@@ -230,6 +240,7 @@ public final class ExplanationService {
                 && !EMBEDDED_SOURCE.matcher(text).find()
                 && !TRANSACTION_CLAIM.matcher(text).find()
                 && !MODEL_FACT_TOPIC.matcher(text).find()
+                && !MODEL_LATIN_OR_NUMBER.matcher(text).find()
                 && !INSTRUCTION_TEXT.matcher(text).find();
     }
 
@@ -269,6 +280,10 @@ public final class ExplanationService {
         return !INSTRUCTION_TEXT.matcher(text).find()
                 && !EMBEDDED_SOURCE.matcher(text).find()
                 && !SOURCE_OUTCOME.matcher(text).find();
+    }
+
+    private static boolean safeProductSource(String text) {
+        return safeSource(text) && !RETURN_POLICY_TEXT.matcher(text).find();
     }
 
     private static String productText(ProductEvidence evidence) {

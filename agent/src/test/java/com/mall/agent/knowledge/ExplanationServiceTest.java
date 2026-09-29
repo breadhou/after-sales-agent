@@ -200,6 +200,19 @@ class ExplanationServiceTest {
     }
 
     @Test
+    void englishRefundClaimDropsWholeDraft() {
+        ExplanationService service = service(request -> {
+            throw new AssertionError(request.name());
+        }, Set.of(), input -> new ExplanationDraft(
+                "Order 9001 has been refunded.", List.of("FAQ-006")));
+
+        String reply = service.answer("物流查询失败怎么办？", null);
+
+        assertFalse(reply.contains("Order 9001 has been refunded."), reply);
+        assertTrue(reply.contains("[FAQ-"), reply);
+    }
+
+    @Test
     void unpublishedProductFaqDoesNotBecomeVisible() {
         ExplanationService service = service(request -> {
             throw new AssertionError(request.name());
@@ -274,6 +287,81 @@ class ExplanationServiceTest {
         assertTrue(reply.contains("当前价格：12.5"), reply);
         assertFalse(reply.contains("PRODUCT-9"), reply);
         assertEquals(2, detailCalls.get());
+    }
+
+    @Test
+    void productDescriptionCannotAnswerReturnPolicyQuestion() {
+        AtomicInteger productCalls = new AtomicInteger();
+        AtomicInteger generationCalls = new AtomicInteger();
+        ExplanationService service = service(request -> {
+            productCalls.incrementAndGet();
+            return switch (request.name()) {
+                case "list_on_shelf_products" -> ok("""
+                        {"records":[{"id":7,"name":"亚麻袋","description":"支持七天无理由退换","status":"ON_SHELF"}],
+                         "total":1,"size":20,"current":1}
+                        """);
+                case "get_product_detail" -> ok("""
+                        {"id":7,"name":"亚麻袋","description":"支持七天无理由退换","status":"ON_SHELF",
+                         "skus":[{"id":70,"specs":"米色","price":12.5,"stock":4}]}
+                        """);
+                default -> throw new AssertionError(request.name());
+            };
+        }, Set.of(7L), input -> {
+            generationCalls.incrementAndGet();
+            return new ExplanationDraft("支持七天无理由退换。", List.of("PRODUCT-7"));
+        });
+
+        String reply = service.answer("这款亚麻袋商品支持七天无理由退换吗？", null);
+
+        assertFalse(reply.contains("[PRODUCT-7]"), reply);
+        assertFalse(reply.contains("支持七天无理由退换。"), reply);
+        assertEquals(0, productCalls.get());
+        assertEquals(0, generationCalls.get());
+    }
+
+    @Test
+    void productDescriptionWithReturnPromiseIsNotQuotedForPriceQuestion() {
+        AtomicInteger generationCalls = new AtomicInteger();
+        ExplanationService service = service(request -> switch (request.name()) {
+            case "list_on_shelf_products" -> ok("""
+                    {"records":[{"id":7,"name":"亚麻袋","description":"支持七天无理由退换","status":"ON_SHELF"}],
+                     "total":1,"size":20,"current":1}
+                    """);
+            case "get_product_detail" -> ok("""
+                    {"id":7,"name":"亚麻袋","description":"支持七天无理由退换","status":"ON_SHELF",
+                     "skus":[{"id":70,"specs":"米色","price":12.5,"stock":4}]}
+                    """);
+            default -> throw new AssertionError(request.name());
+        }, Set.of(7L), input -> {
+            generationCalls.incrementAndGet();
+            return new ExplanationDraft("当前资料。", List.of("PRODUCT-7"));
+        });
+
+        String reply = service.answer("亚麻袋商品当前价格？", null);
+
+        assertTrue(reply.contains("无可靠依据"), reply);
+        assertFalse(reply.contains("退换"), reply);
+        assertEquals(0, generationCalls.get());
+    }
+
+    @Test
+    void englishReturnPromiseInProductDescriptionIsNotQuoted() {
+        ExplanationService service = service(request -> switch (request.name()) {
+            case "list_on_shelf_products" -> ok("""
+                    {"records":[{"id":7,"name":"亚麻袋","description":"7-day no-reason returns","status":"ON_SHELF"}],
+                     "total":1,"size":20,"current":1}
+                    """);
+            case "get_product_detail" -> ok("""
+                    {"id":7,"name":"亚麻袋","description":"7-day no-reason returns","status":"ON_SHELF",
+                     "skus":[{"id":70,"specs":"米色","price":12.5,"stock":4}]}
+                    """);
+            default -> throw new AssertionError(request.name());
+        }, Set.of(7L), input -> new ExplanationDraft("当前资料。", List.of("PRODUCT-7")));
+
+        String reply = service.answer("亚麻袋商品当前价格？", null);
+
+        assertTrue(reply.contains("无可靠依据"), reply);
+        assertFalse(reply.contains("7-day no-reason returns"), reply);
     }
 
     @Test
