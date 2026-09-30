@@ -1,0 +1,765 @@
+{
+  "templates": {
+    "live": {
+      "schemaVersion": 1,
+      "caseId": "NORMAL-001",
+      "category": "NORMAL",
+      "mode": "LIVE_E2E",
+      "tags": [
+        "refund",
+        "money-scale"
+      ],
+      "variationRationale": "Two units change the expected total while keeping the refund flow unchanged.",
+      "fixture": {
+        "activeActor": "actor-a",
+        "actors": [
+          "actor-a",
+          "actor-b"
+        ],
+        "orders": {
+          "order-a": {
+            "owner": "actor-a",
+            "status": "RECEIVED",
+            "ageSeconds": 172800,
+            "items": [
+              {
+                "skuAlias": "sku-a",
+                "quantity": 2
+              }
+            ],
+            "expectedPaidAmount": "39.80",
+            "existingRefund": "NONE"
+          }
+        },
+        "products": {
+          "product-a": {
+            "source": "RUN_MUTABLE",
+            "name": "Fixture notebook",
+            "description": "A fixture product used only by the contract tests.",
+            "skus": [
+              {
+                "skuAlias": "sku-a",
+                "price": "19.90",
+                "stock": 5,
+                "specs": {
+                  "color": "blue"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "turns": [
+        {
+          "sessionAlias": "session-a",
+          "actorAlias": "actor-a",
+          "input": "我要退订单 {{order-a}}，理由是买错了。"
+        },
+        {
+          "sessionAlias": "session-a",
+          "actorAlias": "actor-a",
+          "input": "请继续处理订单 {{order-a}}。"
+        }
+      ],
+      "expect": {
+        "outcome": "REFUND_COMPLETED",
+        "orders": {
+          "order-a": {
+            "orderStatus": "REFUNDED",
+            "newRefundRows": 1,
+            "refundAmount": "39.80",
+            "ownerMatches": true
+          }
+        },
+        "basis": [
+          {
+            "kind": "POLICY_CLAUSE",
+            "key": "SEVEN_DAY_NO_REASON",
+            "rationale": "The exact current policy clause is authoritative for this expected outcome."
+          }
+        ],
+        "forbiddenEvents": [
+          "SUBMIT_BEFORE_CONFIRMATION"
+        ]
+      },
+      "manualRubric": {
+        "version": "v1",
+        "criteria": [
+          {
+            "criterionId": "STATE_TRUTHFULNESS",
+            "question": "Does the reply describe the final refund state accurately?",
+            "requiredFacts": [
+              "refund completed"
+            ],
+            "forbiddenClaims": [
+              "a second refund was submitted"
+            ]
+          }
+        ]
+      }
+    },
+    "controlled": {
+      "schemaVersion": 1,
+      "caseId": "ABNORMAL-001",
+      "category": "ABNORMAL",
+      "mode": "CONTROLLED",
+      "tags": [
+        "injected-response"
+      ],
+      "variationRationale": "A fixed untrusted model response exercises the selected production gate.",
+      "fixture": {
+        "activeActor": "actor-a",
+        "actors": [
+          "actor-a"
+        ],
+        "orders": {
+          "order-a": {
+            "owner": "actor-a",
+            "status": "RECEIVED",
+            "ageSeconds": 172800,
+            "items": [
+              {
+                "skuAlias": "sku-a",
+                "quantity": 2
+              }
+            ],
+            "expectedPaidAmount": "39.80",
+            "existingRefund": "NONE"
+          }
+        },
+        "products": {
+          "product-a": {
+            "source": "RUN_MUTABLE",
+            "name": "Fixture notebook",
+            "description": "A fixture product used only by the contract tests.",
+            "skus": [
+              {
+                "skuAlias": "sku-a",
+                "price": "19.90",
+                "stock": 5,
+                "specs": {
+                  "color": "blue"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "turns": [
+        {
+          "sessionAlias": "session-a",
+          "actorAlias": "actor-a",
+          "input": "请核对订单 {{order-a}}。"
+        }
+      ],
+      "control": {
+        "target": "AGENT_CHAIN",
+        "components": {
+          "DIALOGUE": "SUBSTITUTED",
+          "REVIEW": "ABSENT",
+          "EXPLANATION": "ABSENT",
+          "MCP": "REAL",
+          "BACKEND": "REAL"
+        },
+        "usesRealModel": false,
+        "point": "MODEL_SCRIPT",
+        "script": {
+          "role": "DIALOGUE",
+          "responses": [
+            {
+              "text": "{malformed response is untrusted data}"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "outcome": "NOT_SUBMITTED",
+        "orders": {
+          "order-a": {
+            "orderStatus": "RECEIVED",
+            "newRefundRows": 0,
+            "refundAmount": null,
+            "ownerMatches": true
+          }
+        },
+        "basis": [
+          {
+            "kind": "CODE_CONTRACT",
+            "key": "TRUSTED_CONFIRMATION",
+            "rationale": "Injected model output does not grant execution authority."
+          }
+        ],
+        "forbiddenEvents": [
+          "SUBMIT_BEFORE_CONFIRMATION"
+        ]
+      },
+      "manualRubric": {
+        "version": "v1",
+        "criteria": []
+      }
+    },
+    "review": {
+      "schemaVersion": 1,
+      "caseId": "INDEPENDENT_REVIEW-001",
+      "category": "INDEPENDENT_REVIEW",
+      "mode": "REVIEW_ONLY",
+      "tags": [
+        "synthetic-review"
+      ],
+      "variationRationale": "A paired synthetic candidate isolates the independent review role.",
+      "fixture": {},
+      "turns": [],
+      "reviewInput": {
+        "synthetic": true,
+        "pairId": "POLICY-PAIR-001",
+        "originalUserRequest": "The customer asks for a refund after eight complete days.",
+        "trustedOrder": "Order 9007199254740993 is RECEIVED and belongs to the active customer.",
+        "trustedEligibility": "The order is eligible under the current policy.",
+        "candidateAction": {
+          "orderId": "9007199254740993",
+          "reason": "QUALITY_ISSUE"
+        },
+        "policyEvidence": {
+          "fingerprint": "catalog-fixture-v1",
+          "code": "QUALITY_ISSUE",
+          "title": "Quality issue",
+          "clauseText": "Synthetic clause for the review contract test."
+        }
+      },
+      "expect": {
+        "outcome": "REVIEW_APPROVED",
+        "orders": {},
+        "basis": [
+          {
+            "kind": "POLICY_CLAUSE",
+            "key": "QUALITY_ISSUE",
+            "rationale": "The paired policy evidence is the declared basis."
+          }
+        ],
+        "forbiddenEvents": [
+          "EXECUTOR_AVAILABLE"
+        ]
+      },
+      "manualRubric": {
+        "version": "v1",
+        "criteria": []
+      }
+    },
+    "mcpContract": {
+      "schemaVersion": 1,
+      "caseId": "ABNORMAL-002",
+      "category": "ABNORMAL",
+      "mode": "CONTROLLED",
+      "tags": [
+        "injected-response"
+      ],
+      "variationRationale": "Direct MCP contract call with no Agent or model substitution.",
+      "fixture": {
+        "activeActor": "actor-a",
+        "actors": [
+          "actor-a"
+        ],
+        "orders": {
+          "order-a": {
+            "owner": "actor-a",
+            "status": "RECEIVED",
+            "ageSeconds": 172800,
+            "items": [
+              {
+                "skuAlias": "sku-a",
+                "quantity": 2
+              }
+            ],
+            "expectedPaidAmount": "39.80",
+            "existingRefund": "NONE"
+          }
+        },
+        "products": {
+          "product-a": {
+            "source": "RUN_MUTABLE",
+            "name": "Fixture notebook",
+            "description": "A fixture product used only by the contract tests.",
+            "skus": [
+              {
+                "skuAlias": "sku-a",
+                "price": "19.90",
+                "stock": 5,
+                "specs": {
+                  "color": "blue"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "turns": [
+        {
+          "sessionAlias": "session-a",
+          "actorAlias": "actor-a",
+          "input": "请核对订单 {{order-a}}。"
+        }
+      ],
+      "control": {
+        "target": "MCP_CONTRACT",
+        "components": {
+          "DIALOGUE": "ABSENT",
+          "REVIEW": "ABSENT",
+          "EXPLANATION": "ABSENT",
+          "MCP": "REAL",
+          "BACKEND": "REAL"
+        },
+        "usesRealModel": false,
+        "point": "NONE",
+        "toolCalls": [
+          {
+            "toolName": "get_order",
+            "arguments": {
+              "orderId": "{{order-a}}"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "NOT_SUBMITTED",
+        "orders": {
+          "order-a": {
+            "orderStatus": "RECEIVED",
+            "newRefundRows": 0,
+            "refundAmount": null,
+            "ownerMatches": true
+          }
+        },
+        "basis": [
+          {
+            "kind": "CODE_CONTRACT",
+            "key": "TRUSTED_CONFIRMATION",
+            "rationale": "Injected model output does not grant execution authority."
+          }
+        ],
+        "forbiddenEvents": [
+          "SUBMIT_BEFORE_CONFIRMATION"
+        ]
+      },
+      "manualRubric": {
+        "version": "v1",
+        "criteria": []
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "minimal-live",
+      "template": "live",
+      "accepted": true
+    },
+    {
+      "id": "decimal-string-scale",
+      "template": "live",
+      "accepted": true,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "fixture",
+            "orders",
+            "order-a",
+            "expectedPaidAmount"
+          ],
+          "value": "39.8"
+        }
+      ]
+    },
+    {
+      "id": "bigint-id-string",
+      "template": "review",
+      "accepted": true
+    },
+    {
+      "id": "unknown-field",
+      "template": "live",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "add",
+          "path": [
+            "unexpected"
+          ],
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "live-injection",
+      "template": "live",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "add",
+          "path": [
+            "control"
+          ],
+          "value": {
+            "target": "AGENT_CHAIN"
+          }
+        }
+      ]
+    },
+    {
+      "id": "unbound-logical-key",
+      "template": "live",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "turns",
+            "0",
+            "input"
+          ],
+          "value": "退款 {{order-missing}}"
+        }
+      ]
+    },
+    {
+      "id": "numeric-money",
+      "template": "live",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "fixture",
+            "orders",
+            "order-a",
+            "expectedPaidAmount"
+          ],
+          "value": 39.8
+        }
+      ]
+    },
+    {
+      "id": "turn-claims-other-actor",
+      "template": "live",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "turns",
+            "0",
+            "actorAlias"
+          ],
+          "value": "actor-b"
+        }
+      ]
+    },
+    {
+      "id": "same-session-user-switch",
+      "template": "live",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "turns",
+            "1",
+            "actorAlias"
+          ],
+          "value": "actor-b"
+        }
+      ]
+    },
+    {
+      "id": "unknown-mode-enum",
+      "template": "live",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "mode"
+          ],
+          "value": "MODEL_SELECTED_AT_RUNTIME"
+        }
+      ]
+    },
+    {
+      "id": "review-only-minimal",
+      "template": "review",
+      "accepted": true
+    },
+    {
+      "id": "review-only-executor",
+      "template": "review",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "add",
+          "path": [
+            "control"
+          ],
+          "value": {
+            "target": "AGENT_CHAIN"
+          }
+        }
+      ]
+    },
+    {
+      "id": "review-mode-category-mismatch",
+      "template": "review",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "category"
+          ],
+          "value": "NORMAL"
+        }
+      ]
+    },
+    {
+      "id": "unknown-controlled-enum",
+      "template": "controlled",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "control",
+            "point"
+          ],
+          "value": "AUTO_GENERATED_FAULT"
+        }
+      ]
+    },
+    {
+      "id": "controlled-script-role-not-substituted",
+      "template": "controlled",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "control",
+            "components",
+            "DIALOGUE"
+          ],
+          "value": "REAL"
+        }
+      ]
+    },
+    {
+      "id": "dialogue-script-unknown-tool-is-untrusted-input",
+      "template": "controlled",
+      "accepted": true,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "control",
+            "script",
+            "responses",
+            "0"
+          ],
+          "value": {
+            "toolCalls": [
+              {
+                "name": "delete_all_orders",
+                "arguments": {
+                  "orderId": "{{order-a}}"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "non-dialogue-script-tool-call-rejected",
+      "template": "controlled",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "control",
+            "components",
+            "REVIEW"
+          ],
+          "value": "SUBSTITUTED"
+        },
+        {
+          "op": "set",
+          "path": [
+            "control",
+            "script",
+            "role"
+          ],
+          "value": "REVIEW"
+        },
+        {
+          "op": "set",
+          "path": [
+            "control",
+            "script",
+            "responses",
+            "0"
+          ],
+          "value": {
+            "toolCalls": [
+              {
+                "name": "review",
+                "arguments": {}
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "integer-exceeds-java-range",
+      "template": "live",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "fixture",
+            "orders",
+            "order-a",
+            "ageSeconds"
+          ],
+          "value": 2147483648
+        }
+      ]
+    },
+    {
+      "id": "demo-product-aliases-derive-catalog-skus",
+      "template": "live",
+      "accepted": true,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "fixture",
+            "products",
+            "product-a"
+          ],
+          "value": {
+            "source": "DEMO_READONLY",
+            "logicalKey": "paper_grid_a5"
+          }
+        },
+        {
+          "op": "set",
+          "path": [
+            "fixture",
+            "orders",
+            "order-a",
+            "items",
+            "0",
+            "skuAlias"
+          ],
+          "value": "product-a-sku-01"
+        },
+        {
+          "op": "set",
+          "path": [
+            "fixture",
+            "orders",
+            "order-a",
+            "items",
+            "0",
+            "quantity"
+          ],
+          "value": 1
+        },
+        {
+          "op": "set",
+          "path": [
+            "fixture",
+            "orders",
+            "order-a",
+            "expectedPaidAmount"
+          ],
+          "value": "18.80"
+        }
+      ]
+    },
+    {
+      "id": "order-and-product-alias-collision",
+      "template": "live",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "remove",
+          "path": [
+            "fixture",
+            "products",
+            "product-a"
+          ]
+        },
+        {
+          "op": "add",
+          "path": [
+            "fixture",
+            "products",
+            "order-a"
+          ],
+          "value": {
+            "source": "RUN_MUTABLE",
+            "name": "Notebook",
+            "description": "Test product",
+            "skus": [
+              {
+                "skuAlias": "sku-a",
+                "price": "19.90",
+                "stock": 5,
+                "specs": {
+                  "color": "blue"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "mcp-contract-direct-call",
+      "template": "mcpContract",
+      "accepted": true
+    },
+    {
+      "id": "mcp-contract-rejects-agent-chain-point",
+      "template": "mcpContract",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "control",
+            "point"
+          ],
+          "value": "MCP_BEFORE_REQUEST"
+        }
+      ]
+    },
+    {
+      "id": "mcp-contract-rejects-substituted-model-role",
+      "template": "mcpContract",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "control",
+            "components",
+            "REVIEW"
+          ],
+          "value": "SUBSTITUTED"
+        }
+      ]
+    }
+  ]
+}
