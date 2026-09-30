@@ -50,7 +50,7 @@
 
 | 仓库 | 约定 |
 |---|---|
-| **本仓库** | 历史文档直接提交到 `main`；当前已配置 `origin`。阶段 3A / 3B 按 SDD 在隔离工作树的 `codex/phase3a-rag-refund-review` / `codex/phase3b-knowledge-qa` 分支实施与审查，未合并前不要把它们当作 `main` 已交付 |
+| **本仓库** | 历史文档直接提交到 `main`；当前已配置 `origin`。阶段 3A / 3B 按 SDD 在隔离工作树的 `codex/phase3a-rag-refund-review` / `codex/phase3b-knowledge-qa` 分支实施与审查，现已按用户授权集成到 `main`。后续实现继续使用隔离分支，并按用户选择集成 |
 | **supermall** | **有远程，必须开分支**——两个仓库情况不同，处理不同 |
 
 ## 当前进度与下一步
@@ -61,16 +61,17 @@
 Task 7 已实现不可变政策目录快照及其指纹；阶段 3A 已加入 Agent 消费者。
 阶段 3A Task 1–8 已完成并通过独立 SDD 任务及整分支审查；真实环境证据见
 `docs/phase3a-rag-refund-validation-2026-09-28.md`。决策 Agent 保留普通售后对话与只读查询，明确退款请求转接可信编排；同源政策精确检索进入独立复核。根 Maven reactor 修复后 170/170，真实目录 v1→v2→v1 切换、版本失配拒写、无写入降级均通过。
-阶段 3B Task 1–6 已完成并通过独立 SDD 任务审查，**整分支审查发现已由 `4af9420` 修复，定向复审与主控最终验收均通过**，未集成到 `main`。32 FAQ、21 条清单商品当前全部上架，真实 API/MCP/模型与正常退款证据见 `docs/phase3b-knowledge-validation-2026-09-30.md`；最终主控 Maven 240/240、Python 14/14 通过。解释补充仅允许固定的代码定义句；任一最终商品引用复核失败时整次资料答复不可用。一次复核异常未提交退款，后续无动作诊断与新会话单次退款重试通过，旧异常原因未查明；K-52 / K-53 保持待判断，K-54 至 K-57 已处理且独立复审通过。下一步由用户选择集成方式，阶段 4 待讨论；不要把计划复选框当成已完成证据。
+阶段 3B Task 1–6 已完成并通过独立 SDD 任务审查，**整分支审查发现已由 `4af9420` 修复，定向复审与主控最终验收均通过**。阶段 3A / 3B 已按用户授权集成到两个仓库的 `main`，集成验证见 `docs/phase3-main-integration-2026-09-30.md`。32 FAQ、21 条清单商品在本轮真实验证时全部上架，真实 API/MCP/模型与正常退款证据见 `docs/phase3b-knowledge-validation-2026-09-30.md`；最终主控 Maven 240/240、Python 14/14 通过。解释补充仅允许固定的代码定义句；任一最终商品引用复核失败时整次资料答复不可用。一次复核异常未提交退款，后续无动作诊断与新会话单次退款重试通过，旧异常原因未查明；K-52 / K-53 保持待判断，K-54 至 K-57 已处理且独立复审通过。下一步讨论阶段 4 评测设计；不要把计划复选框当成已完成证据。
 **计划 B：Task 1–6 已完成**（实现 `2e026da`、修复 `0391378`）。Task 6 的真实环境响应与数据库核对见 `docs/plan-b-task6-validation-2026-09-24.md`；34/34 Maven 测试通过。运行验证使用 JDK 22，JDK 17 运行尚未验证。
 **计划 C：Task 1–6 已完成**（Task 1–4 为 `62621da`、`e8cd154`、`0656eca`、`72fad2d`）。Task 6 已用新订单完成真实模型、MCP 与退款端到端验证：正常退款、施压、冒充授权、不可退订单、复核强制驳回与恢复均通过；完整证据见 `docs/plan-c-task6-validation-2026-09-25.md`。根 Maven reactor 98/98、启动器测试 5/5 通过；运行验证使用 JDK 22，JDK 17 运行仍未验证。
 
 > ⚠️ **计划里的复选框没有被回填**（53 个全部未勾）——**不要拿它当进度依据**，否则会从 Task 1 重做。
 
-**历史计划 A 的可靠进度依据是 supermall 的分支历史；阶段 3A 还须核对两个仓库的隔离分支提交与验证记录**：
+**可靠进度依据是提交历史与验证记录**。阶段 3 主线集成见 `docs/phase3-main-integration-2026-09-30.md`；历史实施分支可追溯：
 
 ```bash
-git -C D:/sourcecode/supermall log --oneline main..feat/after-sales-capability
+git -C D:/sourcecode/supermall log --oneline feat/after-sales-capability
+git log --oneline codex/phase3b-knowledge-qa
 ```
 
 **顺序不能乱：A → B → C。** B 依赖 A 的三个新端点，C 依赖 B 能跑起来。

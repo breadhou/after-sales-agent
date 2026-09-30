@@ -10,7 +10,7 @@
 
 ## 当前状态
 
-**计划 A 的 Task 1–8 均已实现并完成验收**，代码位于 supermall 的 `feat/after-sales-capability` 分支。Task 7 的实现提交为 `b1ff494`；Task 8 的验证记录在 [`supermall/docs/plan-a-task8-validation-2026-09-22.md`](../supermall/docs/plan-a-task8-validation-2026-09-22.md)；政策条款与执行语义的最终对齐提交为 `bf2d59a`。
+**计划 A 的 Task 1–8 均已实现并完成验收**，代码已集成到 supermall 的 `main`。Task 7 的实现提交为 `b1ff494`；Task 8 的验证记录在 [`supermall/docs/plan-a-task8-validation-2026-09-22.md`](../supermall/docs/plan-a-task8-validation-2026-09-22.md)；政策条款与执行语义的最终对齐提交为 `bf2d59a`。
 
 **计划 B 的 Task 1–6 已完成**：MCP Server 的实现提交为 `2e026da`，参数校验修复为 `0391378`；Task 6 的真实环境响应与数据库核对见[验证记录](docs/plan-b-task6-validation-2026-09-24.md)。34/34 Maven 测试通过；运行验证使用 JDK 22，JDK 17 尚未验证。执行中发现的问题与取舍记录在 [`docs/known-issues.md`](docs/known-issues.md)。
 
@@ -18,7 +18,7 @@
 
 **阶段 3A 的 Task 1–8 已完成、真实环境验证与独立 SDD 审查均通过**：对话 Agent 在明确退款诉求下只转接；可信代码确认请求并执行资格门槛；同源政策条款进入独立复核。真实模型、MCP、数据库、真实目录部署切换及失败降级的证据见[阶段 3A 验证记录](docs/phase3a-rag-refund-validation-2026-09-28.md)。修复 SDK 错误语义后，根 Maven reactor 170/170，通过 JDK 22 验证。
 
-**阶段 3B 的 Task 1–6 已完成，独立 SDD 任务审查、整分支审查修复及定向复审均通过**：32 条原创 FAQ、21 条经商家业务 API 创建且当前上架的演示商品、只读商品 MCP 与无动作解释已接线。真实 API、MCP、模型问答和正常退款证据见[阶段 3B 验证记录](docs/phase3b-knowledge-validation-2026-09-30.md)；最终主控验证 Maven reactor **240/240**、Python **14/14** 通过。解释补充只接受代码定义的固定句，任一最终商品引用复核失败则整次资料答复不可用。一次复核异常按失败降级且未提交，后续无动作诊断与新会话单次退款重试通过；旧异常原因未查明，K-52 / K-53 保持待判断。实现位于 `codex/phase3b-knowledge-qa`，尚未集成到 `main`。
+**阶段 3B 的 Task 1–6 已完成，独立 SDD 任务审查、整分支审查修复及定向复审均通过**：32 条原创 FAQ、21 条经商家业务 API 创建且当前上架的演示商品、只读商品 MCP 与无动作解释已接线。真实 API、MCP、模型问答和正常退款证据见[阶段 3B 验证记录](docs/phase3b-knowledge-validation-2026-09-30.md)；最终主控验证 Maven reactor **240/240**、Python **14/14** 通过。解释补充只接受代码定义的固定句，任一最终商品引用复核失败则整次资料答复不可用。一次复核异常按失败降级且未提交，后续无动作诊断与新会话单次退款重试通过；旧异常原因未查明，K-52 / K-53 保持待判断。阶段 3A / 3B 已按用户授权集成到两个仓库的 `main`，见[主线集成验证记录](docs/phase3-main-integration-2026-09-30.md)。
 
 ### 文档地图
 
@@ -34,6 +34,7 @@
 | [`docs/phase3a-rag-refund-validation-2026-09-28.md`](docs/phase3a-rag-refund-validation-2026-09-28.md) | 阶段 3A 真实模型、MCP、数据库及目录部署验证 |
 | [`docs/plans/2026-09-26-phase3b-knowledge-qa.md`](docs/plans/2026-09-26-phase3b-knowledge-qa.md) | 阶段 3B：FAQ 与当前演示商品问答（6 任务，依赖 3A） |
 | [`docs/phase3b-knowledge-validation-2026-09-30.md`](docs/phase3b-knowledge-validation-2026-09-30.md) | 阶段 3B 自动化、真实语料、API、MCP 与模型验证 |
+| [`docs/phase3-main-integration-2026-09-30.md`](docs/phase3-main-integration-2026-09-30.md) | 两个仓库的 main 集成与合并结果验证 |
 
 ### 进度
 
@@ -43,16 +44,16 @@
 | B | MCP Server | 6 个工具，stdio 传输 | ✅ 已写 | ✅ Task 1–6 已完成并验证 |
 | C | Agent | 决策 Agent + 复核 Agent + 升级人工 | ✅ 已写 | ✅ Task 1–6 已完成并验证 |
 | 3A | RAG 政策复核 | 确定性编排、同源政策复核、后端写入前版本校验 | ✅ 已写（8 任务） | ✅ Task 1–8 已验收；实测与 SDD 审查通过 |
-| 3B | 资料问答 | 原创 FAQ、当前演示商品、无动作解释 | ✅ 已写（6 任务） | ✅ Task 1–6 已验收；实测、整分支审查修复与定向复审通过；未集成 main |
+| 3B | 资料问答 | 原创 FAQ、当前演示商品、无动作解释 | ✅ 已写（6 任务） | ✅ Task 1–6 已验收；实测与审查通过；已集成 main |
 | 4 | 评测集 | 240 条场景 + 自动判定 + 回归 | ❌ 未写 | ⏸ 待设计 |
 
-阶段 3 的权威政策只有三条，因此退款复核按政策编号精确检索；FAQ 与当前演示商品用于资料问答。阶段 4 的系统评测仍待阶段 3 运行后设计。
+阶段 3 的权威政策只有三条，因此退款复核按政策编号精确检索；FAQ 与当前演示商品用于资料问答。阶段 4 的系统评测待讨论与设计。
 
 ---
 
 ## 下一步
 
-阶段 3A 已验收，阶段 3B 实现与本轮验证已完成；下一步完成 Task 6 与整分支 SDD 审查，再决定集成与阶段 4 评测设计。计划 A/B/C 已完成；历史计划复选框未回填，不作为进度依据。
+阶段 3A / 3B 已验收并集成到 main；下一步讨论阶段 4 评测设计，明确场景、自动判定与运行预算，再编写实施计划。计划 A/B/C 已完成；历史计划复选框未回填，不作为进度依据。
 
 ### 环境要求
 
