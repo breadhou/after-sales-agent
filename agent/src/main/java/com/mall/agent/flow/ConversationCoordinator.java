@@ -193,9 +193,14 @@ public final class ConversationCoordinator {
     }
 
     private static boolean refundStatusQuestion(String text) {
+        if (isGeneralRefundRecordQuestion(text)) return false;
         return text.contains("退款状态") || text.contains("退款进度")
                 || text.contains("已退款") || text.contains("退款成功")
                 || text.contains("到账");
+    }
+
+    private static boolean isGeneralRefundRecordQuestion(String text) {
+        return text.matches("已有退款记录是否代表已退款[?？]?");
     }
 
     private static boolean refundOutcomeClaim(String text) {
@@ -400,6 +405,7 @@ public final class ConversationCoordinator {
     }
 
     private static boolean isGeneralReturnQuestion(String text) {
+        if (isGeneralRefundRecordQuestion(text)) return true;
         if (text.contains("如何申请退款") || text.contains("怎么申请退款")) {
             return true;
         }

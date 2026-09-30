@@ -45,7 +45,7 @@ class AgentMainTest {
                 assertTrue(request.toolSpecifications() == null
                         || request.toolSpecifications().isEmpty());
                 return ChatResponse.builder().aiMessage(new AiMessage(
-                        "{\"narrative\":\"可先核对本次物流查询\",\"citedSourceIds\":[\"FAQ-006\"]}"))
+                        "{\"narrative\":\"请以所引资料原文为准。\",\"citedSourceIds\":[\"FAQ-006\"]}"))
                         .build();
             }
         };
@@ -54,6 +54,7 @@ class AgentMainTest {
                 .answer("物流查询失败怎么办？", null);
 
         assertTrue(reply.contains("[FAQ-006]"), reply);
+        assertTrue(reply.contains("补充说明：请以所引资料原文为准。"), reply);
     }
 
     @Test

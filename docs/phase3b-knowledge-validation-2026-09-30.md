@@ -18,7 +18,7 @@
 
 ## 自动化验证
 
-`$Mvn` 指向 `D:\JetBrains\IntelliJ IDEA 2026.2\plugins\maven-plugin\lib\maven3\bin\mvn.cmd`；PowerShell `-D` 参数均加引号。本表为最终代码的本轮输出，测试日志在忽略的 `agent/target`。
+`$Mvn` 指向 `D:\JetBrains\IntelliJ IDEA 2026.2\plugins\maven-plugin\lib\maven3\bin\mvn.cmd`；PowerShell `-D` 参数均加引号。本表保留 Task 6 审查前的验证输出（整分支修复起点 `6b344b5`）；该时期为 216 个 Maven 测试，整分支审查修复后的输出单列于下节。测试日志在忽略的 `agent/target`。
 
 | 命令 | 退出码与结果 | 证据范围 |
 |---|---|---|
@@ -32,9 +32,29 @@ Maven 的预期负路径会记录安全失败或升级日志，不能据此把�
 
 单元测试使用受控 MCP / HTTP 响应，**不是**真实商品变更证据。它们覆盖商品正文变更后摘要变化、重复或不前进分页、失败/空/缺字段/非法状态详情导致整次引用不可用、合法下架商品排除、引用前再次读取、生成异常或无效来源导致整段草稿丢弃、恶意 FAQ/商品指令与英文交易误述、商品退换文案不成为政策、历史描述限制，以及退款/升级/资格答复优先且不调用解释生成器。
 
+## 整分支审查修复（受控证据）
+
+2026-09-30，按主控裁定修复 I-1、I-2、M-1、M-2。补充文本只接受代码定义的“请以所引资料原文为准。”或“如需进一步核实，请联系人工客服。”完整字符串；其他叙述整段丢弃并回退来源原文。生成器仍无工具，允许句与其结构化提示共用常量，候选来源校验保留。最终引用复核只要有一个商品候选读取失败、为空、畸形、内容变化或下架，就给出整次资料不可用答复，不返回部分商品。初始刷新合法下架/草稿记录的排除行为保留。
+
+仅完整一般 FAQ-013 标题和可选中英文问号进入一般资料解释；个人或具体订单的退款状态仍使用可信查询/无法确认答复，退款、资格、升级优先级保留。商家测试 JWT 的无凭据来源在下一节补全。K-54 至 K-57 留存已处理追溯；K-52、K-53 保持待判断。独立限域复审及整分支验收仍待主控完成。
+
+| 命令 | 退出码与结果 | 证据范围 |
+|---|---|---|
+| `& $Mvn -pl agent '-Dtest=ExplanationServiceTest,ConversationCoordinatorTest' test`，修改实现前 | 1；96 个测试，15 失败、0 错误、0 跳过 | RED：非法补充文本 5 项，最终商品复核 7 项，一般 FAQ 路由 3 项 |
+| `& $Mvn -pl agent '-Dtest=ExplanationServiceTest,ConversationCoordinatorTest,FaqCorpusTest,CurrentProductIndexTest,AgentConfigTest' test` | 0；**115/115**，`BUILD SUCCESS` | 公共答复、来源回退、正对照、FAQ 发布、索引、工具隔离及退款优先级 |
+| `& $Mvn test`，首次完整门禁 | 1；MCP 46/46，Agent 193/194；1 失败、0 错误 | `AgentMainTest.runtimeExplanationServiceUsesFaqWithoutMcpTools` 的旧假模型补充句不在允许集，正确回退 FAQ-008，但旧断言要求 FAQ-006 |
+| `& $Mvn -pl agent '-Dtest=AgentMainTest#runtimeExplanationServiceUsesFaqWithoutMcpTools' test` | 0；**1/1**，`BUILD SUCCESS` | 将正对照假模型输出改为允许句，保留 FAQ-006 与无工具断言，增加接受补充句断言 |
+| `& $Mvn test`，实际失败驱动的重跑 | 0；MCP 46 + Agent 194 = **240/240**，0 失败 / 错误 / 跳过，`BUILD SUCCESS` | 最终修复代码的完整 reactor；新增 24 个参数化/普通测试用例 |
+| `python -m unittest scripts.test_run_agent scripts.test_seed_demo_products scripts.test_mcp_stdio_smoke` | 0；**14/14**，`OK`；本轮执行一次 | 启动环境、假 HTTP 种子与恢复、stdio 子进程环境 |
+| `& $Mvn '-DskipTests' package` | 0；`BUILD SUCCESS` | 修复后的 MCP / Agent 运行包供限域复审使用 |
+
+日志为忽略的 `agent/target/whole-branch-fix-*.log`；最终 Maven 数量由两模块 Surefire XML 汇总核对。本节使用合成问题、商品和受控 MCP / 模型响应，没有读取凭据、运行新种子或产生真实业务写入。下文真实 API/MCP/模型/退款证据属于 Task 6 原有运行包；本节不把新的固定补充句或最终失败传播称为已做真实模型验证。
+
 ## 真实 supermall 业务 API
 
 2026-09-29 运行 `python scripts/seed_demo_products.py --category-id <本地已确认分类ID>`，退出 0。使用有效商家 JWT，21 个逻辑键均获得确定成功响应；清单确认 21 条，未留下不确定创建 journal。C 用户令牌与商家令牌分别使用，其跨端访问均被拒绝。没有直接数据库写入。
+
+该商家 JWT 在核对既有测试商家和账号身份后，为本地测试签名生成；随后通过业务路由验证有效性与 C 端/商家隔离。本文不记录实际身份 ID、令牌或签名材料。
 
 | 操作 | 实测结果 |
 |---|---|

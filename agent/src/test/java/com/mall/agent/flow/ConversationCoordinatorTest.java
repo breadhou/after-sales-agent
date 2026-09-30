@@ -1,13 +1,20 @@
 package com.mall.agent.flow;
 
 import com.mall.agent.agent.DecisionAgent;
+import com.mall.agent.knowledge.ExplanationDraft;
+import com.mall.agent.knowledge.ExplanationService;
 import com.mall.agent.model.RefundRequest;
 import com.mall.agent.tools.ExplanationRequestTools;
 import com.mall.agent.tools.EscalationTools;
 import com.mall.agent.tools.RefundHandoffTools;
+import dev.langchain4j.mcp.client.McpClient;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import java.lang.reflect.Proxy;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -92,6 +99,79 @@ class ConversationCoordinatorTest {
         assertEquals("有来源的商品解释", coordinator.handleTurn(SESSION, "查询 演示商品 当前价格"));
         assertEquals("查询 演示商品 当前价格", seenInput.get());
         assertEquals("订单物流正常", coordinator.handleTurn(SESSION, "查一下物流"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"已有退款记录是否代表已退款？", "已有退款记录是否代表已退款?",
+            "已有退款记录是否代表已退款"})
+    void generalRefundRecordQuestionReachesOriginalFaq(String question) {
+        ExplanationRequestTools explanation = new ExplanationRequestTools();
+        AtomicInteger explanationCalls = new AtomicInteger();
+        McpClient mcp = (McpClient) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{McpClient.class}, (proxy, method, args) -> {
+                    throw new AssertionError("FAQ must not call MCP: " + method.getName());
+                });
+        ExplanationService service = new ExplanationService(mcp, Set.of(),
+                input -> new ExplanationDraft("请以所引资料原文为准。", List.of("FAQ-013")));
+        ConversationCoordinator coordinator = new ConversationCoordinator((session, input) -> {
+            explanation.requestExplanation(0L);
+            return "模型无依据的退款结论";
+        }, new RefundHandoffTools(), new EscalationTools(SESSION, ignored -> { }), () -> List.of(),
+                id -> { throw new AssertionError("Not an eligibility request"); },
+                id -> { throw new AssertionError("Not a personal status request"); },
+                (session, request) -> { throw new AssertionError("No refund execution"); },
+                explanation, (input, orderId) -> {
+                    explanationCalls.incrementAndGet();
+                    return service.answer(input, orderId);
+                });
+
+        String reply = coordinator.handleTurn(SESSION, question);
+
+        assertTrue(reply.contains("[FAQ-013] 不一定。refundExists=true 只表示已有退款记录"), reply);
+        assertTrue(reply.contains("需要看可信执行回执中的原因说明或联系人工核实。"), reply);
+        assertFalse(reply.contains("模型无依据的退款结论"), reply);
+        assertEquals(1, explanationCalls.get());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"订单 9001 的退款状态？", "我的订单 9001 已有退款记录是否代表已退款？"})
+    void specificRefundStatusUsesBackendEvenWithExplanationMarker(String question) {
+        ExplanationRequestTools explanation = new ExplanationRequestTools();
+        AtomicInteger statusReads = new AtomicInteger();
+        ConversationCoordinator coordinator = new ConversationCoordinator((session, input) -> {
+            explanation.requestExplanation(9001L);
+            return "资料解释";
+        }, new RefundHandoffTools(), new EscalationTools(SESSION, ignored -> { }), () -> List.of(),
+                id -> { throw new AssertionError("Not an eligibility request"); }, id -> {
+                    assertEquals(9001L, id);
+                    statusReads.incrementAndGet();
+                    return true;
+                }, (session, request) -> { throw new AssertionError("No refund execution"); },
+                explanation, (input, orderId) -> { throw new AssertionError("No explanation"); });
+
+        String reply = coordinator.handleTurn(SESSION, question);
+
+        assertTrue(reply.contains("订单 9001 当前状态为 REFUNDED；本次未提交退款。"), reply);
+        assertEquals(1, statusReads.get());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"我的退款到账了吗？", "我已有退款记录是否代表已退款？"})
+    void personalRefundStatusWithoutOrderStaysUnconfirmed(String question) {
+        ExplanationRequestTools explanation = new ExplanationRequestTools();
+        ConversationCoordinator coordinator = new ConversationCoordinator((session, input) -> {
+            explanation.requestExplanation(0L);
+            return "资料解释";
+        }, new RefundHandoffTools(), new EscalationTools(SESSION, ignored -> { }), () -> List.of(),
+                id -> { throw new AssertionError("No identified order"); },
+                id -> { throw new AssertionError("No identified order"); },
+                (session, request) -> { throw new AssertionError("No refund execution"); },
+                explanation, (input, orderId) -> { throw new AssertionError("No explanation"); });
+
+        String reply = coordinator.handleTurn(SESSION, question);
+
+        assertTrue(reply.contains("退款状态无法确认"), reply);
+        assertTrue(reply.contains("本次未提交退款"), reply);
     }
 
     @Test

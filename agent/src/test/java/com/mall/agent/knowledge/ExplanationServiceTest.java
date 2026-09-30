@@ -4,6 +4,8 @@ import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.mcp.client.McpClient;
 import dev.langchain4j.service.tool.ToolExecutionResult;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.lang.reflect.Proxy;
 import java.util.List;
@@ -186,7 +188,7 @@ class ExplanationServiceTest {
 
     @Test
     void badCitationDropsWholeDraft() {
-        String modelDraftText = "模型编造的整段回答";
+        String modelDraftText = "请以所引资料原文为准。";
         ExplanationService service = service(request -> {
             throw new AssertionError(request.name());
         }, Set.of(), input -> new ExplanationDraft(modelDraftText, List.of("FAQ-999")));
@@ -220,6 +222,51 @@ class ExplanationServiceTest {
 
         assertFalse(reply.contains("符合退款条件"), reply);
         assertTrue(reply.contains("[FAQ-"), reply);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "钱已经退到您的银行卡里了。", "您已满足七天无理由条件。", "现在可以安心等待了。",
+            "请以所引资料原文为准。 ", "请以所引资料原文为准。\n",
+            "请以所引资料原文为准。如需进一步核实，请联系人工客服。"
+    })
+    void unsupportedNarrativeDropsEntireDraftAtAnswerBoundary(String narrative) {
+        ExplanationService service = service(request -> {
+            throw new AssertionError(request.name());
+        }, Set.of(), input -> new ExplanationDraft(narrative, List.of("FAQ-006")));
+
+        String reply = service.answer("物流查询失败怎么办？", null);
+
+        assertFalse(reply.contains(narrative.strip()), reply);
+        assertFalse(reply.contains("补充说明："), reply);
+        assertTrue(reply.contains("[FAQ-008] 不能从物流查询失败判断订单尚未发货。"), reply);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"请以所引资料原文为准。", "如需进一步核实，请联系人工客服。"})
+    void exactSafeSupplementKeepsSelectedOriginalSource(String narrative) {
+        ExplanationService service = service(request -> {
+            throw new AssertionError(request.name());
+        }, Set.of(), input -> new ExplanationDraft(narrative, List.of("FAQ-006")));
+
+        String reply = service.answer("物流查询失败怎么办？", null);
+
+        assertTrue(reply.contains("[FAQ-006] 当前工具可以按订单 ID 查询物流接口"), reply);
+        assertTrue(reply.contains("补充说明：" + narrative), reply);
+        assertEquals(1, reply.lines().filter(line -> line.startsWith("[FAQ-")).count(), reply);
+    }
+
+    @Test
+    void safeSupplementStillRejectsDuplicateCitations() {
+        ExplanationService service = service(request -> {
+            throw new AssertionError(request.name());
+        }, Set.of(), input -> new ExplanationDraft("请以所引资料原文为准。",
+                List.of("FAQ-006", "FAQ-006")));
+
+        String reply = service.answer("物流查询失败怎么办？", null);
+
+        assertFalse(reply.contains("补充说明："), reply);
+        assertTrue(reply.contains("[FAQ-008] 不能从物流查询失败判断订单尚未发货。"), reply);
     }
 
     @Test
@@ -340,6 +387,51 @@ class ExplanationServiceTest {
         assertEquals(2, detailCalls.get());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"ERROR", "NULL_RESULT", "NULL_JSON", "MALFORMED_JSON",
+            "MISSING_FIELDS", "CHANGED", "OFF_SHELF"})
+    void lateSecondProductVerificationFailureDisablesWholeAnswer(String failure) {
+        AtomicInteger firstReads = new AtomicInteger();
+        AtomicInteger secondReads = new AtomicInteger();
+        ExplanationService service = twoProductService(firstReads, secondReads, () -> switch (failure) {
+            case "ERROR" -> ToolExecutionResult.builder().isError(true).resultText("unavailable").build();
+            case "NULL_RESULT" -> null;
+            case "NULL_JSON" -> ok("null");
+            case "MALFORMED_JSON" -> ok("{broken");
+            case "MISSING_FIELDS" -> ok("{\"id\":8,\"status\":\"ON_SHELF\"}");
+            case "CHANGED" -> ok(productDetail(8, "ON_SHELF", "变更后的亚麻资料"));
+            case "OFF_SHELF" -> ok(productDetail(8, "OFF_SHELF", "当前亚麻资料"));
+            default -> throw new AssertionError(failure);
+        });
+
+        String reply = service.answer("亚麻袋商品有哪些？", null);
+
+        assertTrue(reply.contains("无可靠依据"), reply);
+        assertFalse(reply.contains("PRODUCT-"), reply);
+        assertFalse(reply.contains("补充说明："), reply);
+        assertEquals(2, firstReads.get());
+        assertEquals(2, secondReads.get());
+    }
+
+    @Test
+    void allValidProductsKeepBothFreshQuotesAndAcceptedSupplement() {
+        AtomicInteger firstReads = new AtomicInteger();
+        AtomicInteger secondReads = new AtomicInteger();
+        ExplanationService service = twoProductService(firstReads, secondReads,
+                () -> ok(productDetail(8, "ON_SHELF", "当前亚麻资料")));
+
+        String reply = service.answer("亚麻袋商品有哪些？", null);
+
+        assertTrue(reply.contains("[PRODUCT-7] 商品：亚麻袋七"), reply);
+        assertTrue(reply.contains("[PRODUCT-8] 商品：亚麻袋八"), reply);
+        assertTrue(reply.contains("当前价格：12.5"), reply);
+        assertTrue(reply.contains("不能证明下单时的描述"), reply);
+        assertTrue(reply.contains("补充说明：请以所引资料原文为准。"), reply);
+        assertFalse(reply.contains("无可靠依据"), reply);
+        assertEquals(2, firstReads.get());
+        assertEquals(2, secondReads.get());
+    }
+
     @Test
     void productDescriptionCannotAnswerReturnPolicyQuestion() {
         AtomicInteger productCalls = new AtomicInteger();
@@ -438,6 +530,36 @@ class ExplanationServiceTest {
                     throw new UnsupportedOperationException(method.getName());
                 });
         return new ExplanationService(mcp, productIds, generator);
+    }
+
+    private static ExplanationService twoProductService(AtomicInteger firstReads, AtomicInteger secondReads,
+            java.util.function.Supplier<ToolExecutionResult> lateSecondDetail) {
+        return service(request -> switch (request.name()) {
+            case "list_on_shelf_products" -> ok("""
+                    {"records":[
+                     {"id":7,"name":"亚麻袋七","description":"当前亚麻资料","status":"ON_SHELF"},
+                     {"id":8,"name":"亚麻袋八","description":"当前亚麻资料","status":"ON_SHELF"}],
+                     "total":2,"size":20,"current":1}
+                    """);
+            case "get_product_detail" -> {
+                if (request.arguments().equals("{\"productId\":7}")) {
+                    firstReads.incrementAndGet();
+                    yield ok(productDetail(7, "ON_SHELF", "当前亚麻资料"));
+                }
+                assertEquals("{\"productId\":8}", request.arguments());
+                yield secondReads.incrementAndGet() == 1
+                        ? ok(productDetail(8, "ON_SHELF", "当前亚麻资料")) : lateSecondDetail.get();
+            }
+            default -> throw new AssertionError(request.name());
+        }, Set.of(7L, 8L), input -> new ExplanationDraft("请以所引资料原文为准。",
+                List.of("PRODUCT-7", "PRODUCT-8")));
+    }
+
+    private static String productDetail(long id, String status, String description) {
+        return """
+                {"id":%d,"name":"亚麻袋%s","description":"%s","status":"%s",
+                 "skus":[{"id":%d,"specs":"米色","price":12.5,"stock":4}]}
+                """.formatted(id, id == 7 ? "七" : "八", description, status, id * 10);
     }
 
     private static ToolExecutionResult ok(String text) {
