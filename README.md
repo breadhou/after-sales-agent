@@ -12,11 +12,13 @@
 
 **计划 A 的 Task 1–8 均已实现并完成验收**，代码位于 supermall 的 `feat/after-sales-capability` 分支。Task 7 的实现提交为 `b1ff494`；Task 8 的验证记录在 [`supermall/docs/plan-a-task8-validation-2026-09-22.md`](../supermall/docs/plan-a-task8-validation-2026-09-22.md)；政策条款与执行语义的最终对齐提交为 `bf2d59a`。
 
-**计划 B 的 Task 1–6 已完成**：MCP Server 的实现提交为 `2e026da`，参数校验修复为 `0391378`；Task 6 的真实环境响应与数据库核对见[验证记录](docs/plan-b-task6-validation-2026-09-24.md)。34/34 Maven 测试通过；运行验证使用 JDK 22，JDK 17 尚未验证。K-13 的 Agent 消费者仍待阶段 3 落地。执行中发现的问题与取舍记录在 [`docs/known-issues.md`](docs/known-issues.md)。
+**计划 B 的 Task 1–6 已完成**：MCP Server 的实现提交为 `2e026da`，参数校验修复为 `0391378`；Task 6 的真实环境响应与数据库核对见[验证记录](docs/plan-b-task6-validation-2026-09-24.md)。34/34 Maven 测试通过；运行验证使用 JDK 22，JDK 17 尚未验证。执行中发现的问题与取舍记录在 [`docs/known-issues.md`](docs/known-issues.md)。
 
 **计划 C 的 Task 1–6 已完成**：真实模型、MCP 与退款端到端验证见[验证记录](docs/plan-c-task6-validation-2026-09-25.md)。根 Maven reactor 98/98、启动器测试 5/5 通过；运行验证使用 JDK 22，JDK 17 尚未验证。
 
-**阶段 3 的设计与实施计划已写，代码尚未实施**：对话 Agent 在明确退款诉求下只转接；可信代码确认请求并执行资格门槛；同源政策 RAG 进入独立复核。实施分为退款复核 3A 与资料问答 3B，按此顺序验收。K-13 的目录消费者仍待实现。
+**阶段 3A 的 Task 1–8 已完成、真实环境验证与独立 SDD 审查均通过**：对话 Agent 在明确退款诉求下只转接；可信代码确认请求并执行资格门槛；同源政策条款进入独立复核。真实模型、MCP、数据库、真实目录部署切换及失败降级的证据见[阶段 3A 验证记录](docs/phase3a-rag-refund-validation-2026-09-28.md)。修复 SDK 错误语义后，根 Maven reactor 170/170，通过 JDK 22 验证。
+
+**阶段 3B 的 Task 1–6 已完成，独立 SDD 任务审查、整分支审查修复及定向复审均通过**：32 条原创 FAQ、21 条经商家业务 API 创建且当前上架的演示商品、只读商品 MCP 与无动作解释已接线。真实 API、MCP、模型问答和正常退款证据见[阶段 3B 验证记录](docs/phase3b-knowledge-validation-2026-09-30.md)；最终主控验证 Maven reactor **240/240**、Python **14/14** 通过。解释补充只接受代码定义的固定句，任一最终商品引用复核失败则整次资料答复不可用。一次复核异常按失败降级且未提交，后续无动作诊断与新会话单次退款重试通过；旧异常原因未查明，K-52 / K-53 保持待判断。实现位于 `codex/phase3b-knowledge-qa`，尚未集成到 `main`。
 
 ### 文档地图
 
@@ -29,7 +31,9 @@
 | [`docs/plans/2026-09-18-plan-b-mcp-server.md`](docs/plans/2026-09-18-plan-b-mcp-server.md) | 计划 B：MCP Server（6 任务） |
 | [`docs/plans/2026-09-18-plan-c-agent.md`](docs/plans/2026-09-18-plan-c-agent.md) | 计划 C：决策 + 复核 Agent（6 任务） |
 | [`docs/plans/2026-09-26-phase3a-rag-refund-review.md`](docs/plans/2026-09-26-phase3a-rag-refund-review.md) | 阶段 3A：确定性退款编排与 RAG 政策复核（8 任务） |
+| [`docs/phase3a-rag-refund-validation-2026-09-28.md`](docs/phase3a-rag-refund-validation-2026-09-28.md) | 阶段 3A 真实模型、MCP、数据库及目录部署验证 |
 | [`docs/plans/2026-09-26-phase3b-knowledge-qa.md`](docs/plans/2026-09-26-phase3b-knowledge-qa.md) | 阶段 3B：FAQ 与当前演示商品问答（6 任务，依赖 3A） |
+| [`docs/phase3b-knowledge-validation-2026-09-30.md`](docs/phase3b-knowledge-validation-2026-09-30.md) | 阶段 3B 自动化、真实语料、API、MCP 与模型验证 |
 
 ### 进度
 
@@ -38,8 +42,8 @@
 | A | supermall 售后能力 | 政策判定 + 资格查询 + 退款执行 + 幂等 | ✅ 已写 | ✅ Task 1–8 已实现并验证 |
 | B | MCP Server | 6 个工具，stdio 传输 | ✅ 已写 | ✅ Task 1–6 已完成并验证 |
 | C | Agent | 决策 Agent + 复核 Agent + 升级人工 | ✅ 已写 | ✅ Task 1–6 已完成并验证 |
-| 3A | RAG 政策复核 | 确定性编排、同源政策复核、后端写入前版本校验 | ✅ 已写（8 任务） | ⏸ 待实施 |
-| 3B | 资料问答 | 原创 FAQ、当前演示商品、无动作解释 | ✅ 已写（6 任务） | ⏸ 待 3A 验收 |
+| 3A | RAG 政策复核 | 确定性编排、同源政策复核、后端写入前版本校验 | ✅ 已写（8 任务） | ✅ Task 1–8 已验收；实测与 SDD 审查通过 |
+| 3B | 资料问答 | 原创 FAQ、当前演示商品、无动作解释 | ✅ 已写（6 任务） | ✅ Task 1–6 已验收；实测、整分支审查修复与定向复审通过；未集成 main |
 | 4 | 评测集 | 240 条场景 + 自动判定 + 回归 | ❌ 未写 | ⏸ 待设计 |
 
 阶段 3 的权威政策只有三条，因此退款复核按政策编号精确检索；FAQ 与当前演示商品用于资料问答。阶段 4 的系统评测仍待阶段 3 运行后设计。
@@ -48,7 +52,7 @@
 
 ## 下一步
 
-核对[阶段 3 当前设计](docs/specs/2026-09-26-rag-policy-review-design.md)与[3A 实施计划](docs/plans/2026-09-26-phase3a-rag-refund-review.md)，然后从 3A Task 1 开始实施；3A 验收后执行[3B 实施计划](docs/plans/2026-09-26-phase3b-knowledge-qa.md)。计划 A/B/C 已完成；历史计划复选框未回填，不作为进度依据。
+阶段 3A 已验收，阶段 3B 实现与本轮验证已完成；下一步完成 Task 6 与整分支 SDD 审查，再决定集成与阶段 4 评测设计。计划 A/B/C 已完成；历史计划复选框未回填，不作为进度依据。
 
 ### 环境要求
 
@@ -69,7 +73,7 @@
 
 ### 职责边界
 
-> **计划 C 的当前实现**：LLM 提出退款动作，可信工具强制经过复核与后端执行。**阶段 3 的目标**：对话 Agent 只转接退款意图，可信代码确认并查证，政策 RAG 进入独立复核。
+> **阶段 3A 当前实现**：对话 Agent 只提出退款转接候选；可信代码绑定用户确认、重读事实、精确检索同源政策并调用独立复核；复核通过后由后端核对版本和业务不变量再执行。
 
 金额、资格、状态机、幂等全在 supermall（确定性代码）；对话、转接、政策复核与工具编排在本项目。
 
@@ -85,20 +89,19 @@
 
 ### 复核是结构上不可绕过的
 
-**计划 C 当前实现**：决策 Agent 的工具集里没有 `submit_refund`。它的 MCP 工具被过滤为 5 个只读工具，退款走本地工具 `request_refund`，复核与执行都在其内部：
+**阶段 3A 当前实现**：决策 Agent 的 MCP 工具被过滤为 3 个只读工具，没有 `submit_refund`、资格或政策目录工具。退款只通过本地无写入能力的转接进入可信编排：
 
 ```
-决策 Agent 可见：get_order / list_user_orders / get_logistics /
-                get_refund_eligibility / list_policy_clauses   ← 全只读
-                request_refund(orderId, reason)                ← 本地工具
-                     └─ 内部：复核 ──驳回──▶ escalate_to_human
-                                └─通过──▶ 调用 MCP 的 submit_refund
-                escalate_to_human
+决策 Agent 可见：get_order / list_user_orders / get_logistics ← 只读 MCP
+                handoff_refund / ask_refund_eligibility / escalate_to_human ← 无退款写入能力的本地工具
+用户确认订单与理由 → 可信代码重读订单和资格 → 精确政策条款 → 无工具复核 Agent
+                   └─驳回或事实不一致 → 人工升级
+                   └─通过 → MCP submit_refund → supermall 锁内校验并执行
 ```
 
-若模型手里就有 `submit_refund`，复核只是它"记得要调用"的一步，可以被跳过。现在它是唯一通路。
+退款写入只能由可信编排在确认、资格门槛与独立复核后触发；对话 Agent 没有直接提交工具。
 
-阶段 3 将把 `request_refund` 换成无执行能力的转接：用户确认订单和理由后，可信代码先核验后端资格和政策目录，再调用独立 RAG 复核 Agent；只有复核通过才调用后端退款工具。
+目录每次复核前刷新；资格指纹、复核条款与写入时版本须一致。任何一个环节失败都停止自动退款。
 
 ### 已知的坑
 

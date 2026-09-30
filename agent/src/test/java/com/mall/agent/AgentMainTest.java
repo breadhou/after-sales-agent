@@ -1,24 +1,170 @@
 package com.mall.agent;
 
 import com.mall.agent.config.ModelProperties;
-import com.mall.agent.model.CandidateRefundAction;
-import com.mall.agent.model.RefundReviewContext;
-import com.mall.agent.model.ReviewVerdict;
-import com.mall.agent.tools.RefundRequestTools;
+import com.mall.agent.flow.ConversationCoordinator;
+import com.mall.agent.tools.RefundHandoffTools;
+import com.mall.agent.tools.EscalationTools;
+import dev.langchain4j.mcp.client.McpClient;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.service.tool.ToolExecutionResult;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
-import java.util.function.BiFunction;
-import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.ArrayList;
+import java.lang.reflect.Proxy;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgentMainTest {
+
+    @Test
+    void runtimeExplanationServiceUsesFaqWithoutMcpTools() {
+        McpClient mcp = (McpClient) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{McpClient.class}, (proxy, method, args) -> {
+                    throw new AssertionError("FAQ answer must not call MCP: " + method.getName());
+                });
+        ChatModel model = new ChatModel() {
+            @Override
+            public ChatResponse doChat(ChatRequest request) {
+                assertTrue(request.toolSpecifications() == null
+                        || request.toolSpecifications().isEmpty());
+                return ChatResponse.builder().aiMessage(new AiMessage(
+                        "{\"narrative\":\"请以所引资料原文为准。\",\"citedSourceIds\":[\"FAQ-006\"]}"))
+                        .build();
+            }
+        };
+
+        String reply = AgentMain.explanationService(mcp, model, Map.of())
+                .answer("物流查询失败怎么办？", null);
+
+        assertTrue(reply.contains("[FAQ-006]"), reply);
+        assertTrue(reply.contains("补充说明：请以所引资料原文为准。"), reply);
+    }
+
+    @Test
+    void invalidManifestPathDisablesOnlyProductAnswers() {
+        McpClient mcp = (McpClient) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{McpClient.class}, (proxy, method, args) -> {
+                    throw new AssertionError("invalid manifest must not call product MCP");
+                });
+        ChatModel model = new ChatModel() {
+            @Override
+            public ChatResponse doChat(ChatRequest request) {
+                return ChatResponse.builder().aiMessage(new AiMessage(
+                        "{\"narrative\":\"商品资料\",\"citedSourceIds\":[\"PRODUCT-7\"]}"))
+                        .build();
+            }
+        };
+
+        String reply = AgentMain.explanationService(mcp, model,
+                Map.of("DEMO_PRODUCT_MANIFEST", "invalid" + (char) 0 + "path"))
+                .answer("当前亚麻袋商品价格？", null);
+
+        assertTrue(reply.contains("无可靠依据"), reply);
+    }
+
+    @Test
+    void trustedOrderAndEligibilityQueriesUseMcpFacts() {
+        List<ToolExecutionRequest> calls = new ArrayList<>();
+        List<Long> listed = AgentMain.listedOrderIds(request -> {
+            calls.add(request);
+            return ToolExecutionResult.builder().isError(false)
+                    .resultText("{\"records\":[{\"id\":9001},{\"id\":9002},{\"id\":9001}]}")
+                    .build();
+        });
+        assertEquals(List.of(9001L, 9002L), listed);
+        assertEquals("list_user_orders", calls.get(0).name());
+
+        String reply = AgentMain.eligibilityReply(9001L, request -> {
+            calls.add(request);
+            return ToolExecutionResult.builder().isError(false)
+                    .resultText("{\"orderId\":9001,\"eligible\":false,\"refundExists\":false,"
+                            + "\"reason\":\"已超过期限\"}")
+                    .build();
+        });
+        assertEquals("订单 9001 当前不可退：已超过期限。本次未提交退款。", reply);
+        assertEquals("get_refund_eligibility", calls.get(1).name());
+        assertEquals("{\"orderId\":9001}", calls.get(1).arguments());
+        assertTrue(!reply.contains("已退款"), reply);
+    }
+
+    @Test
+    void malformedQualificationOrOrderListCannotBecomeTrustedReply() {
+        assertEquals(List.of(), AgentMain.listedOrderIds(request ->
+                ToolExecutionResult.builder().isError(false)
+                        .resultText("{\"records\":[{\"id\":0},{\"id\":\"9001\"}]}").build()));
+        String wrongOrder = AgentMain.eligibilityReply(9001L, request ->
+                ToolExecutionResult.builder().isError(false)
+                        .resultText("{\"orderId\":9002,\"eligible\":true,\"refundExists\":false}")
+                        .build());
+        assertTrue(wrongOrder.contains("无法确认"), wrongOrder);
+        assertTrue(!wrongOrder.contains("可申请"), wrongOrder);
+    }
+
+    @Test
+    void readOnlyRefundStatusRequiresFreshMatchingGetOrderFact() {
+        List<ToolExecutionRequest> calls = new ArrayList<>();
+        boolean refunded = AgentMain.isOrderRefunded(9001L, request -> {
+            calls.add(request);
+            return ToolExecutionResult.builder().isError(false)
+                    .resultText("{\"id\":9001,\"orderNo\":\"A9001\",\"status\":\"REFUNDED\","
+                            + "\"totalAmount\":199.99,\"createdAt\":\"2026-09-26T10:00:00\"}")
+                    .build();
+        });
+        assertTrue(refunded);
+        assertEquals("get_order", calls.get(0).name());
+        assertEquals("{\"orderId\":9001}", calls.get(0).arguments());
+
+        assertTrue(!AgentMain.isOrderRefunded(9001L, request ->
+                ToolExecutionResult.builder().isError(false)
+                        .resultText("{\"id\":9001,\"status\":\"RECEIVED\"}").build()));
+        assertTrue(!AgentMain.isOrderRefunded(9001L, request ->
+                ToolExecutionResult.builder().isError(false)
+                        .resultText("{\"id\":9002,\"status\":\"REFUNDED\"}").build()));
+        assertTrue(!AgentMain.isOrderRefunded(9001L, request ->
+                ToolExecutionResult.builder().isError(true)
+                        .resultText("{\"id\":9001,\"status\":\"REFUNDED\"}").build()));
+    }
+
+    @Test
+    void cliUsesCoordinatorTrustedReply() throws Exception {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger workflowCalls = new AtomicInteger();
+        ConversationCoordinator coordinator = new ConversationCoordinator((session, input) -> {
+            handoff.handoffRefund(9001L, "不想要了");
+            return "退款已完成";
+        }, handoff, new EscalationTools("session-1", ignored -> { }),
+                () -> List.of(9001L), id -> "未提交退款", id -> false, (session, request) -> {
+                    workflowCalls.incrementAndGet();
+                    return "不应调用";
+                });
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+
+        AgentMain.runSession(coordinator, "session-1",
+                new BufferedReader(new StringReader("请退订单 9001，理由：不想要了\nexit\n")),
+                new PrintStream(bytes, true, StandardCharsets.UTF_8));
+
+        String output = bytes.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("/confirm-refund 9001"), output);
+        assertTrue(!output.contains("退款已完成"), output);
+        assertEquals(0, workflowCalls.get());
+    }
 
     @Test
     void unresolvedModelPlaceholdersMustStopStartup() {
@@ -64,109 +210,6 @@ class AgentMainTest {
             assertTrue(!e.getMessage().contains(secret), e.getMessage());
         }
         AgentMain.rejectBackendCredentials(Map.of("MERCHANT_JWT_SECRET", " "));
-    }
-
-    @Test
-    void confirmedExecutionMustOverrideModelsPendingClaim() {
-        RefundRequestTools refund = refundTools(ReviewVerdict.approvedVerdict(),
-                "订单 9001 的退款已完成，退款金额 199.99 元，订单状态 REFUNDED。");
-        refund.requestRefund(9001L, "不想要了");
-
-        String answer = AgentMain.finalResponse(
-                "申请已提交，系统会复核，复核通过后才会执行退款。", refund);
-
-        assertTrue(answer.contains("已完成"), answer);
-        assertTrue(answer.contains("199.99 元"), answer);
-        assertTrue(answer.contains("REFUNDED"), answer);
-        assertTrue(!answer.contains("复核通过后"), answer);
-    }
-
-    @Test
-    void uncertainExecutionMustOverrideModelsSuccessClaim() {
-        RefundRequestTools uncertain = new RefundRequestTools(
-                (orderId, reason) -> context(orderId, reason),
-                ignored -> ReviewVerdict.approvedVerdict(),
-                (orderId, reason) -> { throw new IllegalStateException("结果丢失"); },
-                (orderId, summary) -> "已记录", "test-session");
-        uncertain.requestRefund(9001L, "不想要了");
-
-        String answer = AgentMain.finalResponse("退款已经成功。", uncertain);
-
-        assertTrue(answer.contains("无法确认"), answer);
-        assertTrue(!answer.contains("退款已经成功"), answer);
-    }
-
-    @Test
-    void completedRefundMustRemainVisibleWhenLaterOrderIsRejected() {
-        RefundRequestTools refund = multiOrderTools(
-                orderId -> orderId == 9001L ? ReviewVerdict.approvedVerdict()
-                        : ReviewVerdict.rejected("须人工处理"),
-                (orderId, reason) -> "订单 " + orderId + " 的退款已完成，退款金额 199.99 元。");
-        refund.requestRefund(9001L, "正常退款");
-        refund.requestRefund(9002L, "另一个订单");
-        refund.requestRefund(9002L, "重复申请");
-
-        String answer = AgentMain.finalResponse("两笔均待处理。", refund);
-
-        assertTrue(answer.contains("订单 9001 的退款已完成"), answer);
-        assertTrue(answer.contains("订单 9002"), answer);
-        assertTrue(answer.contains("未通过合规复核"), answer);
-        assertTrue(answer.contains("本次申请未执行退款"), answer);
-        assertTrue(answer.indexOf("订单 9001") < answer.indexOf("订单 9002"), answer);
-        assertTrue(!answer.contains("请引导用户") && !answer.contains("不要承诺"), answer);
-    }
-
-    @Test
-    void completedRefundMustRemainVisibleWhenLaterOrderIsUncertainOrRetried() {
-        RefundRequestTools refund = multiOrderTools(
-                ignored -> ReviewVerdict.approvedVerdict(),
-                (orderId, reason) -> {
-                    if (orderId == 9002L) { throw new IllegalStateException("结果丢失"); }
-                    return "订单 " + orderId + " 的退款已完成，退款金额 199.99 元。";
-                });
-        refund.requestRefund(9001L, "正常退款");
-        refund.requestRefund(9002L, "另一个订单");
-
-        String answer = AgentMain.finalResponse("两笔均成功。", refund);
-
-        assertTrue(answer.contains("订单 9001 的退款已完成"), answer);
-        assertTrue(answer.contains("订单 9002"), answer);
-        assertTrue(answer.contains("无法确认"), answer);
-        assertTrue(answer.indexOf("订单 9001") < answer.indexOf("订单 9002"), answer);
-        assertTrue(!answer.contains("两笔均成功"), answer);
-    }
-
-    @Test
-    void noRefundCallUsesModelAnswerAndPreviousTurnIsCleared() {
-        RefundRequestTools refund = refundTools(ReviewVerdict.approvedVerdict(),
-                "订单 9001 的退款已完成，退款金额 199.99 元。");
-        assertEquals("只查询订单。", AgentMain.finalResponse("只查询订单。", refund));
-
-        refund.requestRefund(9001L, "正常退款");
-        assertTrue(AgentMain.finalResponse("待处理。", refund).contains("订单 9001 的退款已完成"));
-        assertEquals("第二轮只查询订单。", AgentMain.finalResponse("第二轮只查询订单。", refund));
-    }
-
-    private static RefundRequestTools multiOrderTools(Function<Long, ReviewVerdict> verdict,
-                                                      BiFunction<Long, String, String> executor) {
-        return new RefundRequestTools(
-                (orderId, reason) -> context(orderId, reason),
-                review -> verdict.apply(review.candidateAction().orderId()),
-                executor,
-                (orderId, summary) -> "已记录", "test-session");
-    }
-
-    private static RefundRequestTools refundTools(ReviewVerdict verdict, String executionResult) {
-        return new RefundRequestTools(
-                (orderId, reason) -> context(orderId, reason),
-                ignored -> verdict,
-                (orderId, reason) -> executionResult,
-                (orderId, summary) -> "已记录", "test-session");
-    }
-
-    private static RefundReviewContext context(Long orderId, String reason) {
-        return new RefundReviewContext("原始诉求", "{\"id\":9001}", "{\"eligible\":true}",
-                new CandidateRefundAction(orderId, reason));
     }
 
     private static Properties modelProperties() {

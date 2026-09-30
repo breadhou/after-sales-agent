@@ -61,6 +61,9 @@ def load_agent_environment(repository_root: Path,
     base_url = project_values.get("SUPERMALL_BASE_URL") or parent_environment.get("SUPERMALL_BASE_URL")
     if base_url:
         child["SUPERMALL_BASE_URL"] = base_url
+    manifest_path = parent_environment.get("DEMO_PRODUCT_MANIFEST")
+    if manifest_path:
+        child["DEMO_PRODUCT_MANIFEST"] = manifest_path
     return child
 
 

@@ -36,21 +36,52 @@ class RefundToolsTest {
     }
 
     @Test
-    void getRefundEligibility_exposesOnlyGroundedDecisionFields() throws Exception {
+    void eligibilityRetainsCatalogFingerprint() throws Exception {
         fake.respondWith(200, "{\"code\":0,\"message\":\"成功\",\"data\":{"
-                + "\"eligible\":true,\"reason\":null,\"policyCode\":\"SEVEN_DAY_NO_REASON\","
+                + "\"orderId\":9001,\"eligible\":true,\"reason\":null,\"policyCode\":\"SEVEN_DAY_NO_REASON\","
                 + "\"policyTitle\":\"签收 7 天内整单退款\",\"refundableAmount\":199.99,"
-                + "\"refundExists\":false,\"internalReviewer\":\"staff-01\"}}");
+                + "\"refundExists\":false,\"catalogFingerprint\":\"catalog-v1\","
+                + "\"orderStatus\":\"SHIPPED\",\"internalReviewer\":\"staff-01\"}}");
 
         JsonNode result = MAPPER.readTree(tools.getRefundEligibility(9001L));
 
-        assertEquals(Set.of("eligible", "reason", "policyCode", "policyTitle", "refundableAmount", "refundExists", "orderId"),
+        assertEquals(Set.of("eligible", "reason", "policyCode", "policyTitle", "refundableAmount",
+                        "refundExists", "catalogFingerprint", "orderStatus", "orderId"),
                 fieldNames(result));
         assertTrue(result.get("eligible").asBoolean());
         assertEquals("SEVEN_DAY_NO_REASON", result.get("policyCode").asText());
         assertEquals("签收 7 天内整单退款", result.get("policyTitle").asText());
         assertEquals(199.99, result.get("refundableAmount").asDouble());
         assertEquals(9001L, result.get("orderId").asLong());
+        assertEquals("catalog-v1", result.get("catalogFingerprint").asText());
+        assertEquals("SHIPPED", result.get("orderStatus").asText());
+    }
+
+    @Test
+    void eligibilityPreservesBackendOrderIdEvenWhenItDiffersFromRequest() throws Exception {
+        fake.respondWith(200, "{\"code\":0,\"message\":\"成功\",\"data\":{"
+                + "\"orderId\":9002,\"eligible\":true,\"reason\":null,"
+                + "\"policyCode\":\"SEVEN_DAY_NO_REASON\",\"policyTitle\":\"签收 7 天内整单退款\","
+                + "\"refundableAmount\":199.99,\"refundExists\":false,"
+                + "\"catalogFingerprint\":\"catalog-v1\",\"orderStatus\":\"RECEIVED\"}}");
+
+        JsonNode result = MAPPER.readTree(tools.getRefundEligibility(9001L));
+
+        assertEquals("/api/orders/9001/refund-eligibility", fake.receivedPaths.get(0));
+        assertEquals(9002L, result.path("orderId").longValue());
+    }
+
+    @Test
+    void eligibilityDoesNotSynthesizeMissingBackendOrderId() throws Exception {
+        fake.respondWith(200, "{\"code\":0,\"message\":\"成功\",\"data\":{"
+                + "\"eligible\":true,\"reason\":null,"
+                + "\"policyCode\":\"SEVEN_DAY_NO_REASON\",\"policyTitle\":\"签收 7 天内整单退款\","
+                + "\"refundableAmount\":199.99,\"refundExists\":false,"
+                + "\"catalogFingerprint\":\"catalog-v1\",\"orderStatus\":\"RECEIVED\"}}");
+
+        JsonNode result = MAPPER.readTree(tools.getRefundEligibility(9001L));
+
+        assertFalse(result.has("orderId"));
     }
 
     @Test
@@ -60,13 +91,16 @@ class RefundToolsTest {
                 + "\"policyCode\":null,\"policyTitle\":null,"
                 + "\"refundableAmount\":199.99,\"refundExists\":true}}");
 
-        JsonNode result = MAPPER.readTree(tools.submitRefund(9001L, "不想要了，商品完好"));
+        JsonNode result = MAPPER.readTree(tools.submitRefund(9001L, "不想要了，商品完好",
+                "catalog-v1", "SHIPPED_NOT_RECEIVED"));
         JsonNode request = MAPPER.readTree(fake.lastRequestBody);
 
         assertEquals("/api/orders/9001/refund/execute", fake.receivedPaths.get(0));
         assertEquals("POST", fake.receivedMethods.get(0));
-        assertEquals(Set.of("reason"), fieldNames(request));
+        assertEquals(Set.of("reason", "expectedCatalogFingerprint", "expectedPolicyCode"), fieldNames(request));
         assertEquals("不想要了，商品完好", request.get("reason").asText());
+        assertEquals("catalog-v1", request.get("expectedCatalogFingerprint").asText());
+        assertEquals("SHIPPED_NOT_RECEIVED", request.get("expectedPolicyCode").asText());
         assertTrue(fake.lastContentType.toLowerCase().startsWith("application/json"));
         assertTrue(fake.lastContentType.toLowerCase().contains("charset=utf-8"));
         assertEquals(9001L, result.get("orderId").asLong());
@@ -84,7 +118,7 @@ class RefundToolsTest {
         fake.respondWith(200, "{\"code\":80001,\"message\":\"订单不满足退款条件\",\"data\":null}");
 
         SupermallException exception = assertThrows(SupermallException.class,
-                () -> tools.submitRefund(9001L, "不想要了"));
+                () -> tools.submitRefund(9001L, "不想要了", "catalog-v1", "SHIPPED_NOT_RECEIVED"));
 
         assertEquals(80001, exception.getCode());
         assertEquals("订单不满足退款条件", exception.getMessage());

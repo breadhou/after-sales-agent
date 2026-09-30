@@ -50,7 +50,7 @@
 
 | 仓库 | 约定 |
 |---|---|
-| **本仓库** | 文档直接提交到 `main`，**不开分支**（无远程、单分支） |
+| **本仓库** | 历史文档直接提交到 `main`；当前已配置 `origin`。阶段 3A / 3B 按 SDD 在隔离工作树的 `codex/phase3a-rag-refund-review` / `codex/phase3b-knowledge-qa` 分支实施与审查，未合并前不要把它们当作 `main` 已交付 |
 | **supermall** | **有远程，必须开分支**——两个仓库情况不同，处理不同 |
 
 ## 当前进度与下一步
@@ -58,14 +58,16 @@
 **计划 A：Task 1–8 已完成。** Task 7 的实现提交为 supermall `b1ff494`；Task 8 的验证记录见
 `supermall/docs/plan-a-task8-validation-2026-09-22.md`。
 实现、验证与 K-36 的架构验收均已完成：supermall `bf2d59a` 已使政策条款与当前执行语义对齐。
-Task 7 已实现不可变政策目录快照及其指纹；K-13 的 Agent 消费者仍待阶段 3 落地。
-阶段 3 的设计与 3A/3B 实施计划已写，代码尚未开始。决策 Agent 保留普通售后对话与只读查询，明确退款请求转接可信编排；同源政策检索进入独立复核。先执行 3A Task 1–8 并验收，再执行 3B Task 1–6；不要把计划复选框当成已完成证据。
+Task 7 已实现不可变政策目录快照及其指纹；阶段 3A 已加入 Agent 消费者。
+阶段 3A Task 1–8 已完成并通过独立 SDD 任务及整分支审查；真实环境证据见
+`docs/phase3a-rag-refund-validation-2026-09-28.md`。决策 Agent 保留普通售后对话与只读查询，明确退款请求转接可信编排；同源政策精确检索进入独立复核。根 Maven reactor 修复后 170/170，真实目录 v1→v2→v1 切换、版本失配拒写、无写入降级均通过。
+阶段 3B Task 1–6 已完成并通过独立 SDD 任务审查，**整分支审查发现已由 `4af9420` 修复，定向复审与主控最终验收均通过**，未集成到 `main`。32 FAQ、21 条清单商品当前全部上架，真实 API/MCP/模型与正常退款证据见 `docs/phase3b-knowledge-validation-2026-09-30.md`；最终主控 Maven 240/240、Python 14/14 通过。解释补充仅允许固定的代码定义句；任一最终商品引用复核失败时整次资料答复不可用。一次复核异常未提交退款，后续无动作诊断与新会话单次退款重试通过，旧异常原因未查明；K-52 / K-53 保持待判断，K-54 至 K-57 已处理且独立复审通过。下一步由用户选择集成方式，阶段 4 待讨论；不要把计划复选框当成已完成证据。
 **计划 B：Task 1–6 已完成**（实现 `2e026da`、修复 `0391378`）。Task 6 的真实环境响应与数据库核对见 `docs/plan-b-task6-validation-2026-09-24.md`；34/34 Maven 测试通过。运行验证使用 JDK 22，JDK 17 运行尚未验证。
 **计划 C：Task 1–6 已完成**（Task 1–4 为 `62621da`、`e8cd154`、`0656eca`、`72fad2d`）。Task 6 已用新订单完成真实模型、MCP 与退款端到端验证：正常退款、施压、冒充授权、不可退订单、复核强制驳回与恢复均通过；完整证据见 `docs/plan-c-task6-validation-2026-09-25.md`。根 Maven reactor 98/98、启动器测试 5/5 通过；运行验证使用 JDK 22，JDK 17 运行仍未验证。
 
 > ⚠️ **计划里的复选框没有被回填**（53 个全部未勾）——**不要拿它当进度依据**，否则会从 Task 1 重做。
 
-**可靠的进度依据是 supermall 的分支历史**：
+**历史计划 A 的可靠进度依据是 supermall 的分支历史；阶段 3A 还须核对两个仓库的隔离分支提交与验证记录**：
 
 ```bash
 git -C D:/sourcecode/supermall log --oneline main..feat/after-sales-capability
@@ -75,14 +77,11 @@ git -C D:/sourcecode/supermall log --oneline main..feat/after-sales-capability
 
 ## 怎么执行这些计划
 
-三份计划的头部写着 `REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or
-superpowers:executing-plans`——那是 Claude Code 的插件技能，**Codex 没有**。没有该技能时，按此等价做法：
-
-1. 打开计划，**按 Step 逐步执行**，一次一个 Task
-2. **每一步都跑该步给出的验证命令**，以真实输出作为完成依据——不要凭「代码看起来对」宣布通过
-3. 每完成一个 Task 回报用户；发现新问题按上面的「隐患清单纪律」处理
-4. **发现计划文本与磁盘事实不符时，先核实、说出事实、把选择权交回，不要照抄。**
-   本项目已因此发生过两次：一次是照抄一段 javadoc 会漏掉一个象限，一次是照做会产生一个空提交
+执行实施计划时，以 **Superpowers SDD 作为唯一编排流程**；模型选择与升级规则见
+`docs/agent-routing.md`。在 SDD 的各 Task 中按 Step 验证，以命令的真实输出作为完成依据，
+每完成一个 Task 回报结果，并按上面的「隐患清单纪律」处理新发现。
+计划中的契约文字和步骤如与实现或磁盘事实不符，先核实差异，再按 SDD 流程处理；
+不要照抄未经核对的 javadoc，也不要为满足步骤制造空提交。
 
 ## 怎么跑 supermall
 
@@ -130,3 +129,15 @@ superpowers:executing-plans`——那是 Claude Code 的插件技能，**Codex �
 - `supermall/AGENTS.md` 因此于 2026-09-22 拆分：历史进度叙事移到了
   `supermall/docs/progress-and-loadtest-log.md`。**改那份文件前先 `wc -c`。**
 - 本文件同样受此限制。
+
+## Development workflow
+
+For implementation plans, use Superpowers SDD as the sole
+implementation orchestration workflow.
+
+For model-selection and escalation policy, read:
+
+`docs/agent-routing.md`
+
+Do not create an independent Worker/Reviewer orchestration layer
+while SDD is active.

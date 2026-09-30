@@ -10,6 +10,37 @@ from scripts import run_agent
 
 
 class RunAgentEnvironmentTest(unittest.TestCase):
+    def test_launcherPassesOnlyManifestPath(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env").write_text(
+                "MODEL_BASE_URL=https://models.example/v1\n"
+                "MODEL_API_KEY=synthetic-model-key\n"
+                "MODEL_NAME=test-model\n"
+                "MERCHANT_JWT_SECRET=backend-secret\n",
+                encoding="utf-8",
+            )
+            local_manifest = root / "data" / "demo-products.local.json"
+            local_journal = root / "data" / "demo-products.seed-journal.local.json"
+            parent = {
+                "SUPERMALL_TOKEN": "user-token",
+                "DEMO_PRODUCT_MANIFEST": str(local_manifest),
+                "DEMO_PRODUCT_JOURNAL": str(local_journal),
+                "DEMO_MERCHANT_TOKEN": "merchant-secret",
+                "MERCHANT_JWT_SECRET": "backend-secret",
+                "SPRING_DATASOURCE_PASSWORD": "database-secret",
+            }
+
+            child = run_agent.load_agent_environment(root, parent)
+
+            self.assertEqual(str(local_manifest), child["DEMO_PRODUCT_MANIFEST"])
+            self.assertEqual("user-token", child["SUPERMALL_TOKEN"])
+            for key in ("DEMO_PRODUCT_JOURNAL", "DEMO_MERCHANT_TOKEN",
+                        "MERCHANT_JWT_SECRET", "SPRING_DATASOURCE_PASSWORD"):
+                self.assertNotIn(key, child)
+            self.assertNotIn("merchant-secret", json.dumps(child))
+            self.assertNotIn("backend-secret", json.dumps(child))
+
     def test_child_gets_only_model_and_user_credentials(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

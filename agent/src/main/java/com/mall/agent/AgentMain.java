@@ -1,29 +1,44 @@
 package com.mall.agent;
 
 import com.mall.agent.agent.DecisionAgent;
-import com.mall.agent.agent.ReviewAgent;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.mall.agent.config.AgentConfig;
 import com.mall.agent.config.ModelProperties;
+import com.mall.agent.flow.ConversationCoordinator;
+import com.mall.agent.flow.RefundWorkflow;
+import com.mall.agent.knowledge.DemoProductManifest;
+import com.mall.agent.knowledge.ExplanationService;
 import com.mall.agent.tools.EscalationTools;
+import com.mall.agent.tools.ExplanationRequestTools;
+import com.mall.agent.tools.RefundHandoffTools;
 import com.mall.agent.tools.RefundExecutor;
-import com.mall.agent.tools.RefundRequestTools;
-import com.mall.agent.tools.RefundReviewContextFactory;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.mcp.client.McpClient;
 import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.service.tool.ToolExecutionResult;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.InvalidPathException;
 import java.util.Map;
+import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Properties;
+import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 /** 命令行入口。一个进程对应一个用户会话，令牌只从环境变量读取。 */
 public final class AgentMain {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private AgentMain() {
     }
@@ -39,24 +54,44 @@ public final class AgentMain {
         ChatModel model = AgentConfig.chatModel(modelProperties);
         McpClient mcp = AgentConfig.mcpClient(mcpJar.toString(), supermallBaseUrl, token);
         try {
-            ReviewAgent reviewer = AgentConfig.reviewAgent(model);
             String sessionId = UUID.randomUUID().toString();
-            AtomicReference<String> originalUserRequest = new AtomicReference<>();
             EscalationTools escalation = new EscalationTools(sessionId, record ->
                     System.err.println("[升级人工] 请求已记录"));
-            RefundRequestTools refundTools = new RefundRequestTools(
-                    new RefundReviewContextFactory(mcp, originalUserRequest::get),
-                    context -> AgentConfig.reviewSafely(reviewer, context),
-                    new RefundExecutor(mcp),
-                    escalation::escalateToHuman,
-                    sessionId);
-            DecisionAgent agent = AgentConfig.decisionAgent(model, mcp, refundTools, escalation);
+            RefundHandoffTools handoff = new RefundHandoffTools();
+            ExplanationRequestTools explanationTools = new ExplanationRequestTools();
+            DecisionAgent agent = AgentConfig.decisionAgent(model, mcp, handoff, escalation,
+                    explanationTools);
+            ExplanationService explanationService = explanationService(mcp, model, System.getenv());
+            RefundExecutor executor = new RefundExecutor(mcp);
+            RefundWorkflow refundWorkflow = new RefundWorkflow(mcp,
+                    context -> AgentConfig.reviewSafely(AgentConfig.reviewAgent(model), context),
+                    executor::apply, escalation);
+            ConversationCoordinator coordinator = new ConversationCoordinator(agent, handoff, escalation,
+                    () -> listedOrderIds(mcp::executeTool),
+                    orderId -> eligibilityReply(orderId, mcp::executeTool),
+                    orderId -> isOrderRefunded(orderId, mcp::executeTool),
+                    refundWorkflow::apply, explanationTools, explanationService::answer);
 
             System.out.println("售后客服已就绪（会话 " + sessionId + "）。输入 exit 退出。");
-            runSession(agent, refundTools, sessionId, originalUserRequest);
+            runSession(coordinator, sessionId,
+                    new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8)), System.out);
         } finally {
             mcp.close();
         }
+    }
+
+    /** Optional local manifest only supplies allowlisted IDs; all product facts are freshly read via MCP. */
+    static ExplanationService explanationService(McpClient mcp, ChatModel model,
+                                                 Map<String, String> environment) {
+        String manifest = environment.get("DEMO_PRODUCT_MANIFEST");
+        Set<Long> allowed;
+        try {
+            allowed = manifest == null || manifest.isBlank()
+                    ? Set.of() : DemoProductManifest.load(Path.of(manifest));
+        } catch (InvalidPathException e) {
+            allowed = Set.of();
+        }
+        return new ExplanationService(mcp, allowed, AgentConfig.explanationGenerator(model));
     }
 
     static ModelProperties modelProperties(Properties properties, Map<String, String> environment) {
@@ -100,10 +135,9 @@ public final class AgentMain {
         return properties;
     }
 
-    private static void runSession(DecisionAgent agent, RefundRequestTools refundTools, String sessionId,
-                                   AtomicReference<String> originalUserRequest) throws IOException {
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
+    static void runSession(ConversationCoordinator coordinator, String sessionId,
+                           BufferedReader reader, PrintStream output) throws IOException {
+        try (reader) {
             String line;
             while ((line = reader.readLine()) != null) {
                 if (line.isBlank()) {
@@ -112,16 +146,99 @@ public final class AgentMain {
                 if ("exit".equalsIgnoreCase(line.trim())) {
                     break;
                 }
-                originalUserRequest.set(line);
-                String modelResponse = agent.handle(sessionId, line);
-                System.out.println("\n客服：" + finalResponse(modelResponse, refundTools) + "\n");
+                output.println("\n客服：" + coordinator.handleTurn(sessionId, line) + "\n");
             }
         }
     }
 
-    static String finalResponse(String modelResponse, RefundRequestTools refundTools) {
-        String trustedReply = refundTools.takeAuthoritativeReply();
-        return trustedReply != null ? trustedReply : modelResponse;
+    /** 用用户 JWT 的 MCP 客户端读清单；只有实际返回的正整数 ID 可被选择。 */
+    static List<Long> listedOrderIds(Function<ToolExecutionRequest, ToolExecutionResult> toolCaller) {
+        try {
+            ToolExecutionResult result = toolCaller.apply(ToolExecutionRequest.builder()
+                    .name("list_user_orders").arguments("{}").build());
+            JsonNode root = trustedObject(result);
+            if (root == null || !root.path("records").isArray()) {
+                return List.of();
+            }
+            LinkedHashSet<Long> ids = new LinkedHashSet<>();
+            for (JsonNode record : root.path("records")) {
+                JsonNode id = record.path("id");
+                if (id.isIntegralNumber() && id.canConvertToLong() && id.longValue() > 0) {
+                    ids.add(id.longValue());
+                }
+            }
+            return List.copyOf(ids);
+        } catch (RuntimeException e) {
+            return List.of();
+        }
+    }
+
+    /** 资格询问由可信 MCP 事实形成固定回复，不交给决策模型解释。 */
+    static String eligibilityReply(Long orderId,
+                                   Function<ToolExecutionRequest, ToolExecutionResult> toolCaller) {
+        String unavailable = "订单 " + orderId + " 的退款资格无法确认；本次未提交退款。";
+        if (orderId == null || orderId <= 0) {
+            return unavailable;
+        }
+        try {
+            ToolExecutionResult result = toolCaller.apply(ToolExecutionRequest.builder()
+                    .name("get_refund_eligibility")
+                    .arguments("{\"orderId\":" + orderId + "}").build());
+            JsonNode fact = trustedObject(result);
+            if (fact == null || !fact.path("orderId").isIntegralNumber()
+                    || !fact.path("orderId").canConvertToLong()
+                    || fact.path("orderId").longValue() != orderId
+                    || !fact.path("eligible").isBoolean()
+                    || !fact.path("refundExists").isBoolean()) {
+                return unavailable;
+            }
+            if (fact.path("eligible").booleanValue() && !fact.path("refundExists").booleanValue()) {
+                return "订单 " + orderId + " 当前查询显示可申请退款；本次未提交退款。";
+            }
+            JsonNode reason = fact.path("reason");
+            if (!fact.path("eligible").booleanValue()
+                    && reason.isTextual() && !reason.textValue().isBlank()) {
+                return "订单 " + orderId + " 当前不可退：" + reason.textValue() + "。本次未提交退款。";
+            }
+            return unavailable;
+        } catch (RuntimeException e) {
+            return unavailable;
+        }
+    }
+
+    /** 仅当前用户 JWT 的新鲜 get_order 状态可证明历史上已退款。 */
+    static boolean isOrderRefunded(Long orderId,
+                                   Function<ToolExecutionRequest, ToolExecutionResult> toolCaller) {
+        if (orderId == null || orderId <= 0) {
+            return false;
+        }
+        try {
+            ToolExecutionResult result = toolCaller.apply(ToolExecutionRequest.builder()
+                    .name("get_order").arguments("{\"orderId\":" + orderId + "}").build());
+            JsonNode fact = trustedObject(result);
+            JsonNode id = fact == null ? null : fact.path("id");
+            return id != null && id.isIntegralNumber() && id.canConvertToLong()
+                    && id.longValue() == orderId
+                    && fact.path("status").isTextual()
+                    && "REFUNDED".equals(fact.path("status").textValue());
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    private static JsonNode trustedObject(ToolExecutionResult result) {
+        if (result == null || result.isError() || result.resultText() == null
+                || result.resultText().isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode fact = MAPPER.readerFor(JsonNode.class)
+                    .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readValue(result.resultText());
+            return fact != null && fact.isObject() ? fact : null;
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     private static void copyRequiredModelEnvironment(Properties properties,

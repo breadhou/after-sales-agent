@@ -1,0 +1,23 @@
+[
+  {"logicalKey":"paper_grid_a5","name":"A5 方格线圈本","description":"【虚构演示商品】一本含 80 张 A5 方格内页，封面为雾蓝色纸卡。","skus":[{"specs":"A5／方格／80张／雾蓝","price":"18.80","stock":40}]},
+  {"logicalKey":"paper_plain_a5","name":"A5 空白线圈本","description":"【虚构演示商品】一本含 80 张 A5 空白内页，封面为浅灰色纸卡。","skus":[{"specs":"A5／空白／80张／浅灰","price":"17.80","stock":36}]},
+  {"logicalKey":"paper_dot_a5","name":"A5 点阵线圈本","description":"【虚构演示商品】一本含 80 张 A5 点阵内页，封面为米白色纸卡。","skus":[{"specs":"A5／点阵／80张／米白","price":"19.80","stock":32}]},
+  {"logicalKey":"paper_weekpad","name":"桌面周计划纸","description":"【虚构演示商品】一册含 52 张单周计划页，页面尺寸为 210×148 毫米。","skus":[{"specs":"210×148mm／52张","price":"16.00","stock":28}]},
+  {"logicalKey":"paper_daily_pad","name":"桌面日记纸","description":"【虚构演示商品】一册含 60 张空白日期记录页，页面尺寸为 210×148 毫米。","skus":[{"specs":"210×148mm／60张","price":"15.00","stock":30}]},
+  {"logicalKey":"paper_todo_pad","name":"横线待办纸","description":"【虚构演示商品】一册含 70 张横线待办页，页面尺寸为 148×105 毫米。","skus":[{"specs":"148×105mm／70张","price":"12.50","stock":34}]},
+  {"logicalKey":"paper_index_cards","name":"横线索引卡","description":"【虚构演示商品】一包含 50 张 90×55 毫米横线纸卡。","skus":[{"specs":"90×55mm／50张","price":"9.90","stock":45}]},
+  {"logicalKey":"paper_blank_cards","name":"空白索引卡","description":"【虚构演示商品】一包含 50 张 90×55 毫米空白纸卡。","skus":[{"specs":"90×55mm／50张","price":"9.50","stock":42}]},
+  {"logicalKey":"paper_bookmarks","name":"彩边书签纸卡","description":"【虚构演示商品】一包含 12 张纸质书签，每张为单色边框设计。","skus":[{"specs":"12张／纸质","price":"8.80","stock":50}]},
+  {"logicalKey":"paper_message_cards","name":"方形留言卡","description":"【虚构演示商品】一包含 20 张 90×90 毫米空白留言卡。","skus":[{"specs":"90×90mm／20张","price":"11.00","stock":38}]},
+  {"logicalKey":"paper_envelopes","name":"A6 素色信封","description":"【虚构演示商品】一包含 10 只适配 A6 卡片的浅米色纸信封。","skus":[{"specs":"A6／浅米／10只","price":"10.80","stock":35}]},
+  {"logicalKey":"paper_label_sheets","name":"圆角标签纸","description":"【虚构演示商品】一包含 8 张 A4 标签纸，每张分为 24 个圆角标签。","skus":[{"specs":"A4／8张／192枚","price":"13.80","stock":26}]},
+  {"logicalKey":"paper_clipboards","name":"A5 纸板夹","description":"【虚构演示商品】一件 A5 尺寸硬纸板夹，配一枚金属夹扣。","skus":[{"specs":"A5／纸板／1件","price":"14.80","stock":22}]},
+  {"logicalKey":"desk_pencil_case","name":"帆布笔袋","description":"【虚构演示商品】一个长 200 毫米的灰绿色布面笔袋，带拉链开口。","skus":[{"specs":"200mm／灰绿／1个","price":"22.00","stock":18}]},
+  {"logicalKey":"desk_pen_holder","name":"圆筒笔筒","description":"【虚构演示商品】一个高 90 毫米、直径 80 毫米的白色圆筒笔筒。","skus":[{"specs":"90×80mm／白色／1个","price":"18.00","stock":24}]},
+  {"logicalKey":"desk_clip_set","name":"金属长尾夹组合","description":"【虚构演示商品】一盒含 12 枚黑色金属长尾夹，分为三种尺寸各 4 枚。","skus":[{"specs":"12枚／黑色／3尺寸","price":"12.80","stock":33}]},
+  {"logicalKey":"desk_binder_clips","name":"小号装订夹","description":"【虚构演示商品】一盒含 20 枚黑色小号金属装订夹。","skus":[{"specs":"小号／20枚／黑色","price":"9.80","stock":40}]},
+  {"logicalKey":"desk_ruler","name":"透明刻度尺","description":"【虚构演示商品】一把 20 厘米透明塑料刻度尺，刻度以毫米标示。","skus":[{"specs":"20cm／透明／1把","price":"6.80","stock":31}]},
+  {"logicalKey":"desk_scissors","name":"圆头纸剪","description":"【虚构演示商品】一把总长 140 毫米的圆头剪刀，手柄为蓝色塑料。","skus":[{"specs":"140mm／蓝色／1把","price":"12.00","stock":20}]},
+  {"logicalKey":"desk_washi_tape","name":"几何纹纸胶带","description":"【虚构演示商品】一卷宽 15 毫米、长 5 米的纸胶带，印有蓝灰几何图样。","skus":[{"specs":"15mm×5m／1卷","price":"7.80","stock":44}]},
+  {"logicalKey":"desk_page_flags","name":"纯色索引贴","description":"【虚构演示商品】一组含 5 色索引贴，每色 20 枚，共 100 枚。","skus":[{"specs":"5色×20枚／100枚","price":"8.50","stock":37}]}
+]

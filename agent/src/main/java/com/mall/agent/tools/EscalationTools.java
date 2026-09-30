@@ -46,4 +46,9 @@ public class EscalationTools {
     public List<EscalationRecord> records() {
         return List.copyOf(records);
     }
+
+    /** 协调器在模型调用前后比较此计数，识别本轮升级并覆盖模型回复。 */
+    public int recordCount() {
+        return records.size();
+    }
 }

@@ -55,19 +55,20 @@ class McpProtocolTest {
     }
 
     @Test
-    void toolsListAdvertisesTheSixRegisteredTools() throws Exception {
+    void toolsListAdvertisesTheEightRegisteredTools() throws Exception {
         JsonNode response = protocol.request("tools/list", "{}");
         JsonNode tools = response.path("result").path("tools");
 
         assertTrue(tools.isArray());
-        assertEquals(6, tools.size());
+        assertEquals(8, tools.size());
         Set<String> names = new HashSet<>();
         for (JsonNode tool : tools) {
             names.add(tool.path("name").asText());
             assertEquals("object", tool.path("inputSchema").path("type").asText());
         }
         assertEquals(Set.of("get_order", "list_user_orders", "get_logistics",
-                "get_refund_eligibility", "list_policy_clauses", "submit_refund"), names);
+                "get_refund_eligibility", "list_policy_clauses", "submit_refund",
+                "list_on_shelf_products", "get_product_detail"), names);
         assertTrue(fake.receivedPaths.isEmpty());
     }
 
@@ -79,7 +80,11 @@ class McpProtocolTest {
         results.add(protocol.call("get_logistics", "{\"orderId\":9001}"));
         results.add(protocol.call("get_refund_eligibility", "{\"orderId\":9001}"));
         results.add(protocol.call("list_policy_clauses", "{}"));
-        results.add(protocol.call("submit_refund", "{\"orderId\":9001,\"reason\":\"changed my mind\"}"));
+        results.add(protocol.call("list_on_shelf_products", "{\"pageNum\":2,\"pageSize\":40}"));
+        results.add(protocol.call("get_product_detail", "{\"productId\":101}"));
+        results.add(protocol.call("submit_refund", "{\"orderId\":9001,\"reason\":\"changed my mind\","
+                + "\"expectedCatalogFingerprint\":\"catalog-v1\","
+                + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}"));
 
         for (JsonNode result : results) {
             assertFalse(result.path("isError").asBoolean(true), result.toString());
@@ -87,11 +92,38 @@ class McpProtocolTest {
         }
         assertEquals(List.of("/api/orders/9001", "/api/orders", "/api/orders/9001/logistics",
                 "/api/orders/9001/refund-eligibility", "/api/after-sales/policies",
+                "/api/products", "/api/products/101",
                 "/api/orders/9001/refund/execute"), fake.receivedPaths);
         assertEquals("/api/orders?pageNum=1&pageSize=20&status=RECEIVED", fake.receivedRequestTargets.get(1));
-        assertEquals("POST", fake.receivedMethods.get(5));
+        assertEquals("/api/products?pageNum=2&pageSize=20&status=ON_SHELF", fake.receivedRequestTargets.get(5));
+        assertEquals("POST", fake.receivedMethods.get(7));
         assertEquals("changed my mind", MAPPER.readTree(fake.lastRequestBody).path("reason").asText());
-        assertEquals(1, MAPPER.readTree(fake.lastRequestBody).size());
+        assertEquals("catalog-v1", MAPPER.readTree(fake.lastRequestBody).path("expectedCatalogFingerprint").asText());
+        assertEquals("SHIPPED_NOT_RECEIVED", MAPPER.readTree(fake.lastRequestBody).path("expectedPolicyCode").asText());
+        assertEquals(3, MAPPER.readTree(fake.lastRequestBody).size());
+    }
+
+    @Test
+    void productArgumentsAreValidatedBeforeBackendRequest() throws Exception {
+        for (String arguments : List.of("{}", "{\"pageNum\":0,\"pageSize\":20}",
+                "{\"pageNum\":1,\"pageSize\":0}", "{\"pageNum\":1,\"pageSize\":20,\"status\":\"OFF_SHELF\"}",
+                "{\"pageNum\":1.5,\"pageSize\":20}")) {
+            assertLocalArgumentError(protocol.call("list_on_shelf_products", arguments));
+        }
+        for (String arguments : List.of("{}", "{\"productId\":0}", "{\"productId\":-1}",
+                "{\"productId\":1,\"status\":\"ON_SHELF\"}")) {
+            assertLocalArgumentError(protocol.call("get_product_detail", arguments));
+        }
+        assertTrue(fake.receivedPaths.isEmpty());
+    }
+
+    @Test
+    void nullOrErrorDetailIsToolError() throws Exception {
+        fake.respondWith(200, "{\"code\":0,\"message\":\"ok\",\"data\":null}");
+        assertTrue(protocol.call("get_product_detail", "{\"productId\":101}").path("isError").asBoolean());
+        fake.respondWith(401, "{\"code\":401,\"message\":\"unauthorized\",\"data\":null}");
+        assertTrue(protocol.call("list_on_shelf_products", "{\"pageNum\":1,\"pageSize\":20}")
+                .path("isError").asBoolean());
     }
 
     @Test
@@ -118,17 +150,63 @@ class McpProtocolTest {
 
     @Test
     void invalidReasonsAndExtraAmountNeverSubmitARefund() throws Exception {
-        for (String arguments : List.of("{\"orderId\":9001}",
-                "{\"orderId\":9001,\"reason\":null}",
-                "{\"orderId\":9001,\"reason\":\"\"}",
-                "{\"orderId\":9001,\"reason\":\"   \"}",
-                "{\"orderId\":9001,\"reason\":42}",
-                "{\"orderId\":9001,\"reason\":true}",
-                "{\"orderId\":9001,\"reason\":" + MAPPER.writeValueAsString("x".repeat(513)) + "}",
-                "{\"orderId\":9001,\"reason\":\"ok\",\"amount\":999}")) {
+        for (String arguments : List.of(
+                "{\"orderId\":9001,\"expectedCatalogFingerprint\":\"catalog-v1\","
+                        + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}",
+                "{\"orderId\":9001,\"reason\":null,\"expectedCatalogFingerprint\":\"catalog-v1\","
+                        + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}",
+                "{\"orderId\":9001,\"reason\":\"\",\"expectedCatalogFingerprint\":\"catalog-v1\","
+                        + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}",
+                "{\"orderId\":9001,\"reason\":\"   \",\"expectedCatalogFingerprint\":\"catalog-v1\","
+                        + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}",
+                "{\"orderId\":9001,\"reason\":42,\"expectedCatalogFingerprint\":\"catalog-v1\","
+                        + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}",
+                "{\"orderId\":9001,\"reason\":true,\"expectedCatalogFingerprint\":\"catalog-v1\","
+                        + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}",
+                "{\"orderId\":9001,\"reason\":" + MAPPER.writeValueAsString("x".repeat(513))
+                        + ",\"expectedCatalogFingerprint\":\"catalog-v1\","
+                        + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}",
+                "{\"orderId\":9001,\"reason\":\"ok\",\"amount\":999,"
+                        + "\"expectedCatalogFingerprint\":\"catalog-v1\","
+                        + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}")) {
             assertLocalArgumentError(protocol.call("submit_refund", arguments));
         }
         assertTrue(fake.receivedPaths.isEmpty());
+    }
+
+    @Test
+    void submitRequiresReviewedPair() throws Exception {
+        for (String arguments : List.of(
+                "{\"orderId\":9001,\"reason\":\"ok\"}",
+                "{\"orderId\":9001,\"reason\":\"ok\",\"expectedCatalogFingerprint\":\"catalog-v1\"}",
+                "{\"orderId\":9001,\"reason\":\"ok\",\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}",
+                "{\"orderId\":9001,\"reason\":\"ok\",\"expectedCatalogFingerprint\":\"\","
+                        + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}",
+                "{\"orderId\":9001,\"reason\":\"ok\",\"expectedCatalogFingerprint\":\"   \","
+                        + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}",
+                "{\"orderId\":9001,\"reason\":\"ok\",\"expectedCatalogFingerprint\":\"catalog-v1\","
+                        + "\"expectedPolicyCode\":\"\"}",
+                "{\"orderId\":9001,\"reason\":\"ok\",\"expectedCatalogFingerprint\":\"catalog-v1\","
+                        + "\"expectedPolicyCode\":\"   \"}")) {
+            assertLocalArgumentError(protocol.call("submit_refund", arguments));
+        }
+        assertTrue(fake.receivedPaths.isEmpty());
+    }
+
+    @Test
+    void submitPostsReviewedPair() throws Exception {
+        JsonNode result = protocol.call("submit_refund", "{\"orderId\":9001,\"reason\":\"changed my mind\","
+                + "\"expectedCatalogFingerprint\":\"catalog-v1\","
+                + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}");
+
+        assertFalse(result.path("isError").asBoolean(), result.toString());
+        assertEquals(List.of("/api/orders/9001/refund/execute"), fake.receivedPaths);
+        JsonNode body = MAPPER.readTree(fake.lastRequestBody);
+        assertEquals(Set.of("reason", "expectedCatalogFingerprint", "expectedPolicyCode"),
+                fieldNames(body));
+        assertEquals("changed my mind", body.path("reason").asText());
+        assertEquals("catalog-v1", body.path("expectedCatalogFingerprint").asText());
+        assertEquals("SHIPPED_NOT_RECEIVED", body.path("expectedPolicyCode").asText());
     }
 
     @Test
@@ -159,12 +237,28 @@ class McpProtocolTest {
     void backendBusinessFailureBecomesAnErrorToolResult() throws Exception {
         fake.respondWith(200, "{\"code\":80001,\"message\":\"订单不满足退款条件\",\"data\":null}");
 
-        JsonNode result = protocol.call("submit_refund", "{\"orderId\":9001,\"reason\":\"changed my mind\"}");
+        JsonNode result = protocol.call("submit_refund", "{\"orderId\":9001,\"reason\":\"changed my mind\","
+                + "\"expectedCatalogFingerprint\":\"catalog-v1\","
+                + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}");
 
         assertTrue(result.path("isError").asBoolean());
         assertEquals(80001, resultCode(result));
         assertEquals("订单不满足退款条件", resultText(result).path("message").asText());
         assertEquals(List.of("/api/orders/9001/refund/execute"), fake.receivedPaths);
+    }
+
+    @Test
+    void staleReviewCodeSurvivesMcp() throws Exception {
+        fake.respondWith(200, "{\"code\":50005,\"message\":\"复核依据已过期，请人工核实\",\"data\":null}");
+
+        JsonNode result = protocol.call("submit_refund", "{\"orderId\":9001,\"reason\":\"changed my mind\","
+                + "\"expectedCatalogFingerprint\":\"catalog-v1\","
+                + "\"expectedPolicyCode\":\"SHIPPED_NOT_RECEIVED\"}");
+
+        assertTrue(result.path("isError").asBoolean(), result.toString());
+        JsonNode error = resultText(result);
+        assertEquals(50005, error.path("code").asInt());
+        assertEquals("复核依据已过期，请人工核实", error.path("message").asText());
     }
 
     private static void assertLocalArgumentError(JsonNode result) throws Exception {
@@ -180,6 +274,12 @@ class McpProtocolTest {
 
     private static JsonNode resultText(JsonNode result) throws Exception {
         return MAPPER.readTree(result.path("content").get(0).path("text").asText());
+    }
+
+    private static Set<String> fieldNames(JsonNode node) {
+        Set<String> names = new HashSet<>();
+        node.fieldNames().forEachRemaining(names::add);
+        return names;
     }
 
     private static final class ProtocolClient implements AutoCloseable {

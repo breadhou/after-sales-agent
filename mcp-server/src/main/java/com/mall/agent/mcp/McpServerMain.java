@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.mall.agent.mcp.tools.OrderTools;
 import com.mall.agent.mcp.tools.PolicyTools;
+import com.mall.agent.mcp.tools.ProductTools;
 import com.mall.agent.mcp.tools.RefundTools;
 import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.McpServerFeatures;
@@ -71,8 +72,23 @@ public final class McpServerMain {
                     """
                     {"type":"object","properties":{},"additionalProperties":false}
                     """),
+            new ToolDefinition("list_on_shelf_products",
+                    "分页读取当前上架商品的基础资料；只返回当前目录，SKU 与价格须查询商品详情。",
+                    """
+                    {"type":"object","properties":{
+                      "pageNum":{"type":"integer","minimum":1,"maximum":2147483647,"description":"正整数页码"},
+                      "pageSize":{"type":"integer","minimum":1,"description":"每页条数，最多返回 20 条"}},
+                     "required":["pageNum","pageSize"],"additionalProperties":false}
+                    """),
+            new ToolDefinition("get_product_detail",
+                    "读取商品当前详情与上架状态；引用前须再次核对 status=ON_SHELF，不能据此声称历史订单描述。",
+                    """
+                    {"type":"object","properties":{"productId":{"type":"integer","minimum":1,"maximum":9223372036854775807,"description":"商品 ID"}},
+                     "required":["productId"],"additionalProperties":false}
+                    """),
             new ToolDefinition("submit_refund",
                     "按订单执行退款；金额由系统根据订单确定，调用方无法指定。"
+                            + "必须提供本次复核所用的政策目录指纹和适用政策代码。"
                             + "首次执行前须先用 get_refund_eligibility 确认 eligible=true；重复调用会返回既有记录而不重复退款。"
                             + "返回的 refundExists 表示本次调用前是否已有退款记录；false 且 eligible=true 表示本次执行完成。"
                             + "true 表示返回既有记录，须按 reason 区分 PENDING 的「该订单已有退款申请在处理中」"
@@ -80,8 +96,10 @@ public final class McpServerMain {
                     """
                     {"type":"object","properties":{
                       "orderId":{"type":"integer","minimum":1,"maximum":9223372036854775807,"description":"订单 ID"},
-                      "reason":{"type":"string","minLength":1,"maxLength":512,"description":"退款原因，最多 512 字符"}},
-                     "required":["orderId","reason"],"additionalProperties":false}
+                      "reason":{"type":"string","minLength":1,"maxLength":512,"description":"退款原因，最多 512 字符"},
+                      "expectedCatalogFingerprint":{"type":"string","minLength":1,"description":"本次复核所用的政策目录指纹"},
+                      "expectedPolicyCode":{"type":"string","minLength":1,"description":"本次复核确认的适用政策代码"}},
+                     "required":["orderId","reason","expectedCatalogFingerprint","expectedPolicyCode"],"additionalProperties":false}
                     """));
 
     public static List<ToolDefinition> toolDefinitions() {
@@ -105,6 +123,7 @@ public final class McpServerMain {
         OrderTools orders = new OrderTools(client);
         RefundTools refunds = new RefundTools(client);
         PolicyTools policies = new PolicyTools(client);
+        ProductTools products = new ProductTools(client);
 
         List<McpServerFeatures.SyncToolSpecification> specs = List.of(
                 spec("get_order", args -> orders.getOrder(longArg(args, "orderId"))),
@@ -112,8 +131,13 @@ public final class McpServerMain {
                 spec("get_logistics", args -> orders.getLogistics(longArg(args, "orderId"))),
                 spec("get_refund_eligibility", args -> refunds.getRefundEligibility(longArg(args, "orderId"))),
                 spec("list_policy_clauses", args -> policies.listPolicyClauses()),
+                spec("list_on_shelf_products", args -> products.listOnShelfProducts(
+                        positiveIntArg(args, "pageNum"), positiveIntArg(args, "pageSize"))),
+                spec("get_product_detail", args -> products.getProductDetail(longArg(args, "productId"))),
                 spec("submit_refund", args -> refunds.submitRefund(
-                        longArg(args, "orderId"), requiredReason(args))));
+                        longArg(args, "orderId"), requiredReason(args),
+                        requiredNonBlankString(args, "expectedCatalogFingerprint"),
+                        requiredNonBlankString(args, "expectedPolicyCode"))));
 
         return McpServer.sync(transport)
                 .objectMapper(new ObjectMapper().registerModule(new SimpleModule()
@@ -182,6 +206,14 @@ public final class McpServerMain {
         return parsed;
     }
 
+    private static int positiveIntArg(Map<String, Object> args, String key) {
+        long parsed = longArg(args, key);
+        if (parsed > Integer.MAX_VALUE) {
+            throw new InvalidToolArguments("参数不合法：" + key + " 必须在 int 范围内");
+        }
+        return (int) parsed;
+    }
+
     private static String optionalStringArg(Map<String, Object> args, String key) {
         Object value = args.get(key);
         if (value == null && !args.containsKey(key)) {
@@ -199,6 +231,14 @@ public final class McpServerMain {
             return text;
         }
         throw new InvalidToolArguments("参数不合法：reason 必须是非空且不超过 512 字符的字符串");
+    }
+
+    private static String requiredNonBlankString(Map<String, Object> args, String key) {
+        Object value = args.get(key);
+        if (value instanceof String text && !text.isBlank()) {
+            return text;
+        }
+        throw new InvalidToolArguments("参数不合法：" + key + " 必须是非空字符串");
     }
 
     /** Keeps malformed argument shapes inside the tool-result validation path. */
