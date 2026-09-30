@@ -290,7 +290,7 @@ def _validate_fixture(fixture, path, allow_empty=False):
     return set(orders), set(products)
 
 
-def _validate_tool_calls(tool_calls, path):
+def _validate_tool_calls(tool_calls, path, order_aliases, product_aliases):
     calls = _array(tool_calls, path, minimum=1)
     for index, call in enumerate(calls):
         call_path = f"{path}[{index}]"
@@ -314,9 +314,15 @@ def _validate_tool_calls(tool_calls, path):
         }
         required, optional = schemas[name]
         _object(arguments, f"{call_path}.arguments", required=required, optional=optional)
-        for field in ("orderId", "productId"):
+        for field, aliases, kind in (
+            ("orderId", order_aliases, "order"),
+            ("productId", product_aliases, "product"),
+        ):
             if field in arguments:
-                _placeholder(arguments[field], f"{call_path}.arguments.{field}")
+                argument_path = f"{call_path}.arguments.{field}"
+                alias = _placeholder(arguments[field], argument_path)
+                if alias not in aliases:
+                    _fail(argument_path, f"must reference a declared {kind} alias")
         if "status" in arguments:
             _enum(arguments["status"], ORDER_STATUSES,
                   f"{call_path}.arguments.status")
@@ -328,7 +334,7 @@ def _validate_tool_calls(tool_calls, path):
                 _string(arguments[field], f"{call_path}.arguments.{field}")
 
 
-def _validate_control(control, path):
+def _validate_control(control, path, order_aliases, product_aliases):
     required = ("target", "components", "usesRealModel", "point")
     optional = ("toolName", "toolCalls", "script", "response", "probe")
     _object(control, path, required=required, optional=optional)
@@ -358,7 +364,9 @@ def _validate_control(control, path):
                 or any(components[role] != "ABSENT" for role in MODEL_COMPONENTS)
                 or uses_model):
             _fail(path, "MCP_CONTRACT requires real MCP/backend and absent model roles")
-        _validate_tool_calls(control["toolCalls"], f"{path}.toolCalls")
+        _validate_tool_calls(
+            control["toolCalls"], f"{path}.toolCalls", order_aliases, product_aliases
+        )
     else:
         if point in ("NONE", "BACKEND_PROBE") or "probe" in payload or "toolCalls" in payload:
             _fail(path, "AGENT_CHAIN requires one supported chain injection")
@@ -508,6 +516,7 @@ def _placeholder(value, path):
     matches = _placeholders(value, path)
     if len(matches) != 1 or matches[0] != value[2:-2]:
         _fail(path, "must be exactly one logical-key placeholder")
+    return matches[0]
 
 
 def validate_case(case: dict) -> dict:
@@ -550,7 +559,7 @@ def validate_case(case: dict) -> dict:
         if mode == "CONTROLLED":
             if "control" not in case:
                 _fail("case.control", "CONTROLLED requires an explicit control declaration")
-            _validate_control(case["control"], "case.control")
+            _validate_control(case["control"], "case.control", orders, products)
         turns = _array(case["turns"], "case.turns", minimum=1)
         active_actor = case["fixture"]["activeActor"]
         declared_keys = orders | products

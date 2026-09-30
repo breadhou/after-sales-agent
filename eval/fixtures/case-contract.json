@@ -760,6 +760,156 @@
           "value": "SUBSTITUTED"
         }
       ]
+    },
+    {
+      "id": "mcp-contract-declared-product-alias",
+      "template": "mcpContract",
+      "accepted": true,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "control",
+            "toolCalls",
+            "0",
+            "toolName"
+          ],
+          "value": "get_product_detail"
+        },
+        {
+          "op": "remove",
+          "path": [
+            "control",
+            "toolCalls",
+            "0",
+            "arguments",
+            "orderId"
+          ]
+        },
+        {
+          "op": "add",
+          "path": [
+            "control",
+            "toolCalls",
+            "0",
+            "arguments",
+            "productId"
+          ],
+          "value": "{{product-a}}"
+        }
+      ]
+    },
+    {
+      "id": "mcp-contract-rejects-undeclared-order-alias",
+      "template": "mcpContract",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "control",
+            "toolCalls",
+            "0",
+            "arguments",
+            "orderId"
+          ],
+          "value": "{{order-missing}}"
+        }
+      ]
+    },
+    {
+      "id": "mcp-contract-rejects-product-as-order-alias",
+      "template": "mcpContract",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "control",
+            "toolCalls",
+            "0",
+            "arguments",
+            "orderId"
+          ],
+          "value": "{{product-a}}"
+        }
+      ]
+    },
+    {
+      "id": "mcp-contract-rejects-undeclared-product-alias",
+      "template": "mcpContract",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "control",
+            "toolCalls",
+            "0",
+            "toolName"
+          ],
+          "value": "get_product_detail"
+        },
+        {
+          "op": "remove",
+          "path": [
+            "control",
+            "toolCalls",
+            "0",
+            "arguments",
+            "orderId"
+          ]
+        },
+        {
+          "op": "add",
+          "path": [
+            "control",
+            "toolCalls",
+            "0",
+            "arguments",
+            "productId"
+          ],
+          "value": "{{product-missing}}"
+        }
+      ]
+    },
+    {
+      "id": "mcp-contract-rejects-order-as-product-alias",
+      "template": "mcpContract",
+      "accepted": false,
+      "patches": [
+        {
+          "op": "set",
+          "path": [
+            "control",
+            "toolCalls",
+            "0",
+            "toolName"
+          ],
+          "value": "get_product_detail"
+        },
+        {
+          "op": "remove",
+          "path": [
+            "control",
+            "toolCalls",
+            "0",
+            "arguments",
+            "orderId"
+          ]
+        },
+        {
+          "op": "add",
+          "path": [
+            "control",
+            "toolCalls",
+            "0",
+            "arguments",
+            "productId"
+          ],
+          "value": "{{order-a}}"
+        }
+      ]
     }
   ]
 }

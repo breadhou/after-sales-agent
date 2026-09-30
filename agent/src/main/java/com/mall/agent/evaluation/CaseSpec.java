@@ -76,7 +76,7 @@ public final class CaseSpec {
             if (mode.equals("LIVE_E2E") && c.has("control")) fail("case.control", "LIVE_E2E forbids injection");
             if (mode.equals("CONTROLLED")) {
                 if (!c.has("control")) fail("case.control", "CONTROLLED requires explicit control");
-                control(c.get("control"), "case.control");
+                control(c.get("control"), "case.control", keys.orders, keys.products);
             }
             JsonNode turns = array(c.get("turns"), "case.turns", 1);
             String active = text(fixture.get("activeActor"), "case.fixture.activeActor", true);
@@ -162,7 +162,8 @@ public final class CaseSpec {
         }
         fail("data/demo-products.json","catalog is missing"); return Map.of();
     }
-    private static void control(JsonNode c,String p) {
+    private static void control(JsonNode c, String p, Set<String> orderAliases,
+                                Set<String> productAliases) {
         c=obj(c,p,set("target","components","usesRealModel","point"),set("toolName","toolCalls","script","response","probe"));
         String target=en(c.get("target"),TARGETS,p+".target"), point=en(c.get("point"),POINTS,p+".point");
         JsonNode cn=obj(c.get("components"),p+".components",COMPONENTS,Set.of()); Map<String,String> states=new HashMap<>();
@@ -176,7 +177,7 @@ public final class CaseSpec {
         } else if(target.equals("MCP_CONTRACT")) {
             if(!point.equals("NONE")||!payload.equals(set("toolCalls")))fail(p,"MCP_CONTRACT requires direct toolCalls and point NONE");
             if(!states.get("MCP").equals("REAL")||!states.get("BACKEND").equals("REAL")||MODEL_ROLES.stream().anyMatch(role->!states.get(role).equals("ABSENT"))||c.get("usesRealModel").booleanValue())fail(p,"MCP_CONTRACT requires real MCP/backend and absent model roles");
-            toolCalls(c.get("toolCalls"),p+".toolCalls");
+            toolCalls(c.get("toolCalls"), p + ".toolCalls", orderAliases, productAliases);
         } else {
             if(point.equals("NONE")||point.equals("BACKEND_PROBE")||payload.contains("probe")||payload.contains("toolCalls"))fail(p,"AGENT_CHAIN requires one supported injection");
             switch(point) {
@@ -189,23 +190,98 @@ public final class CaseSpec {
         }
     }
 
-    private static void script(JsonNode s,String p,Map<String,String> states) {
-        s=obj(s,p,set("role","responses"),Set.of());String role=en(s.get("role"),MODEL_ROLES,p+".role");if(!states.get(role).equals("SUBSTITUTED"))fail(p+".role","must be substituted");
-        JsonNode responses=array(s.get("responses"),p+".responses",1); Pattern tool=Pattern.compile("^[a-z][a-z0-9_]{0,63}$");
-        for(int i=0;i<responses.size();i++){String rp=p+".responses["+i+"]";JsonNode r=obj(responses.get(i),rp,Set.of(),set("text","toolCalls"));if(r.isEmpty())fail(rp,"requires text and/or toolCalls");if(r.has("text"))text(r.get("text"),rp+".text",false);if(r.has("toolCalls")){if(!role.equals("DIALOGUE"))fail(rp+".toolCalls","only DIALOGUE may request tools");JsonNode calls=array(r.get("toolCalls"),rp+".toolCalls",1);for(int j=0;j<calls.size();j++){String cp=rp+".toolCalls["+j+"]";JsonNode call=obj(calls.get(j),cp,set("name","arguments"),Set.of());pattern(call.get("name"),tool,cp+".name");if(!call.get("arguments").isObject())fail(cp+".arguments","must be JSON object");}}}
+    private static void script(JsonNode script, String path, Map<String, String> states) {
+        script = obj(script, path, set("role", "responses"), Set.of());
+        String role = en(script.get("role"), MODEL_ROLES, path + ".role");
+        if (!states.get(role).equals("SUBSTITUTED")) {
+            fail(path + ".role", "must be substituted");
+        }
+
+        JsonNode responses = array(script.get("responses"), path + ".responses", 1);
+        Pattern toolName = Pattern.compile("^[a-z][a-z0-9_]{0,63}$");
+        for (int responseIndex = 0; responseIndex < responses.size(); responseIndex++) {
+            String responsePath = path + ".responses[" + responseIndex + "]";
+            JsonNode response = obj(responses.get(responseIndex), responsePath, Set.of(),
+                    set("text", "toolCalls"));
+            if (response.isEmpty()) {
+                fail(responsePath, "requires text and/or toolCalls");
+            }
+            if (response.has("text")) {
+                text(response.get("text"), responsePath + ".text", false);
+            }
+            if (response.has("toolCalls")) {
+                if (!role.equals("DIALOGUE")) {
+                    fail(responsePath + ".toolCalls", "only DIALOGUE may request tools");
+                }
+                JsonNode calls = array(response.get("toolCalls"),
+                        responsePath + ".toolCalls", 1);
+                for (int callIndex = 0; callIndex < calls.size(); callIndex++) {
+                    String callPath = responsePath + ".toolCalls[" + callIndex + "]";
+                    JsonNode call = obj(calls.get(callIndex), callPath,
+                            set("name", "arguments"), Set.of());
+                    pattern(call.get("name"), toolName, callPath + ".name");
+                    if (!call.get("arguments").isObject()) {
+                        fail(callPath + ".arguments", "must be JSON object");
+                    }
+                }
+            }
+        }
     }
 
-    private static void toolCalls(JsonNode value,String p) {
-        JsonNode calls=array(value,p,1);
-        for(int i=0;i<calls.size();i++){
-            String cp=p+"["+i+"]";JsonNode call=obj(calls.get(i),cp,set("toolName","arguments"),Set.of());String name=en(call.get("toolName"),MCP_TOOLS,cp+".toolName");
-            Set<String> required; Set<String> optional=Set.of();
-            switch(name){case "get_order","get_logistics","get_refund_eligibility"->required=set("orderId");case "get_product_detail"->required=set("productId");case "list_on_shelf_products"->required=set("pageNum","pageSize");case "submit_refund"->required=set("orderId","reason","expectedCatalogFingerprint","expectedPolicyCode");case "list_user_orders"->{required=Set.of();optional=set("status");}default->required=Set.of();}
-            JsonNode args=obj(call.get("arguments"),cp+".arguments",required,optional);
-            for(String field:set("orderId","productId"))if(args.has(field))placeholder(args.get(field),cp+".arguments."+field);
-            if(args.has("status"))en(args.get("status"),ORDER_STATUSES,cp+".arguments.status");
-            for(String field:set("pageNum","pageSize"))if(args.has(field))integer(args.get(field),cp+".arguments."+field,1);
-            for(String field:set("reason","expectedCatalogFingerprint","expectedPolicyCode"))if(args.has(field))text(args.get(field),cp+".arguments."+field,true);
+    private static void toolCalls(JsonNode value, String path, Set<String> orderAliases,
+                                  Set<String> productAliases) {
+        JsonNode calls = array(value, path, 1);
+        for (int callIndex = 0; callIndex < calls.size(); callIndex++) {
+            String callPath = path + "[" + callIndex + "]";
+            JsonNode call = obj(calls.get(callIndex), callPath,
+                    set("toolName", "arguments"), Set.of());
+            String name = en(call.get("toolName"), MCP_TOOLS, callPath + ".toolName");
+            Set<String> required;
+            Set<String> optional = Set.of();
+            switch (name) {
+                case "get_order", "get_logistics", "get_refund_eligibility" ->
+                        required = set("orderId");
+                case "get_product_detail" -> required = set("productId");
+                case "list_on_shelf_products" -> required = set("pageNum", "pageSize");
+                case "submit_refund" -> required = set("orderId", "reason",
+                        "expectedCatalogFingerprint", "expectedPolicyCode");
+                case "list_user_orders" -> {
+                    required = Set.of();
+                    optional = set("status");
+                }
+                default -> required = Set.of();
+            }
+
+            JsonNode arguments = obj(call.get("arguments"), callPath + ".arguments",
+                    required, optional);
+            for (String field : set("orderId", "productId")) {
+                if (!arguments.has(field)) {
+                    continue;
+                }
+                String argumentPath = callPath + ".arguments." + field;
+                String alias = placeholder(arguments.get(field), argumentPath);
+                Set<String> allowedAliases = field.equals("orderId")
+                        ? orderAliases : productAliases;
+                String kind = field.equals("orderId") ? "order" : "product";
+                if (!allowedAliases.contains(alias)) {
+                    fail(argumentPath, "must reference a declared " + kind + " alias");
+                }
+            }
+            if (arguments.has("status")) {
+                en(arguments.get("status"), ORDER_STATUSES,
+                        callPath + ".arguments.status");
+            }
+            for (String field : set("pageNum", "pageSize")) {
+                if (arguments.has(field)) {
+                    integer(arguments.get(field), callPath + ".arguments." + field, 1);
+                }
+            }
+            for (String field : set("reason", "expectedCatalogFingerprint",
+                    "expectedPolicyCode")) {
+                if (arguments.has(field)) {
+                    text(arguments.get(field), callPath + ".arguments." + field, true);
+                }
+            }
         }
     }
 
@@ -234,7 +310,14 @@ public final class CaseSpec {
     }
 
     private static List<String> placeholders(String s,String p){Matcher m=PLACEHOLDER.matcher(s);List<String> found=new ArrayList<>();while(m.find()){String a=m.group(1);if(!ALIAS.matcher(a).matches())fail(p,"invalid logical-key placeholder");found.add(a);}String residue=PLACEHOLDER.matcher(s).replaceAll("");if(residue.contains("{{")||residue.contains("}}"))fail(p,"malformed logical-key placeholder");return found;}
-    private static void placeholder(JsonNode n,String p){String s=text(n,p,true);List<String> found=placeholders(s,p);if(found.size()!=1||!s.equals("{{"+found.get(0)+"}}"))fail(p,"must be exactly one logical-key placeholder");}
+    private static String placeholder(JsonNode node, String path) {
+        String value = text(node, path, true);
+        List<String> found = placeholders(value, path);
+        if (found.size() != 1 || !value.equals("{{" + found.get(0) + "}}")) {
+            fail(path, "must be exactly one logical-key placeholder");
+        }
+        return found.get(0);
+    }
 
     private static JsonNode obj(JsonNode n,String p,Set<String> required,Set<String> optional){if(n==null||!n.isObject())fail(p,"must be object");Set<String> names=fields(n),allowed=new HashSet<>(required);allowed.addAll(optional);if(!names.containsAll(required))fail(p,"missing required field");if(!allowed.containsAll(names))fail(p,"contains unknown field");return n;}
     private static JsonNode map(JsonNode n,String p){if(n==null||!n.isObject())fail(p,"must be object");Iterator<String> i=n.fieldNames();while(i.hasNext())pattern(MAPPER.getNodeFactory().textNode(i.next()),ALIAS,p+" key");return n;}
