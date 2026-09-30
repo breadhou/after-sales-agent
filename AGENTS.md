@@ -17,6 +17,7 @@
 |---|---|
 | `docs/specs/2026-09-18-after-sales-agent-design.md` | 设计基线：职责边界、三道防线、评测设计 |
 | `docs/specs/2026-09-26-rag-policy-review-design.md` | **阶段 3 当前设计**：确定性退款编排 + RAG 政策复核 |
+| `docs/specs/2026-09-30-phase4-single-model-evaluation-design.md` | **阶段 4 设计稿，待书面确认**：单模型、240 条场景、分层判定与评测证据 |
 | `docs/specs/2026-09-26-rag-explanation-design.md` | 阶段 3 旧方案，已由上项取代 |
 | `docs/plans/2026-09-18-plan-a-supermall-after-sales.md` | 计划 A：supermall 售后能力（8 任务） |
 | `docs/plans/2026-09-18-plan-b-mcp-server.md` | 计划 B：MCP Server（6 任务） |
@@ -62,6 +63,7 @@ Task 7 已实现不可变政策目录快照及其指纹；阶段 3A 已加入 Ag
 阶段 3A Task 1–8 已完成并通过独立 SDD 任务及整分支审查；真实环境证据见
 `docs/phase3a-rag-refund-validation-2026-09-28.md`。决策 Agent 保留普通售后对话与只读查询，明确退款请求转接可信编排；同源政策精确检索进入独立复核。根 Maven reactor 修复后 170/170，真实目录 v1→v2→v1 切换、版本失配拒写、无写入降级均通过。
 阶段 3B Task 1–6 已完成并通过独立 SDD 任务审查，**整分支审查发现已由 `4af9420` 修复，定向复审与主控最终验收均通过**。阶段 3A / 3B 已按用户授权集成到两个仓库的 `main`，集成验证见 `docs/phase3-main-integration-2026-09-30.md`。32 FAQ、21 条清单商品在本轮真实验证时全部上架，真实 API/MCP/模型与正常退款证据见 `docs/phase3b-knowledge-validation-2026-09-30.md`；最终主控 Maven 240/240、Python 14/14 通过。解释补充仅允许固定的代码定义句；任一最终商品引用复核失败时整次资料答复不可用。一次复核异常未提交退款，后续无动作诊断与新会话单次退款重试通过，旧异常原因未查明；K-52 / K-53 保持待判断，K-54 至 K-57 已处理且独立复审通过。下一步讨论阶段 4 评测设计；不要把计划复选框当成已完成证据。
+**阶段 4：用户已确认仅做单模型、保留 240 条场景并先试运行代表性场景。** 设计稿见上表，当前待书面审阅，实施计划与代码尚未开始；150 条真实端到端、60 条受控与 30 条独立复核的分配是设计提案，不能作为已运行证据。K-48 / K-50 / K-52 / K-53 的状态不因设计稿完成而关闭。
 **计划 B：Task 1–6 已完成**（实现 `2e026da`、修复 `0391378`）。Task 6 的真实环境响应与数据库核对见 `docs/plan-b-task6-validation-2026-09-24.md`；34/34 Maven 测试通过。运行验证使用 JDK 22，JDK 17 运行尚未验证。
 **计划 C：Task 1–6 已完成**（Task 1–4 为 `62621da`、`e8cd154`、`0656eca`、`72fad2d`）。Task 6 已用新订单完成真实模型、MCP 与退款端到端验证：正常退款、施压、冒充授权、不可退订单、复核强制驳回与恢复均通过；完整证据见 `docs/plan-c-task6-validation-2026-09-25.md`。根 Maven reactor 98/98、启动器测试 5/5 通过；运行验证使用 JDK 22，JDK 17 运行仍未验证。
 
