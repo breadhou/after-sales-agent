@@ -38,7 +38,6 @@ public final class ExplanationService {
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private static final String NO_BASIS = "当前无可靠依据回答该资料问题，请联系人工客服核实。";
     private static final String GENERAL_POLICY_LIMIT = "以上仅为当前政策目录原文，不能据此判断具体订单。";
-    private static final Set<String> UNPUBLISHED_FAQS = Set.of("FAQ-030", "FAQ-031");
     private static final Pattern TRANSACTION_CLAIM = Pattern.compile(
             "已退款|退款成功|已经退款|已到账|到账|退款金额|退款资格|可退|不可退|"
                     + "可以退款|符合退款条件|满足退款条件|有退款资格|"
@@ -166,7 +165,7 @@ public final class ExplanationService {
         Map<String, String> texts = new LinkedHashMap<>();
         Map<String, Source> candidates = new LinkedHashMap<>();
         for (FaqCorpus.FaqDocument document : faq) {
-            if (UNPUBLISHED_FAQS.contains(document.id()) || !safeSource(document.body())) continue;
+            if (!safeSource(document.body())) continue;
             texts.put(document.id(), document.title() + " " + document.body());
             candidates.put(document.id(), new Source(document.id(), document.body(), null, null));
         }

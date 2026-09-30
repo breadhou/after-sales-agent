@@ -16,7 +16,9 @@
 
 **计划 C 的 Task 1–6 已完成**：真实模型、MCP 与退款端到端验证见[验证记录](docs/plan-c-task6-validation-2026-09-25.md)。根 Maven reactor 98/98、启动器测试 5/5 通过；运行验证使用 JDK 22，JDK 17 尚未验证。
 
-**阶段 3A 的 Task 1–8 已完成、真实环境验证与独立 SDD 审查均通过**：对话 Agent 在明确退款诉求下只转接；可信代码确认请求并执行资格门槛；同源政策条款进入独立复核。真实模型、MCP、数据库、真实目录部署切换及失败降级的证据见[阶段 3A 验证记录](docs/phase3a-rag-refund-validation-2026-09-28.md)。修复 SDK 错误语义后，根 Maven reactor 170/170，通过 JDK 22 验证。阶段 3B 尚未实施，下一步先与用户讨论。
+**阶段 3A 的 Task 1–8 已完成、真实环境验证与独立 SDD 审查均通过**：对话 Agent 在明确退款诉求下只转接；可信代码确认请求并执行资格门槛；同源政策条款进入独立复核。真实模型、MCP、数据库、真实目录部署切换及失败降级的证据见[阶段 3A 验证记录](docs/phase3a-rag-refund-validation-2026-09-28.md)。修复 SDK 错误语义后，根 Maven reactor 170/170，通过 JDK 22 验证。
+
+**阶段 3B 的 Task 1–6 已实现并完成本轮验证，Task 6 与整分支独立 SDD 审查待完成**：32 条原创 FAQ、21 条经商家业务 API 创建且当前上架的演示商品、只读商品 MCP 与无动作解释已接线。真实 API、MCP、模型问答和正常退款证据见[阶段 3B 验证记录](docs/phase3b-knowledge-validation-2026-09-30.md)；最终 Maven reactor 216/216、Python 14/14 通过。一次复核异常按失败降级且未提交，后续无动作诊断与新会话单次退款重试通过；旧异常原因未查明。
 
 ### 文档地图
 
@@ -31,6 +33,7 @@
 | [`docs/plans/2026-09-26-phase3a-rag-refund-review.md`](docs/plans/2026-09-26-phase3a-rag-refund-review.md) | 阶段 3A：确定性退款编排与 RAG 政策复核（8 任务） |
 | [`docs/phase3a-rag-refund-validation-2026-09-28.md`](docs/phase3a-rag-refund-validation-2026-09-28.md) | 阶段 3A 真实模型、MCP、数据库及目录部署验证 |
 | [`docs/plans/2026-09-26-phase3b-knowledge-qa.md`](docs/plans/2026-09-26-phase3b-knowledge-qa.md) | 阶段 3B：FAQ 与当前演示商品问答（6 任务，依赖 3A） |
+| [`docs/phase3b-knowledge-validation-2026-09-30.md`](docs/phase3b-knowledge-validation-2026-09-30.md) | 阶段 3B 自动化、真实语料、API、MCP 与模型验证 |
 
 ### 进度
 
@@ -40,7 +43,7 @@
 | B | MCP Server | 6 个工具，stdio 传输 | ✅ 已写 | ✅ Task 1–6 已完成并验证 |
 | C | Agent | 决策 Agent + 复核 Agent + 升级人工 | ✅ 已写 | ✅ Task 1–6 已完成并验证 |
 | 3A | RAG 政策复核 | 确定性编排、同源政策复核、后端写入前版本校验 | ✅ 已写（8 任务） | ✅ Task 1–8 已验收；实测与 SDD 审查通过 |
-| 3B | 资料问答 | 原创 FAQ、当前演示商品、无动作解释 | ✅ 已写（6 任务） | ⏸ 待与用户讨论 |
+| 3B | 资料问答 | 原创 FAQ、当前演示商品、无动作解释 | ✅ 已写（6 任务） | Task 1–6 已实现并验证；Task 6 与整分支 SDD 审查待完成 |
 | 4 | 评测集 | 240 条场景 + 自动判定 + 回归 | ❌ 未写 | ⏸ 待设计 |
 
 阶段 3 的权威政策只有三条，因此退款复核按政策编号精确检索；FAQ 与当前演示商品用于资料问答。阶段 4 的系统评测仍待阶段 3 运行后设计。
@@ -49,7 +52,7 @@
 
 ## 下一步
 
-阶段 3A 已验收；暂停并先与用户讨论阶段 3B。计划 A/B/C 已完成；历史计划复选框未回填，不作为进度依据。
+阶段 3A 已验收，阶段 3B 实现与本轮验证已完成；下一步完成 Task 6 与整分支 SDD 审查，再决定集成与阶段 4 评测设计。计划 A/B/C 已完成；历史计划复选框未回填，不作为进度依据。
 
 ### 环境要求
 

@@ -248,15 +248,31 @@ class ExplanationServiceTest {
     }
 
     @Test
-    void unpublishedProductFaqDoesNotBecomeVisible() {
+    void currentCatalogReadFaqIsPublished() {
         ExplanationService service = service(request -> {
             throw new AssertionError(request.name());
-        }, Set.of(), input -> new ExplanationDraft("Task 5/6 后才发布", List.of("FAQ-030")));
+        }, Set.of(), input -> new ExplanationDraft("资料引用以当前核对结果为准。", List.of("FAQ-030")));
 
-        String reply = service.answer("查询当前在售演示商品", null);
+        String reply = service.answer("清单内当前上架的资料引用前会重新核对详情与上架状态吗？", null);
 
-        assertFalse(reply.contains("FAQ-030"), reply);
-        assertFalse(reply.contains("此能力通过 Task 5/6"), reply);
+        assertTrue(reply.contains("[FAQ-030]"), reply);
+        assertTrue(reply.contains("引用前会重新核对详情与上架状态"), reply);
+        assertFalse(reply.contains("计划"), reply);
+        assertFalse(reply.contains("Task 5/6"), reply);
+    }
+
+    @Test
+    void currentSkuReadFaqIsPublished() {
+        ExplanationService service = service(request -> {
+            throw new AssertionError(request.name());
+        }, Set.of(), input -> new ExplanationDraft("数值以当前详情读取为准。", List.of("FAQ-031")));
+
+        String reply = service.answer("当前详情返回的 SKU 数值如何核对？", null);
+
+        assertTrue(reply.contains("[FAQ-031]"), reply);
+        assertTrue(reply.contains("不从商品列表摘要推断这些数值"), reply);
+        assertFalse(reply.contains("计划"), reply);
+        assertFalse(reply.contains("Task 5/6"), reply);
     }
 
     @Test
