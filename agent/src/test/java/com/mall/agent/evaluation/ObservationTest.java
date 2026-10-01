@@ -25,10 +25,12 @@ import org.junit.jupiter.api.io.TempDir;
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
+import java.util.function.BiConsumer;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -55,12 +57,137 @@ class ObservationTest {
     }
 
     @Test
+    void originalFutureWaitCannotDeclareDelayedObservationComplete() throws Exception {
+        BindingIndex index = bindings();
+        PrivateEvidenceStore store = new PrivateEvidenceStore(directory);
+        SafeEventRecorder events = recorder(index, store);
+        CompletableFuture<ToolExecutionResult> original = new CompletableFuture<>();
+        McpClient observed = ObservedMcpClient.wrap(async(original), index, events);
+        ToolExecutionResult result = ok("[{\"id\":" + A + "}]");
+        CompletableFuture<ToolExecutionResult> returned;
+        try (AutoCloseable turn = events.beginTurn("session-a", 0)) {
+            returned = observed.executeToolAsync(request("list_user_orders", "{}"), null);
+        }
+        assertSame(original, returned);
+        CountDownLatch callerStarted = new CountDownLatch(1), releaseCaller = new CountDownLatch(1);
+        returned.whenComplete((reply, error) -> {
+            callerStarted.countDown();
+            awaitLatch(releaseCaller);
+        });
+        ExecutorService callbacks = Executors.newFixedThreadPool(2);
+        Future<?> completion = callbacks.submit(() -> original.complete(result));
+        Future<Boolean> drain = null;
+        try {
+            assertTrue(callerStarted.await(5, TimeUnit.SECONDS));
+            assertSame(result, returned.get(1, TimeUnit.SECONDS));
+            assertEquals(0, responses(events).size());
+            assertTrue(store.snapshot().isEmpty());
+            assertFalse(events.evidenceComplete(), "Original future completion must not certify a pending observer");
+            drain = callbacks.submit(() -> events.awaitObservations(Duration.ofSeconds(5)));
+            Future<Boolean> waiting = drain;
+            assertThrows(TimeoutException.class, () -> waiting.get(20, TimeUnit.MILLISECONDS));
+        } finally {
+            releaseCaller.countDown();
+            completion.get(5, TimeUnit.SECONDS);
+            if (drain != null) drain.get(5, TimeUnit.SECONDS);
+            callbacks.shutdownNow();
+        }
+        assertTrue(drain.get(5, TimeUnit.SECONDS));
+        assertEquals(2, responses(events).size());
+        assertEquals(List.of("order-a"), JSON.convertValue(store.snapshot().get(0).path("aliases"), List.class));
+        assertTrue(events.evidenceComplete());
+    }
+
+    @Test
+    void observationDrainTimeoutRemainsMissingAfterLateBusinessSuccess() throws Exception {
+        BindingIndex index = bindings();
+        SafeEventRecorder events = recorder(index, new PrivateEvidenceStore(directory));
+        CompletableFuture<ToolExecutionResult> original = new CompletableFuture<>();
+        McpClient observed = ObservedMcpClient.wrap(async(original), index, events);
+        try (AutoCloseable turn = events.beginTurn("session-a", 0)) {
+            assertSame(original, observed.executeToolAsync(request("get_order", "{\"orderId\":" + A + "}"), null));
+        }
+        assertFalse(events.awaitObservations(Duration.ZERO));
+        assertFalse(events.evidenceComplete());
+        assertEquals("MISSING_EVIDENCE", events.errorCategory());
+        ToolExecutionResult result = ok("{\"id\":" + A + "}");
+        original.complete(result);
+        assertSame(result, original.get(1, TimeUnit.SECONDS));
+        assertFalse(events.awaitObservations(Duration.ofSeconds(1)), "A late callback cannot erase the failed evidence boundary");
+        assertEquals(1, responses(events).size());
+        assertEquals("MISSING_EVIDENCE", events.errorCategory());
+    }
+
+    @Test
+    void observationDrainFailureDoesNotReplaceOriginalFutureOrResult() throws Exception {
+        Path blocked = directory.resolve("blocked-sink");
+        Files.writeString(blocked, "regular file");
+        BindingIndex index = bindings();
+        SafeEventRecorder events = recorder(index, new PrivateEvidenceStore(blocked));
+        CompletableFuture<ToolExecutionResult> original = new CompletableFuture<>();
+        McpClient observed = ObservedMcpClient.wrap(async(original), index, events);
+        try (AutoCloseable turn = events.beginTurn("session-a", 0)) {
+            assertSame(original, observed.executeToolAsync(request("list_user_orders", "{}"), null));
+        }
+        ToolExecutionResult result = ok("[{\"id\":" + A + "}]");
+        original.complete(result);
+        assertSame(result, original.get(1, TimeUnit.SECONDS));
+        assertFalse(events.awaitObservations(Duration.ofSeconds(1)));
+        assertFalse(events.evidenceComplete());
+        assertEquals("MISSING_EVIDENCE", events.errorCategory());
+        assertEquals(2, responses(events).size());
+    }
+
+    @Test
+    void interruptedObservationDrainPreservesInterruptAndMarksMissingEvidence() throws Exception {
+        BindingIndex index = bindings();
+        SafeEventRecorder events = recorder(index, new PrivateEvidenceStore(directory));
+        CompletableFuture<ToolExecutionResult> original = new CompletableFuture<>();
+        McpClient observed = ObservedMcpClient.wrap(async(original), index, events);
+        try (AutoCloseable turn = events.beginTurn("session-a", 0)) {
+            observed.executeToolAsync(request("get_order", "{\"orderId\":" + A + "}"), null);
+        }
+        Thread.currentThread().interrupt();
+        try {
+            assertFalse(events.awaitObservations(Duration.ofSeconds(1)));
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally { Thread.interrupted(); }
+        original.complete(ok("{}"));
+        assertEquals("MISSING_EVIDENCE", events.errorCategory());
+        assertFalse(events.evidenceComplete());
+    }
+
+    @Test
+    void exceptionalAsyncResultPreservesOriginalThrowableAndCauseAfterDrain() throws Exception {
+        BindingIndex index = bindings();
+        SafeEventRecorder events = recorder(index, new PrivateEvidenceStore(directory));
+        CompletableFuture<ToolExecutionResult> original = new CompletableFuture<>();
+        McpClient observed = ObservedMcpClient.wrap(async(original), index, events);
+        CompletableFuture<ToolExecutionResult> returned;
+        try (AutoCloseable turn = events.beginTurn("session-a", 0)) {
+            returned = observed.executeToolAsync(request("submit_refund", "{\"orderId\":" + A + "}"), null);
+        }
+        RuntimeException cause = new RuntimeException("{\"error\":true,\"code\":50005,\"message\":\"" + SECRET + "\"}");
+        ToolExecutionException failure = new ToolExecutionException(cause);
+        original.completeExceptionally(failure);
+        assertSame(original, returned);
+        ExecutionException caught = assertThrows(ExecutionException.class, () -> returned.get(1, TimeUnit.SECONDS));
+        assertSame(failure, caught.getCause());
+        assertSame(cause, caught.getCause().getCause());
+        assertTrue(events.awaitObservations(Duration.ofSeconds(1)));
+        assertTrue(events.snapshot().stream().anyMatch(event -> event.path("businessCode").asInt() == 50005
+                && event.path("status").asText().equals("BUSINESS_ERROR")));
+        assertNoPrivateData(events.snapshot());
+    }
+
+    @Test
     void twoTargetsAndConcurrentCallbacksKeepTheirActualAliases() throws Exception {
         BindingIndex index = bindings();
         PrivateEvidenceStore store = new PrivateEvidenceStore(directory);
         SafeEventRecorder events = recorder(index, store);
+        CountDownLatch observersStarted = new CountDownLatch(2), releaseObservers = new CountDownLatch(1);
         Map<Long, CompletableFuture<ToolExecutionResult>> pending = Map.of(
-                A, new CompletableFuture<>(), B, new CompletableFuture<>());
+                A, gatedFuture(observersStarted, releaseObservers), B, gatedFuture(observersStarted, releaseObservers));
         Map<Long, ToolExecutionRequest> passed = new ConcurrentHashMap<>();
         McpClient delegate = (McpClient) Proxy.newProxyInstance(getClass().getClassLoader(),
                 new Class<?>[]{McpClient.class}, (proxy, method, arguments) -> {
@@ -78,11 +205,26 @@ class ObservationTest {
         try (AutoCloseable turn = events.beginTurn("session-b", 2)) {
             assertSame(pending.get(B), observed.executeToolAsync(requestB, null));
         }
-        ExecutorService callbacks = Executors.newFixedThreadPool(2);
+        ExecutorService callbacks = Executors.newFixedThreadPool(3);
+        Future<?> completeB = callbacks.submit(() -> pending.get(B).complete(ok("{\"id\":" + B + "}")));
+        Future<?> completeA = callbacks.submit(() -> pending.get(A).complete(ok("{\"id\":" + A + "}")));
+        Future<Boolean> drain = null;
         try {
-            callbacks.submit(() -> pending.get(B).complete(ok("{\"id\":" + B + "}"))).get();
-            callbacks.submit(() -> pending.get(A).complete(ok("{\"id\":" + A + "}"))).get();
-        } finally { callbacks.shutdownNow(); }
+            assertTrue(observersStarted.await(5, TimeUnit.SECONDS), "Both observation callbacks must be active together");
+            pending.get(A).get(1, TimeUnit.SECONDS);
+            pending.get(B).get(1, TimeUnit.SECONDS);
+            assertFalse(events.evidenceComplete());
+            drain = callbacks.submit(() -> events.awaitObservations(Duration.ofSeconds(5)));
+            Future<Boolean> waiting = drain;
+            assertThrows(TimeoutException.class, () -> waiting.get(20, TimeUnit.MILLISECONDS));
+        } finally {
+            releaseObservers.countDown();
+            completeA.get(5, TimeUnit.SECONDS);
+            completeB.get(5, TimeUnit.SECONDS);
+            if (drain != null) drain.get(5, TimeUnit.SECONDS);
+            callbacks.shutdownNow();
+        }
+        assertTrue(drain.get(5, TimeUnit.SECONDS));
         assertSame(requestA, passed.get(A));
         assertSame(requestB, passed.get(B));
         assertEquals("order-a", index.orderAlias(A));
@@ -125,6 +267,74 @@ class ObservationTest {
         assertEquals(List.of("order-a", "order-b"), JSON.convertValue(listRecord.path("aliases"), List.class));
         assertTrue(events.snapshot().stream().anyMatch(e -> e.path("target").asText().equals("UNBOUND")));
         assertTrue(events.snapshot().stream().anyMatch(e -> e.path("target").asText().equals("OUT_OF_ALLOWLIST")));
+        assertFalse(events.evidenceComplete());
+        assertEquals("UNBOUND_TARGET", events.errorCategory());
+        assertNoPrivateData(events.snapshot());
+    }
+
+    @Test
+    void globalOrderListIgnoresStrayIdsAndPreservesReturnedRowAliases() throws Exception {
+        assertGlobalEnvelope("list_user_orders", "[{\"id\":" + A + "},{\"id\":" + B + "}]", List.of("order-a", "order-b"));
+    }
+
+    @Test
+    void globalProductListIgnoresStrayIdsAndPreservesReturnedRowAliases() throws Exception {
+        assertGlobalEnvelope("list_on_shelf_products", "{\"records\":[{\"id\":" + PRODUCT + "}]}", List.of("product-a"));
+    }
+
+    @Test
+    void globalPolicyListIgnoresStrayIds() throws Exception {
+        assertGlobalEnvelope("list_policy_clauses", "{\"fingerprint\":\"fp-1\",\"clauses\":[]}", List.of());
+    }
+
+    private void assertGlobalEnvelope(String tool, String response, List<String> returnedAliases) throws Exception {
+        BindingIndex index = bindings();
+        PrivateEvidenceStore store = new PrivateEvidenceStore(directory);
+        SafeEventRecorder events = recorder(index, store);
+        ToolExecutionRequest original = request(tool, "{\"orderId\":" + A + ",\"productId\":" + PRODUCT + ",\"pageNum\":1,\"pageSize\":20}");
+        ToolExecutionResult result = ok(response);
+        McpClient client = ObservedMcpClient.wrap(fake(actual -> { assertSame(original, actual); return result; }), index, events);
+        try (AutoCloseable turn = events.beginTurn("session-a", 0)) {
+            assertSame(result, client.executeTool(original));
+        }
+        List<JsonNode> recorded = events.snapshot();
+        List<String> expectedTargets = new ArrayList<>(List.of("GLOBAL", "GLOBAL"));
+        expectedTargets.addAll(returnedAliases);
+        assertEquals(expectedTargets, recorded.stream().map(event -> event.path("target").asText()).toList());
+        assertEquals("CALLED", recorded.get(0).path("status").asText());
+        assertTrue(recorded.stream().skip(1).allMatch(event -> event.path("status").asText().equals("RESPONSE_RECEIVED")));
+        assertTrue(recorded.stream().allMatch(event -> event.path("callId").equals(recorded.get(0).path("callId"))));
+        List<JsonNode> rows = store.snapshot().stream().filter(record -> record.path("kind").asText().equals("RETURNED_TARGETS")).toList();
+        if (tool.equals("list_policy_clauses")) assertTrue(rows.isEmpty());
+        else {
+            assertEquals(1, rows.size());
+            assertEquals(returnedAliases, JSON.convertValue(rows.get(0).path("aliases"), List.class));
+            assertEquals(recorded.get(0).path("callId"), rows.get(0).path("callId"));
+        }
+        assertTrue(events.evidenceComplete());
+        assertNull(events.errorCategory());
+        assertNoPrivateData(recorded);
+    }
+
+    @Test
+    void targetedToolsUseOnlyTheirDeclaredIdAndKeepInvalidTargetsUnresolved() throws Exception {
+        BindingIndex index = bindings();
+        SafeEventRecorder events = recorder(index, new PrivateEvidenceStore(directory));
+        McpClient client = ObservedMcpClient.wrap(fake(actual -> ok("{}")), index, events);
+        try (AutoCloseable turn = events.beginTurn("session-a", 0)) {
+            for (String tool : List.of("get_order", "get_logistics", "get_refund_eligibility", "submit_refund"))
+                client.executeTool(request(tool, "{\"orderId\":" + A + ",\"productId\":" + PRODUCT + "}"));
+            client.executeTool(request("get_product_detail", "{\"orderId\":" + B + ",\"productId\":" + PRODUCT + "}"));
+        }
+        assertEquals(List.of("order-a", "order-a", "order-a", "order-a", "product-a"), responses(events).stream()
+                .map(event -> event.path("target").asText()).toList());
+        assertTrue(events.evidenceComplete());
+        try (AutoCloseable turn = events.beginTurn("session-a", 1)) {
+            client.executeTool(request("get_order", "{\"orderId\":\"" + A + "\",\"productId\":" + PRODUCT + "}"));
+            client.executeTool(request("get_product_detail", "{\"orderId\":" + A + "}"));
+        }
+        assertEquals(List.of("UNBOUND", "UNBOUND", "OUT_OF_ALLOWLIST", "OUT_OF_ALLOWLIST"), events.snapshot().stream()
+                .filter(event -> event.path("turnIndex").asInt() == 1).map(event -> event.path("target").asText()).toList());
         assertFalse(events.evidenceComplete());
         assertEquals("UNBOUND_TARGET", events.errorCategory());
         assertNoPrivateData(events.snapshot());
@@ -377,6 +587,32 @@ class ObservationTest {
                     if (method.getName().equals("executeTool")) return call.apply((ToolExecutionRequest) arguments[0]);
                     throw new UnsupportedOperationException(method.getName());
                 });
+    }
+
+    private static McpClient async(CompletableFuture<ToolExecutionResult> future) {
+        return (McpClient) Proxy.newProxyInstance(ObservationTest.class.getClassLoader(), new Class<?>[]{McpClient.class},
+                (proxy, method, arguments) -> future);
+    }
+
+    private static CompletableFuture<ToolExecutionResult> gatedFuture(CountDownLatch started, CountDownLatch release) {
+        return new CompletableFuture<>() {
+            @Override public CompletableFuture<ToolExecutionResult> whenComplete(BiConsumer<? super ToolExecutionResult, ? super Throwable> observer) {
+                return super.whenComplete((reply, failure) -> {
+                    started.countDown();
+                    awaitLatch(release);
+                    observer.accept(reply, failure);
+                });
+            }
+        };
+    }
+
+    private static List<JsonNode> responses(SafeEventRecorder events) {
+        return events.snapshot().stream().filter(event -> event.path("status").asText().equals("RESPONSE_RECEIVED")).toList();
+    }
+
+    private static void awaitLatch(CountDownLatch latch) {
+        try { assertTrue(latch.await(5, TimeUnit.SECONDS), "Callback gate timed out"); }
+        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new AssertionError(interrupted); }
     }
 
     private static McpClient refundFacts() {

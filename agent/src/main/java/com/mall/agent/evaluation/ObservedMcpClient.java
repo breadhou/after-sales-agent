@@ -31,38 +31,53 @@ public final class ObservedMcpClient {
                     ToolExecutionRequest request = (ToolExecutionRequest) arguments[0];
                     SafeEventRecorder.Turn origin = recorder.captureTurn();
                     String callId = "mcp-" + calls.incrementAndGet();
-                    Long target = actualTarget(request);
+                    final Long actual = actualTarget(request);
                     Map<String, Object> base = attributes(request, callId);
-                    // Null means GLOBAL only for tools which have no target parameter.
-                    if (hasTarget(request) && target == null) target = 0L;
-                    final Long actual = target;
                     long started = System.nanoTime();
-                    event(recorder, origin, actual, base, "CALLED", 0L, null, null);
-                    final Object result;
-                    try { result = method.invoke(delegate, arguments); }
-                    catch (InvocationTargetException error) {
-                        observeError(recorder, origin, actual, base, started, error.getCause());
-                        throw error.getCause();
-                    }
-                    if (result instanceof CompletableFuture<?> future) {
-                        // whenComplete attaches observation; return the delegate's ORIGINAL future.
-                        future.whenComplete((reply, error) -> {
-                            if (error != null) observeError(recorder, origin, actual, base, started, error);
-                            else observeResult(recorder, index, origin, request, actual, base, started, (ToolExecutionResult) reply);
-                        });
-                    } else observeResult(recorder, index, origin, request, actual, base, started, (ToolExecutionResult) result);
-                    return result;
+                    CompletableFuture<Void> observation = recorder.observationStarted();
+                    boolean deferred = false;
+                    try {
+                        event(recorder, origin, actual, base, "CALLED", 0L, null, null);
+                        final Object result;
+                        try { result = method.invoke(delegate, arguments); }
+                        catch (InvocationTargetException error) {
+                            observeError(recorder, origin, actual, base, started, error.getCause());
+                            throw error.getCause();
+                        }
+                        if (result instanceof CompletableFuture<?> future) {
+                            deferred = true;
+                            // Track the observation separately and return the delegate's ORIGINAL future.
+                            try {
+                                future.whenComplete((reply, error) -> {
+                                    try {
+                                        if (error != null) observeError(recorder, origin, actual, base, started, error);
+                                        else observeResult(recorder, index, origin, request, actual, base, started, (ToolExecutionResult) reply);
+                                    } catch (Throwable failure) { recorder.onObservationFailure(failure); }
+                                    finally { recorder.observationFinished(observation); }
+                                });
+                            } catch (Throwable failure) {
+                                recorder.onObservationFailure(failure);
+                                recorder.observationFinished(observation);
+                            }
+                        } else observeResult(recorder, index, origin, request, actual, base, started, (ToolExecutionResult) result);
+                        return result;
+                    } finally { if (!deferred) recorder.observationFinished(observation); }
                 });
     }
 
-    private static boolean hasTarget(ToolExecutionRequest request) {
-        return Set.of("get_order", "get_logistics", "get_refund_eligibility", "submit_refund", "get_product_detail").contains(request.name());
-    }
     private static Long actualTarget(ToolExecutionRequest request) {
+        String field = switch (request.name()) {
+            case "get_order", "get_logistics", "get_refund_eligibility", "submit_refund" -> "orderId";
+            case "get_product_detail" -> "productId";
+            default -> null;
+        };
+        // Global tools have no target argument; unrelated JSON members cannot create one.
+        if (field == null) return null;
         try {
             JsonNode args = JSON.readTree(request.arguments());
-            return id(args == null ? null : args.get(request.name().equals("get_product_detail") ? "productId" : "orderId"));
-        } catch (Exception ignored) { return null; }
+            Long target = id(args == null ? null : args.get(field));
+            return target == null ? 0L : target;
+        } catch (Exception ignored) { return 0L; }
     }
     private static Long id(JsonNode node) {
         if (node != null && node.isIntegralNumber() && node.canConvertToLong() && node.longValue() > 0) return node.longValue();
@@ -96,7 +111,7 @@ public final class ObservedMcpClient {
                 }
                 recorder.returnedTargets(origin, (String) base.get("callId"), aliases);
             }
-        } catch (RuntimeException failure) { recorder.onObservationFailure(failure); }
+        } catch (Throwable failure) { recorder.onObservationFailure(failure); }
     }
     private static void observeError(SafeEventRecorder recorder, SafeEventRecorder.Turn origin, Long target,
                                      Map<String, Object> base, long started, Throwable error) {
@@ -108,7 +123,7 @@ public final class ObservedMcpClient {
                     code = businessCode(parse(cause.getMessage()));
             }
             event(recorder, origin, target, base, code == null ? "TRANSPORT_ERROR" : "BUSINESS_ERROR", elapsed(started), code, error);
-        } catch (RuntimeException failure) { recorder.onObservationFailure(failure); }
+        } catch (Throwable failure) { recorder.onObservationFailure(failure); }
     }
     private static void event(SafeEventRecorder recorder, SafeEventRecorder.Turn origin, Long target, Map<String, Object> base,
                               String status, long duration, Integer code, Throwable error) {

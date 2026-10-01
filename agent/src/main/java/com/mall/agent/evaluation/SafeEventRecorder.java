@@ -5,7 +5,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.mall.agent.flow.FlowObserver;
 
+import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /** Strict public projection with a sticky failure flag, independent of business decisions. */
 public final class SafeEventRecorder implements FlowObserver {
@@ -22,6 +27,7 @@ public final class SafeEventRecorder implements FlowObserver {
     private final PrivateEvidenceStore store;
     private final ThreadLocal<Turn> turn = new ThreadLocal<>();
     private final List<JsonNode> events = new ArrayList<>();
+    private final Set<CompletableFuture<Void>> pendingObservations = new HashSet<>();
     private long sequence;
     private String errorCategory;
     private boolean missing;
@@ -43,6 +49,42 @@ public final class SafeEventRecorder implements FlowObserver {
     }
 
     Turn captureTurn() { return turn.get(); }
+
+    synchronized CompletableFuture<Void> observationStarted() {
+        CompletableFuture<Void> completion = new CompletableFuture<>();
+        pendingObservations.add(completion);
+        return completion;
+    }
+
+    void observationFinished(CompletableFuture<Void> completion) {
+        synchronized (this) { pendingObservations.remove(completion); }
+        completion.complete(null);
+    }
+
+    /** After stopping new calls, drain observations before exporting public and private snapshots. */
+    public boolean awaitObservations(Duration timeout) {
+        Objects.requireNonNull(timeout);
+        if (timeout.isNegative()) throw new IllegalArgumentException("Negative observation timeout");
+        long budget = timeout.toNanos(), started = System.nanoTime();
+        while (true) {
+            CompletableFuture<?>[] pending;
+            synchronized (this) {
+                if (pendingObservations.isEmpty()) return !missing;
+                pending = pendingObservations.toArray(CompletableFuture<?>[]::new);
+            }
+            // Never hold the recorder monitor while callbacks need it to emit their evidence.
+            try {
+                CompletableFuture.allOf(pending).get(Math.max(0, budget - (System.nanoTime() - started)), TimeUnit.NANOSECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                onObservationFailure(interrupted);
+                return false;
+            } catch (ExecutionException | TimeoutException failure) {
+                onObservationFailure(failure);
+                return false;
+            }
+        }
+    }
 
     @Override public void onEvent(String phase, Long targetId, Map<String, Object> attributes) {
         record(captureTurn(), phase, targetId, attributes);
@@ -127,7 +169,7 @@ public final class SafeEventRecorder implements FlowObserver {
     private void append(JsonNode record) { store.append(record); }
     private void mark(String category) { missing = true; if (errorCategory == null) errorCategory = category; }
     @Override public synchronized void onObservationFailure(Throwable failure) { mark("MISSING_EVIDENCE"); }
-    public synchronized boolean evidenceComplete() { return !missing; }
+    public synchronized boolean evidenceComplete() { return !missing && pendingObservations.isEmpty(); }
     public synchronized String errorCategory() { return errorCategory; }
     public synchronized List<JsonNode> snapshot() { return events.stream().<JsonNode>map(JsonNode::deepCopy).toList(); }
 
