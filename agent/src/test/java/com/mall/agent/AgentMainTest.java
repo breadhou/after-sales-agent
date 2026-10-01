@@ -10,6 +10,8 @@ import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.service.tool.ToolExecutionResult;
 import org.junit.jupiter.api.Test;
 
@@ -32,6 +34,42 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgentMainTest {
+
+    @Test
+    void cliRuntimeWithInvalidManifestStillAnswersFaqAndDisablesProductAnswers() {
+        McpClient mcp = (McpClient) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{McpClient.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("listTools")) {
+                        return List.of("get_order", "list_user_orders", "get_logistics").stream()
+                                .map(name -> ToolSpecification.builder().name(name).description(name).build()).toList();
+                    }
+                    throw new AssertionError("FAQ/invalid manifest must not call MCP: " + method.getName());
+                });
+        AtomicInteger explanationCalls = new AtomicInteger();
+        ChatModel model = new ChatModel() {
+            @Override public ChatResponse doChat(ChatRequest request) {
+                if (request.toolSpecifications() == null || request.toolSpecifications().isEmpty()) {
+                    explanationCalls.incrementAndGet();
+                    return ChatResponse.builder().aiMessage(new AiMessage(
+                            "{\"narrative\":\"请以所引资料原文为准。\",\"citedSourceIds\":[\"FAQ-006\"]}")).build();
+                }
+                var last = request.messages().get(request.messages().size() - 1);
+                return ChatResponse.builder().aiMessage(last instanceof UserMessage
+                        ? AiMessage.from(ToolExecutionRequest.builder().id("explain-1")
+                                .name("request_explanation").arguments("{\"orderId\":0}").build())
+                        : new AiMessage("资料答复")).build();
+            }
+        };
+        AgentRuntime runtime = AgentMain.createRuntime(mcp, model,
+                Map.of("DEMO_PRODUCT_MANIFEST", "invalid" + (char) 0 + "path"), "session-1");
+
+        String product = runtime.coordinator().handleTurn("session-1", "当前亚麻袋商品价格？");
+        assertTrue(product.contains("无可靠依据"), product);
+        assertEquals(0, explanationCalls.get());
+        String faq = runtime.coordinator().handleTurn("session-1", "物流查询失败怎么办？");
+        assertTrue(faq.contains("[FAQ-006]"), faq);
+        assertEquals(1, explanationCalls.get());
+    }
 
     @Test
     void runtimeExplanationServiceUsesFaqWithoutMcpTools() {
