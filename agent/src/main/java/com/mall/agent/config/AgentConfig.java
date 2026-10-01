@@ -9,6 +9,8 @@ import com.mall.agent.tools.EscalationTools;
 import com.mall.agent.tools.ExplanationRequestTools;
 import com.mall.agent.tools.RefundHandoffTools;
 import com.mall.agent.trace.ToolTrace;
+import com.mall.agent.flow.FlowObserver;
+import dev.langchain4j.service.output.OutputParsingException;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.mcp.McpToolProvider;
 import dev.langchain4j.mcp.client.DefaultMcpClient;
@@ -134,6 +136,12 @@ public final class AgentConfig {
 
     /** 复核失败时保守驳回，避免任何异常成为绕过复核的通路。 */
     public static ReviewVerdict reviewSafely(ReviewAgent agent, RefundReviewContext context) {
+        return reviewSafely(agent, context, FlowObserver.NOOP);
+    }
+
+    public static ReviewVerdict reviewSafely(ReviewAgent agent, RefundReviewContext context, FlowObserver observer) {
+        Long actualTarget = context == null || context.candidateAction() == null ? null : context.candidateAction().orderId();
+        FlowObserver.event(observer, "REVIEW", actualTarget, Map.of("role", "REVIEW", "status", "STARTED"));
         try {
             ReviewVerdict verdict = agent.review("""
                     原始用户诉求：%s
@@ -159,13 +167,31 @@ public final class AgentConfig {
                     context.policyEvidence().clauseText()));
             if (verdict == null) {
                 ToolTrace.record("review", ToolTrace.Status.TRANSPORT_ERROR);
+                FlowObserver.event(observer, "REVIEW", actualTarget,
+                        Map.of("role", "REVIEW", "status", "FAILED", "errorCategory", "MODEL_ERROR", "reviewOutcome", "ERROR"));
                 return null;
             }
+            observeVerdict(observer, actualTarget, context, verdict);
             return verdict;
         } catch (Exception e) {
             ToolTrace.record("review", ToolTrace.Status.TRANSPORT_ERROR);
             log.error("复核调用失败，按驳回处理");
+            FlowObserver.event(observer, "REVIEW", actualTarget, Map.of(
+                    "role", "REVIEW", "status", "FAILED", "exceptionClass", e.getClass().getName(),
+                    "errorCategory", e instanceof OutputParsingException ? "REVIEW_FORMAT_ERROR" : "MODEL_ERROR", "reviewOutcome", "ERROR"));
             return null;
+        }
+    }
+
+    private static void observeVerdict(FlowObserver observer, Long actualTarget, RefundReviewContext context, ReviewVerdict verdict) {
+        try {
+            boolean valid = verdict.validFor(context.policyEvidence().code());
+            FlowObserver.event(observer, "REVIEW", actualTarget, Map.of("role", "REVIEW",
+                    "status", !valid ? "FAILED" : verdict.approved() ? "COMPLETED" : "REJECTED",
+                    "reviewOutcome", !valid ? "INVALID" : verdict.approved() ? "APPROVED" : "REJECTED"));
+        } catch (RuntimeException failure) {
+            FlowObserver.event(observer, "REVIEW", actualTarget, Map.of("role", "REVIEW", "status", "FAILED",
+                    "reviewOutcome", "INVALID", "exceptionClass", failure.getClass().getName(), "errorCategory", "REVIEW_FORMAT_ERROR"));
         }
     }
 }

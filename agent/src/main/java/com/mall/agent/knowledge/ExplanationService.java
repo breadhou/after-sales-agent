@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mall.agent.policy.CatalogSnapshot;
 import com.mall.agent.policy.PolicyCatalogConsumer;
 import com.mall.agent.policy.PolicyEvidence;
+import com.mall.agent.flow.FlowObserver;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.mcp.client.McpClient;
 import dev.langchain4j.service.SystemMessage;
@@ -63,17 +64,37 @@ public final class ExplanationService {
     private final Generator generator;
     private final TermRanker ranker = new TermRanker();
     private final List<FaqCorpus.FaqDocument> faq;
+    private final FlowObserver observer;
+    private final ThreadLocal<String> replyKind = new ThreadLocal<>();
+    private final ThreadLocal<Long> orderTarget = new ThreadLocal<>();
 
     public ExplanationService(McpClient mcp, Set<Long> allowedProductIds, Generator generator) {
+        this(mcp, allowedProductIds, generator, FlowObserver.NOOP);
+    }
+
+    public ExplanationService(McpClient mcp, Set<Long> allowedProductIds, Generator generator, FlowObserver observer) {
         this.mcp = Objects.requireNonNull(mcp);
         this.allowedProductIds = Set.copyOf(Objects.requireNonNull(allowedProductIds));
         this.generator = Objects.requireNonNull(generator);
         this.products = new CurrentProductIndex(mcp);
         this.policies = new PolicyCatalogConsumer(mcp);
         this.faq = FaqCorpus.load();
+        this.observer = Objects.requireNonNullElse(observer, FlowObserver.NOOP);
     }
 
     public String answer(String originalInput, Long orderId) {
+        replyKind.set("TRUSTED_TEMPLATE");
+        orderTarget.set(orderId);
+        FlowObserver.event(observer, "EXPLANATION", orderId, Map.of("role", "EXPLANATION", "status", "STARTED"));
+        try {
+            String answer = answerInternal(originalInput, orderId);
+            FlowObserver.event(observer, "EXPLANATION", orderId, Map.of("role", "EXPLANATION", "status", "COMPLETED",
+                    "replyKind", replyKind.get()));
+            return answer;
+        } finally { replyKind.remove(); orderTarget.remove(); }
+    }
+
+    private String answerInternal(String originalInput, Long orderId) {
         if (originalInput == null || originalInput.isBlank()) return NO_BASIS;
         if (historicalDescriptionQuestion(originalInput)) {
             return "无法由当前目录核定商品是否符合下单时描述，请联系人工客服核查历史页面或订单承诺。";
@@ -177,7 +198,9 @@ public final class ExplanationService {
                 context.append(source.id()).append("：").append(source.text()).append("\n");
             }
             draft = generator.generate(context.toString());
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException failure) {
+            FlowObserver.event(observer, "EXPLANATION", orderTarget.get(), Map.of("role", "EXPLANATION", "status", "FAILED",
+                    "exceptionClass", failure.getClass().getName()));
             // Source-original fallback is preferable to a model error or invented outcome.
         }
 
@@ -192,33 +215,50 @@ public final class ExplanationService {
         boolean generalPolicy = GENERAL_POLICY_LIMIT.equals(prefix);
         StringBuilder answer = new StringBuilder(generalPolicy ? "" : prefix);
         for (Source source : cited) {
+            FlowObserver.source(observer, source.id(), source.text(), source.digest() == null
+                    ? FlowObserver.textDigest(source.text()) : source.digest());
             if (!answer.isEmpty()) answer.append("\n");
             answer.append("[").append(source.id()).append("] ").append(source.text());
         }
         if (valid) answer.append("\n补充说明：").append(draft.narrative());
         if (generalPolicy) answer.append("\n").append(GENERAL_POLICY_LIMIT);
+        replyKind.set("SOURCE_ORIGINAL");
         return answer.toString();
     }
 
     private List<Source> freshSources(List<Source> sources,
                                       CurrentProductIndex.ProductSnapshot snapshot) {
-        if (snapshot == null) return sources;
+        if (snapshot == null) {
+            for (Source source : sources) observeSource(source, "COMPLETED");
+            return sources;
+        }
         List<Source> fresh = new ArrayList<>();
         for (Source source : sources) {
+            observeSource(source, "STARTED");
             try {
                 ProductEvidence checked = products.verifyCitation(snapshot, source.productId()).orElse(null);
                 if (checked == null || !checked.digest().equals(source.digest())
                         || !safeProductSource(productText(checked))) {
+                    observeSource(source, "REJECTED");
                     return List.of();
                 }
                 fresh.add(new Source(checked.sourceId(), productText(checked),
                         checked.productId(), checked.digest()));
-            } catch (RuntimeException ignored) {
+                observeSource(source, "COMPLETED");
+            } catch (RuntimeException failure) {
+                FlowObserver.event(observer, "EXPLANATION", source.productId(), Map.of("role", "EXPLANATION", "status", "FAILED",
+                        "targetKind", "PRODUCT", "exceptionClass", failure.getClass().getName()));
                 // Any failed final reread disables this request, including earlier successes.
                 return List.of();
             }
         }
         return fresh;
+    }
+
+    private void observeSource(Source source, String status) {
+        FlowObserver.event(observer, "EXPLANATION", source.productId() == null ? orderTarget.get() : source.productId(),
+                Map.of("role", "EXPLANATION", "status", status, "targetKind", source.productId() == null ? "ORDER" : "PRODUCT",
+                        "sourceKey", source.id(), "sourceDigest", source.digest() == null ? FlowObserver.textDigest(source.text()) : source.digest()));
     }
 
     private static boolean validDraft(ExplanationDraft draft, Set<String> candidates) {
