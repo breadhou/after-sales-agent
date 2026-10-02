@@ -74,10 +74,11 @@ public final class EvaluationMain {
     private static void runLoaded(Loaded loaded, ModelFactory models, Function<String, McpClient> clients, PrintStream protocol) throws Exception {
         PrintStream oldOut = System.out, oldErr = System.err;
         JsonNode result;
-        try (PrintStream diagnostics = new PrintStream(Files.newOutputStream(loaded.workDir.resolve("worker-private.log")), true, StandardCharsets.UTF_8)) {
+        TrialExecutor.OutputDirectory output = TrialExecutor.prepareOutputDirectory(loaded.workDir);
+        try (PrintStream diagnostics = new PrintStream(Files.newOutputStream(output.path().resolve("worker-private.log")), true, StandardCharsets.UTF_8)) {
             System.setOut(diagnostics); System.setErr(diagnostics);
             try {
-                result = new TrialExecutor(clients, models.create()).execute(loaded.spec, loaded.bindings, loaded.workDir,
+                result = new TrialExecutor(clients, models.create()).execute(loaded.spec, loaded.bindings, output,
                         loaded.config.path("requestAllowance").intValue(), loaded.config.path("reportedTokenAllowance").longValue());
             } finally { System.setOut(oldOut); System.setErr(oldErr); }
         }

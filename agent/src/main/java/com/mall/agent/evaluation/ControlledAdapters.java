@@ -2,6 +2,9 @@ package com.mall.agent.evaluation;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.LongNode;
 import com.mall.agent.flow.FlowObserver;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
@@ -24,10 +27,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
 
 /** Evaluation-only substitutions, installed above actual provider/MCP instrumentation. */
 public final class ControlledAdapters {
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final Pattern PLACEHOLDER = Pattern.compile("\\{\\{([a-z][a-z0-9-]{0,63})}}");
     private ControlledAdapters() { }
 
     public static ChatModel model(ChatModel delegate, JsonNode control) {
@@ -35,6 +41,10 @@ public final class ControlledAdapters {
     }
 
     static ChatModel model(ChatModel delegate, JsonNode control, String role, FlowObserver observer) {
+        return model(delegate, control, role, observer, null);
+    }
+
+    static ChatModel model(ChatModel delegate, JsonNode control, String role, FlowObserver observer, JsonNode bindings) {
         if (!"MODEL_SCRIPT".equals(control.path("point").asText())
                 || !role.equals(control.path("script").path("role").asText())) return delegate;
         if (!"SUBSTITUTED".equals(control.path("components").path(role).asText()))
@@ -54,7 +64,7 @@ public final class ControlledAdapters {
                 int i = 0;
                 for (JsonNode call : response.path("toolCalls")) calls.add(ToolExecutionRequest.builder()
                         .id("script-tool-"+step+"-"+(i++)).name(call.path("name").textValue())
-                        .arguments(call.path("arguments").toString()).build());
+                        .arguments(bindScriptArguments(call.path("arguments"), bindings).toString()).build());
                 String text = response.has("text") ? response.path("text").textValue() : null;
                 AiMessage message = calls.isEmpty() ? new AiMessage(text) : text == null
                         ? AiMessage.from(calls) : AiMessage.from(text, calls);
@@ -63,6 +73,27 @@ public final class ControlledAdapters {
             @Override public ChatResponse chat(ChatRequest request) { return scripted(); }
             @Override public ChatResponse chat(ChatRequest request, ChatRequestOptions options) { return scripted(); }
         };
+    }
+
+    /** Exact declared business aliases only; arbitrary untrusted script shapes remain intact. */
+    private static JsonNode bindScriptArguments(JsonNode value, JsonNode bindings) {
+        if (bindings != null && value.isTextual()) {
+            Matcher match = PLACEHOLDER.matcher(value.textValue());
+            if (match.matches()) {
+                String alias = match.group(1);
+                if (bindings.path("orders").has(alias)) return LongNode.valueOf(Long.parseLong(bindings.path("orders").path(alias).path("orderId").textValue()));
+                if (bindings.path("products").has(alias)) return LongNode.valueOf(Long.parseLong(bindings.path("products").path(alias).path("productId").textValue()));
+            }
+        }
+        if (value.isObject()) {
+            ObjectNode copy = JSON.createObjectNode();
+            value.fields().forEachRemaining(field -> copy.set(field.getKey(), bindScriptArguments(field.getValue(), bindings)));
+            return copy;
+        }
+        if (value.isArray()) {
+            ArrayNode copy = JSON.createArrayNode(); value.forEach(item -> copy.add(bindScriptArguments(item, bindings))); return copy;
+        }
+        return value.deepCopy();
     }
 
     public static McpClient mcp(McpClient delegate, JsonNode control, FlowObserver observer) {

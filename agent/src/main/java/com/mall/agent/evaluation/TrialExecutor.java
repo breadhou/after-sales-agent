@@ -22,6 +22,7 @@ import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -32,6 +33,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -51,9 +53,13 @@ public final class TrialExecutor {
     }
 
     public JsonNode execute(CaseSpec spec, JsonNode bindings, Path workDir, int requestAllowance, long reportedTokenAllowance) {
+        return execute(spec, bindings, prepareOutputDirectory(workDir), requestAllowance, reportedTokenAllowance);
+    }
+
+    JsonNode execute(CaseSpec spec, JsonNode bindings, OutputDirectory output, int requestAllowance, long reportedTokenAllowance) {
         JsonNode document = Objects.requireNonNull(spec).document();
         validateBindings(document, bindings);
-        Path directory = confinedDirectory(workDir);
+        Path directory = output.consume();
         PrivateEvidenceStore store = new PrivateEvidenceStore(directory);
         BindingIndex index = BindingIndex.fromPrivateJson(bindings);
         SafeEventRecorder recorder = new SafeEventRecorder(bindings.path("runId").textValue(), document.path("caseId").textValue(),
@@ -72,7 +78,7 @@ public final class TrialExecutor {
             } else {
                 Map<String, ChatModel> roles = new HashMap<>();
                 for (String role : List.of("DIALOGUE", "REVIEW", "EXPLANATION"))
-                    roles.put(role, roleModel(role, mode, control, budget, recorder, deadline));
+                    roles.put(role, roleModel(role, mode, control, bindings, budget, recorder, deadline));
                 if (mode.equals("REVIEW_ONLY")) {
                     try (AutoCloseable ignored = recorder.beginTurn("review", 0)) {
                         RefundReviewContext context = reviewContext(document.path("reviewInput"));
@@ -85,10 +91,10 @@ public final class TrialExecutor {
                         store.writeFinalReply("review", 0, verdict == null ? "REVIEW_UNAVAILABLE" : JSON.writeValueAsString(verdict));
                     }
                 } else if (mode.equals("CONTROLLED") && control.path("target").asText().equals("MCP_CONTRACT")) {
-                    try (AutoCloseable ignored = recorder.beginTurn("mcp-contract", 0)) {
-                        McpClient client = client(bindings.path("activeActor").textValue(), owned, writes, index, recorder);
-                        int step = 0;
-                        for (JsonNode call : control.path("toolCalls")) {
+                    McpClient client = client(bindings.path("activeActor").textValue(), owned, writes, index, recorder);
+                    int step = 0;
+                    for (JsonNode call : control.path("toolCalls")) {
+                        try (AutoCloseable ignored = recorder.beginTurn("mcp-contract", step)) {
                             checkDeadline(deadline);
                             ObjectNode arguments = (ObjectNode)call.path("arguments").deepCopy();
                             for (String field : List.of("orderId", "productId")) if (arguments.has(field)) {
@@ -100,10 +106,11 @@ public final class TrialExecutor {
                             }
                             var reply = client.executeTool(ToolExecutionRequest.builder().name(call.path("toolName").textValue())
                                     .arguments(arguments.toString()).build());
-                            store.writeFinalReply("mcp-contract", step++, reply == null || reply.resultText() == null ? "MCP_UNAVAILABLE" : reply.resultText());
+                            store.writeFinalReply("mcp-contract", step, reply == null || reply.resultText() == null ? "MCP_UNAVAILABLE" : reply.resultText());
                             if (reply == null) error(recorder, "MISSING_EVIDENCE");
                             if (writes.unknown()) break;
                         }
+                        step++;
                     }
                 } else {
                     if (mode.equals("CONTROLLED") && (!Set.of("REAL", "SUBSTITUTED").contains(control.path("components").path("MCP").asText())
@@ -169,7 +176,7 @@ public final class TrialExecutor {
         return result;
     }
 
-    private ChatModel roleModel(String role, String mode, JsonNode control, TrialBudget budget, SafeEventRecorder recorder, long deadline) {
+    private ChatModel roleModel(String role, String mode, JsonNode control, JsonNode bindings, TrialBudget budget, SafeEventRecorder recorder, long deadline) {
         ChatModel unavailable = new ChatModel() {
             @Override public ChatResponse doChat(ChatRequest request) {
                 FlowObserver.event(recorder, ControlledAdapters.phase(role), null, Map.of("role", role, "status", "FAILED", "errorCategory", "MISSING_EVIDENCE"));
@@ -195,7 +202,7 @@ public final class TrialExecutor {
         String state = control.path("components").path(role).asText();
         if (state.equals("REAL")) return guarded;
         if (state.equals("SUBSTITUTED") && role.equals(control.path("script").path("role").asText()))
-            return ControlledAdapters.model(guarded, control, role, recorder);
+            return ControlledAdapters.model(guarded, control, role, recorder, bindings);
         return unavailable;
     }
 
@@ -245,6 +252,28 @@ public final class TrialExecutor {
             if (!normalized.toRealPath().equals(normalized)) throw new IllegalArgumentException("Evidence directory escapes scope");
             return normalized;
         } catch (IOException failure) { throw new java.io.UncheckedIOException(failure); }
+    }
+
+    /** Claims a fresh output scope before opening any sensitive sink or business component. */
+    static OutputDirectory prepareOutputDirectory(Path path) {
+        Path directory = confinedDirectory(path);
+        try (var entries = Files.list(directory)) {
+            if (entries.findAny().isPresent()) throw new IllegalArgumentException("Worker output directory is already occupied");
+            // CREATE_NEW establishes one owner; the marker stays even after a failed attempt.
+            Files.writeString(directory.resolve("worker-output-owner"), "schemaVersion=1\n", StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
+            return new OutputDirectory(directory);
+        } catch (IOException failure) { throw new IllegalArgumentException("Cannot claim worker output directory", failure); }
+    }
+
+    static final class OutputDirectory {
+        private final Path path;
+        private final AtomicBoolean used = new AtomicBoolean();
+        private OutputDirectory(Path path) { this.path = path; }
+        Path path() { return path; }
+        private Path consume() {
+            if (!used.compareAndSet(false, true)) throw new IllegalArgumentException("Worker output ownership already consumed");
+            return path;
+        }
     }
 
     private static void validateBindings(JsonNode document, JsonNode b) {

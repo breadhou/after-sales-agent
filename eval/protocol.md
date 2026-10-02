@@ -90,6 +90,8 @@ An `Event` requires `runId`, `caseId`, `trialId`, `sessionAlias`, `turnIndex`, `
 
 WorkerResult file references resolve against the confined `workDir`; private `FINAL_REPLY.file` references resolve against the private evidence manifest's parent directory. Both consumers retain these internal path scopes rather than inferring a root from a relative filename.
 
+Before opening diagnostics, private snapshots or business components, the worker requires an empty `workDir` and claims it with a private `worker-output-owner` marker created exclusively. Any pre-existing entry (including a link, prior evidence or a partial attempt) is refused; a claimed directory is consumed by one execution and is never silently reused. The marker remains after failure. This covers every generated sink without changing the public wire or the six private evidence record kinds.
+
 `TrialResult` has exactly `{schemaVersion, runId, caseId, trialId, status, automaticStatus, failedCriteria, manualReview}`. Both statuses are `PASS|FAIL|ERROR|SKIPPED`; `failedCriteria` is a unique list of non-empty criterion identifiers; `manualReview` is `PENDING|PASS|FAIL|NOT_REQUIRED`. Status is produced by the judge, not by a worker assertion.
 
 Public error categories are `FIXTURE_ERROR`, `UNBOUND_TARGET`, `MISSING_EVIDENCE`, `MODEL_ERROR`, `REVIEW_FORMAT_ERROR`, `BUDGET_STOP`, `UNRESOLVED_WRITE`, and `FIXTURE_CREATION_UNKNOWN`. Serialize only the category and, where available in the event contract, a numeric HTTP/business code. Do not serialize exception messages, stack traces, credentials, prompts, or raw responses in public records.

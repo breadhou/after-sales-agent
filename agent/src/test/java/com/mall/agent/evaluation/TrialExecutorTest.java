@@ -24,6 +24,7 @@ import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.FileSystemException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -193,12 +194,174 @@ class TrialExecutorTest {
         assertEquals("NOT_SENT", result.path("terminalEvidence").asText());
     }
 
-    @Test void missingPrivateSinkCannotProduceCompleteWorkerEvidence() throws Exception {
+    @Test void preexistingPrivateSinkIsRejectedBeforeCreatingBusinessComponents() throws Exception {
         Files.writeString(directory.resolve("evidence.json"), "occupied");
         Files.delete(directory.resolve("evidence.json"));
         Files.createDirectory(directory.resolve("evidence.json"));
-        JsonNode result = execute(live(), new FakeMcp(), new ReplyModel(APPROVED), 12);
-        assertEquals("MISSING_EVIDENCE", result.path("errorCategory").asText());
+        FakeMcp mcp = new FakeMcp();
+        ReplyModel model = new ReplyModel(APPROVED);
+        assertThrows(IllegalArgumentException.class, () -> execute(live(), mcp, model, 12));
+        assertEquals(0, mcp.closed.get());
+        assertTrue(model.requests.isEmpty());
+    }
+
+    @Test void allGeneratedSinksRejectPreexistingOutputBeforePrivateWritesOrBusinessCalls() throws Exception {
+        int sinkIndex = 0;
+        for (String sink : generatedSinks()) {
+            Path output = directory.resolve("occupied-"+sinkIndex++);
+            Files.createDirectory(output);
+            Path external = directory.resolve("external-"+sinkIndex+".txt");
+            Files.writeString(external, "external-sentinel");
+            Files.createLink(output.resolve(sink), external);
+            AtomicInteger clients = new AtomicInteger();
+            ReplyModel model = new ReplyModel(APPROVED);
+            CaseSpec spec = CaseSpec.parse(live());
+            assertAll(sink,
+                    () -> assertThrows(IllegalArgumentException.class, () -> new TrialExecutor(alias -> {
+                        clients.incrementAndGet(); return new FakeMcp().client;
+                    }, model).execute(spec, bindings(), output, 12, 10000)),
+                    () -> assertEquals("external-sentinel", Files.readString(external)),
+                    () -> assertEquals(0, clients.get()),
+                    () -> assertTrue(model.requests.isEmpty()));
+        }
+    }
+
+    @Test void mainRejectsEveryPreexistingGeneratedSinkWithoutSuccessfulWire() throws Exception {
+        int sinkIndex = 0;
+        for (String sink : generatedSinks()) {
+            Path runsRoot = directory.resolve("main-occupied-"+sinkIndex++);
+            Path config = writeWorkerConfig(runsRoot);
+            Path output = config.getParent().resolve("worker");
+            Files.createDirectory(output);
+            Files.writeString(output.resolve(sink), "owned-output-sentinel");
+            AtomicInteger clients = new AtomicInteger();
+            ReplyModel model = new ReplyModel(APPROVED);
+            ByteArrayOutputStream wire = new ByteArrayOutputStream();
+            assertAll(sink,
+                    () -> assertThrows(IllegalArgumentException.class, () -> EvaluationMain.run(config, runsRoot,
+                            alias -> { clients.incrementAndGet(); return new FakeMcp().client; }, model,
+                            new PrintStream(wire, true, StandardCharsets.UTF_8))),
+                    () -> assertEquals("owned-output-sentinel", Files.readString(output.resolve(sink))),
+                    () -> assertEquals(0, clients.get()),
+                    () -> assertTrue(model.requests.isEmpty()),
+                    () -> assertEquals(0, wire.size()));
+        }
+    }
+
+    @Test void preexistingSymlinkCannotReplaceExternalPrivateFileWhenCapabilityIsAvailable() throws Exception {
+        Path external = directory.resolve("external-link-sentinel.txt");
+        Files.writeString(external, "external-sentinel");
+        Path probe = directory.resolve("link-capability-probe");
+        try { Files.createSymbolicLink(probe, external); }
+        catch (UnsupportedOperationException | FileSystemException unavailable) {
+            System.out.println("TASK8_SYMLINK_CAPABILITY=UNAVAILABLE:"+unavailable.getClass().getSimpleName());
+            // Unconditional plain-file/directory and hard-link ownership regressions above remain required.
+            return;
+        }
+        System.out.println("TASK8_SYMLINK_CAPABILITY=AVAILABLE");
+        for (String sink : generatedSinks()) {
+            Path root = directory.resolve("symbolic-"+sink.replace('.', '-'));
+            Path config = writeWorkerConfig(root);
+            Path output = config.getParent().resolve("worker");
+            Files.createDirectory(output);
+            Files.createSymbolicLink(output.resolve(sink), external);
+            ByteArrayOutputStream wire = new ByteArrayOutputStream();
+            AtomicInteger clients = new AtomicInteger();
+            ReplyModel model = new ReplyModel(APPROVED);
+            assertAll(sink,
+                    () -> assertThrows(IllegalArgumentException.class, () -> EvaluationMain.run(config, root,
+                            alias -> { clients.incrementAndGet(); return new FakeMcp().client; }, model,
+                            new PrintStream(wire, true, StandardCharsets.UTF_8))),
+                    () -> assertEquals("external-sentinel", Files.readString(external)),
+                    () -> assertEquals(0, clients.get()),
+                    () -> assertTrue(model.requests.isEmpty()),
+                    () -> assertEquals(0, wire.size()));
+        }
+    }
+
+    @Test void declaredScriptTargetsReachActualHandoffAndReadToolsAsExactIds() throws Exception {
+        ObjectNode c = scriptedDialogue();
+        c.set("turns", JSON.createArrayNode());
+        addTurn(c, "session-a", "请退订单 {{order-a}}，理由：不想要了");
+        addTurn(c, "session-a", "/confirm-refund {{order-a}}");
+        ObjectNode handoffArgs = JSON.createObjectNode().put("orderId", "{{order-a}}").put("reason", "不想要了");
+        setScript(c, JSON.createArrayNode()
+                .add(JSON.createObjectNode().set("toolCalls", JSON.createArrayNode().add(JSON.createObjectNode()
+                        .put("name", "get_order").set("arguments", JSON.createObjectNode().put("orderId", "{{order-a}}")))))
+                .add(JSON.createObjectNode().set("toolCalls", JSON.createArrayNode().add(JSON.createObjectNode()
+                        .put("name", "handoff_refund").set("arguments", handoffArgs))))
+                .add(JSON.createObjectNode().put("text", "请确认退款申请。")));
+        FakeMcp mcp = new FakeMcp();
+        ReplyModel provider = new ReplyModel(APPROVED);
+        JsonNode result = execute(c, mcp, provider, 12);
+        assertTrue(result.path("errorCategory").isNull(), result.toString());
+        assertEquals(1, mcp.submits());
+        assertTrue(Files.readString(directory.resolve("reply-session-a-0.txt")).contains("/confirm-refund "+ORDER));
+        assertTrue(mcp.calls.stream().filter(call -> call.name().equals("get_order") || call.name().equals("submit_refund"))
+                .allMatch(call -> { try { return JSON.readTree(call.arguments()).path("orderId").longValue()==ORDER; } catch (Exception e) { return false; } }));
+        assertEquals(1, provider.requests.size(), "Only the independent review is a provider call");
+        assertEquals(1, result.path("metering").path("logicalModelRequests").asInt());
+    }
+
+    @Test void scriptAliasBindingPreservesUnknownToolsAndOtherUntrustedArguments() throws Exception {
+        ObjectNode c = scriptedDialogue();
+        ObjectNode original = JSON.createObjectNode().put("orderId", "{{order-a}}").put("productId", "{{product-a}}")
+                .put("actor", "{{actor-a}}").put("unknown", "{{not-declared}}").put("text", "prefix {{order-a}} suffix")
+                .set("nested", JSON.createArrayNode().add(JSON.createObjectNode().put("target", "{{order-a}}")));
+        setScript(c, JSON.createArrayNode().add(JSON.createObjectNode().set("toolCalls", JSON.createArrayNode()
+                .add(JSON.createObjectNode().put("name", "unregistered_attack_tool").set("arguments", original)))));
+        ChatModel provider = new ChatModel() { @Override public ChatResponse doChat(ChatRequest request) { throw new AssertionError("Unexpected provider"); } };
+        ChatResponse response = ControlledAdapters.model(provider, c.path("control"))
+                .chat(ChatRequest.builder().messages(UserMessage.from("script request")).build());
+        ToolExecutionRequest tool = response.aiMessage().toolExecutionRequests().get(0);
+        assertEquals("unregistered_attack_tool", tool.name());
+        assertEquals(original, JSON.readTree(tool.arguments()), "A binding-free adapter still represents arbitrary unknown tools");
+        c.set("turns", JSON.createArrayNode()); addTurn(c, "session-a", "请核对订单 {{order-a}}。");
+        setScript(c, JSON.createArrayNode().add(JSON.createObjectNode().set("toolCalls", JSON.createArrayNode()
+                .add(JSON.createObjectNode().put("name", "get_order").set("arguments", original))))
+                .add(JSON.createObjectNode().put("text", "脚本只读查询已结束。")));
+        FakeMcp mcp = new FakeMcp();
+        JsonNode result = execute(c, mcp, provider, 0);
+        assertTrue(result.path("errorCategory").isNull(), result.toString());
+        assertEquals(1, mcp.calls.size());
+        JsonNode args = JSON.readTree(mcp.calls.get(0).arguments());
+        assertTrue(args.path("orderId").isIntegralNumber());
+        assertEquals(ORDER, args.path("orderId").longValue());
+        assertEquals(9007199254742001L, args.path("productId").longValue());
+        assertEquals(ORDER, args.path("nested").get(0).path("target").longValue());
+        assertEquals("{{actor-a}}", args.path("actor").textValue());
+        assertEquals("{{not-declared}}", args.path("unknown").textValue());
+        assertEquals("prefix {{order-a}} suffix", args.path("text").textValue());
+        assertEquals("{{order-a}}", original.path("orderId").textValue(), "Caller data stays detached/untrusted");
+    }
+
+    @Test void eachDirectMcpStepUsesSamePublicAndPrivateEvidenceIndex() throws Exception {
+        ObjectNode c = controlled("NONE");
+        ObjectNode ctrl = (ObjectNode)c.path("control");
+        ctrl.put("target", "MCP_CONTRACT").put("usesRealModel", false);
+        ((ObjectNode)ctrl.path("components")).put("DIALOGUE", "ABSENT").put("REVIEW", "ABSENT").put("EXPLANATION", "ABSENT");
+        ctrl.set("toolCalls", JSON.createArrayNode()
+                .add(JSON.createObjectNode().put("toolName", "get_order").set("arguments", JSON.createObjectNode().put("orderId", "{{order-a}}")))
+                .add(JSON.createObjectNode().put("toolName", "get_product_detail").set("arguments", JSON.createObjectNode().put("productId", "{{product-a}}"))));
+        FakeMcp mcp = new FakeMcp();
+        JsonNode result = execute(c, mcp, new ReplyModel("never-called"), 0);
+        assertTrue(result.path("errorCategory").isNull(), result.toString());
+        List<JsonNode> called = events(result).stream().filter(e -> e.path("status").asText().equals("CALLED")).toList();
+        assertEquals(2, called.size());
+        assertAll(() -> assertEquals("order-a", called.get(0).path("target").textValue()),
+                () -> assertEquals(0, called.get(0).path("turnIndex").asInt()),
+                () -> assertEquals("product-a", called.get(1).path("target").textValue()),
+                () -> assertEquals(1, called.get(1).path("turnIndex").asInt()));
+        List<JsonNode> finals = privateRecords(result).stream().filter(e -> e.path("kind").asText().equals("FINAL_REPLY")).toList();
+        assertEquals(2, finals.size());
+        for (int step=0; step<2; step++) {
+            int current = step;
+            assertEquals(step, finals.get(step).path("turnIndex").asInt());
+            assertEquals("mcp-contract", finals.get(step).path("sessionAlias").textValue());
+            assertTrue(events(result).stream().anyMatch(e -> e.path("sessionAlias").asText().equals("mcp-contract")
+                    && e.path("turnIndex").asInt()==current && e.path("status").asText().equals("RESPONSE_RECEIVED")));
+        }
+        assertEquals(1, mcp.closed.get());
     }
 
     @Test void workerProtocolUsesConfinedPathsAndOnlySafeStdout() throws Exception {
@@ -304,6 +467,24 @@ class TrialExecutorTest {
         ((ArrayNode)c.path("turns")).add(JSON.createObjectNode().put("sessionAlias", session).put("actorAlias", "actor-a").put("input", text));
     }
     private static ObjectNode controlled(String point) throws Exception { ObjectNode c = live(); c.put("mode", "CONTROLLED"); c.set("control", control(point)); return c; }
+    private static ObjectNode scriptedDialogue() throws Exception {
+        ObjectNode c = controlled("MODEL_SCRIPT");
+        ((ObjectNode)c.path("control").path("components")).put("DIALOGUE", "SUBSTITUTED");
+        return c;
+    }
+    private static void setScript(ObjectNode c, ArrayNode responses) { ((ObjectNode)c.path("control")).set("script", JSON.createObjectNode().put("role", "DIALOGUE").set("responses", responses)); }
+    private static List<String> generatedSinks() { return List.of("worker-private.log", "case-input.json", "binding-input.json", "events.jsonl", "evidence.json", "reply-session-a-0.txt"); }
+    private static Path writeWorkerConfig(Path root) throws Exception {
+        Path trial = root.resolve("run-test/trial-test"); Files.createDirectories(trial);
+        Files.writeString(trial.resolve("case.json"), live().toString());
+        Files.writeString(trial.resolve("bindings.json"), bindings().toString());
+        Files.writeString(trial.resolve("products.json"), "{\"product-a\":9007199254742001}");
+        Path config = trial.resolve("config.json");
+        Files.writeString(config, JSON.createObjectNode().put("schemaVersion", 1).put("runId", "run-test").put("caseId", "NORMAL-001")
+                .put("trialId", "trial-test").put("caseFile", "case.json").put("bindingFile", "bindings.json").put("productManifest", "products.json")
+                .put("workDir", "worker").put("requestAllowance", 12).put("reportedTokenAllowance", 10000).toString());
+        return config;
+    }
     private static ObjectNode control(String point) throws Exception {
         return (ObjectNode)JSON.readTree("{\"target\":\"AGENT_CHAIN\",\"components\":{\"DIALOGUE\":\"REAL\",\"REVIEW\":\"REAL\",\"EXPLANATION\":\"REAL\",\"MCP\":\"REAL\",\"BACKEND\":\"REAL\"},\"usesRealModel\":true,\"point\":\""+point+"\"}");
     }
