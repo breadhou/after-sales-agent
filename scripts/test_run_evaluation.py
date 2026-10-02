@@ -1,0 +1,332 @@
+import copy
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from scripts.test_evaluation_contract import _build_suite_cases, _write_suite
+from scripts import test_evaluation_judge as judge_test
+
+try:
+    from scripts import run_evaluation as runner
+    from scripts.evaluation_fixture_client import FixtureClient
+except ImportError:
+    runner = FixtureClient = None
+
+ROOT = Path(__file__).resolve().parents[1]
+SHARED = json.loads((ROOT / 'eval/fixtures/case-contract.json').read_text(encoding='utf-8-sig'))
+
+
+class BatchTest(unittest.TestCase):
+    def setUp(self):
+        self.assertIsNotNone(runner, 'Task10 batch runner implementation is missing')
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.run = self.root / 'eval/runs/pilot-run'
+        self.cases = _build_suite_cases(SHARED, 'pilot')
+        self.manifest = _write_suite(self.root / 'suite', 'pilot', self.cases)
+        self.patch = patch.object(runner, 'REPO_ROOT', self.root)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+
+    def test_worker_environment_excludes_backend_secrets(self):
+        parent = {'PATH': 'runtime', 'MERCHANT_JWT_SECRET': 'backend', 'SUPERMALL_TOKEN': 'old',
+                  'SPRING_DATASOURCE_PASSWORD': 'db', 'JAVA_TOOL_OPTIONS': 'unsafe', 'MODEL_API_KEY': 'old-model'}
+        environment = runner.build_worker_environment({'MODEL_NAME': 'chosen', 'MODEL_API_KEY': 'new',
+                    'SPRING_DATASOURCE_PASSWORD': 'bad'}, 'new-fixture', 'http://localhost:8081', None, parent)
+        self.assertEqual({'PATH': 'runtime', 'MODEL_NAME': 'chosen', 'MODEL_API_KEY': 'new',
+                          'SUPERMALL_TOKEN': 'new-fixture', 'SUPERMALL_BASE_URL': 'http://localhost:8081'}, environment)
+        self.assertNotIn('SUPERMALL_TOKEN', runner.build_worker_environment({}, None, 'local', None, parent))
+
+    def test_dry_run_makes_no_fixture_or_model_calls(self):
+        with patch.object(runner, 'FixtureClient', side_effect=AssertionError('fixture touched')), \
+             patch.object(runner, '_run_worker', side_effect=AssertionError('model touched')), \
+             patch.object(runner, '_read_env_file', side_effect=AssertionError('credentials read')):
+            result = runner.run_batch(self.manifest, self.run, False, False)
+        self.assertEqual(32, result['plannedTrials'])
+        self.assertTrue(result['dryRun'])
+        self.assertFalse(self.run.exists())
+
+    def test_default_cli_is_dry_run(self):
+        completed = subprocess.run([sys.executable, str(ROOT / 'scripts/run_evaluation.py'),
+            '--manifest', str(self.manifest), '--run-dir', str(ROOT / 'eval/runs/task10-offline-dry')],
+            capture_output=True, text=True, check=False)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertTrue(json.loads(completed.stdout)['dryRun'])
+
+    def test_case_version_change_is_not_silent_resume(self):
+        state = runner._initialize_batch(self.manifest, self.run, False)
+        self.cases[0]['variationRationale'] = 'Changed frozen case'
+        _write_suite(self.root / 'suite', 'pilot', self.cases)
+        with self.assertRaises(ValueError): runner.run_batch(self.manifest, self.run, True, True)
+        self.assertEqual(state['manifestHash'], runner._read_json(self.run / 'batch.json')['manifestHash'])
+
+    def test_resume_keeps_reservations_and_first_results(self):
+        state = runner._initialize_batch(self.manifest, self.run, False)
+        first = state['trials'][0]
+        trial = self.run / first['trialId']; trial.mkdir()
+        result = runner._error_result(state['runId'], first, 'MISSING_EVIDENCE')
+        (trial / 'result.json').write_text(json.dumps(result))
+        first.update(state='COMPLETE', terminated=True, terminalEvidence='NOT_SENT')
+        state['trials'][1]['state'] = 'INFLIGHT'
+        runner._atomic_json(self.run / 'batch.json', state)
+        ledger = runner.BudgetLedger(self.root / 'eval/runs/budget-ledger.json')
+        ledger.reserve(state['runId'] + '.' + state['trials'][1]['trialId'])
+        old = (trial / 'result.json').read_bytes()
+        with patch.object(runner, 'FixtureClient', side_effect=AssertionError('inflight replay')):
+            report = runner.run_batch(self.manifest, self.run, True, True)
+        self.assertEqual('INFLIGHT', report['stopReason'])
+        self.assertEqual(old, (trial / 'result.json').read_bytes())
+        self.assertEqual(12, ledger.snapshot()['chargedRequests'])
+
+    def test_supplement_requires_infrastructure_reason_and_verified_old_write(self):
+        state = runner._initialize_batch(self.manifest, self.run, False)
+        first = state['trials'][0]
+        first.update(state='COMPLETE', terminated=True, terminalEvidence='UNKNOWN')
+        trial = self.run / first['trialId']; trial.mkdir()
+        runner._atomic_json(trial / 'result.json', runner._error_result(state['runId'], first, 'UNRESOLVED_WRITE'))
+        runner._atomic_json(self.run / 'batch.json', state)
+        for reason in (None, 'semantic:wrong answer', 'infrastructure:timeout'):
+            with self.assertRaises(ValueError):
+                runner.run_batch(self.manifest, self.run, True, True, first['caseId'], reason)
+
+    def test_worker_evidence_paths_reject_escape_and_identity_mismatch(self):
+        work = self.root / 'work'; work.mkdir()
+        worker = dict(schemaVersion=1, runId='run', caseId='NORMAL-001', trialId='one',
+            eventsFile='../outside.jsonl', privateEvidenceFile='private.json', terminalEvidence='NOT_SENT',
+            errorCategory=None, metering=dict(logicalModelRequests=0, promptTokens=None, completionTokens=None,
+                totalTokens=None, usageComplete=True, unknownUsageRequests=0))
+        with self.assertRaises(ValueError): runner._load_worker_evidence(worker, work, 'run', 'NORMAL-001', 'one')
+
+    def fixture_helper(self, calls):
+        owner = self
+        class Helper:
+            terminated = True
+            def request(self, message):
+                op = message['op']; calls.append(op)
+                reply = dict(schemaVersion=1, op=op, status='COMPLETED')
+                if op == 'prepare':
+                    relative = '/'.join((message['runId'], message['caseId'], message['trialId']))
+                    path = owner.root / 'backend' / relative; path.mkdir(parents=True)
+                    binding = dict(schemaVersion=1, runId=message['runId'], caseId=message['caseId'], trialId=message['trialId'],
+                        activeActor='actor-a', actors={'actor-a': dict(userId='9007199254740993', userToken='CURRENT_ONLY'),
+                        'actor-b': dict(userId='9007199254740994')}, orders={'order-a': dict(orderId='9007199254741001', orderNo='PRIVATE')},
+                        products={'product-a': dict(productId='9007199254741011', skus={'sku-a': dict(skuId='9007199254741021', price='19.90')})})
+                    runner._exclusive_json(path / 'bindings.json', binding)
+                    reply.update(ledgerPath=relative+'/ledger.json', bindingFile=relative+'/bindings.json')
+                if op == 'oracle':
+                    terminal = message['terminalEvidence']
+                    reply['oracle'] = dict(terminalEvidence=terminal, orders={'order-a': dict(orderStatus='RECEIVED', paidAmount='39.80', refundRows=[], ownerMatches=True)})
+                    if terminal == 'COMPLETED':
+                        reply['oracle']['orders']['order-a'].update(orderStatus='REFUNDED', refundRows=[dict(status='REFUNDED',amount='39.80',ownerMatches=True)])
+                return reply
+            def close(self): calls.append('close'); return True
+        return Helper()
+
+    def worker(self, calls, *, unknown=False, tokens=None):
+        def execute(config_path, environment, trial_root):
+            calls.append('worker')
+            config = runner._read_json(config_path)
+            ledger = runner.BudgetLedger(self.root / 'eval/runs/budget-ledger.json').snapshot()
+            self.assertEqual(12, ledger['chargedRequests'])
+            self.assertEqual('CURRENT_ONLY', environment['SUPERMALL_TOKEN'])
+            self.assertFalse(any(key in environment for key in ('MERCHANT_JWT_SECRET', 'SPRING_DATASOURCE_PASSWORD')))
+            self.assertEqual([], list((trial_root / 'work').iterdir()))
+            self.assertEqual('9007199254741021', runner._read_json(trial_root/'bindings.json')['products']['product-a']['skus']['sku-a'])
+            self.assertEqual('19.90', runner._read_json(trial_root/'helper-bindings.json')['products']['product-a']['skus']['sku-a']['price'])
+            evidence = judge_test.JudgeTest(); evidence.setUp()
+            try:
+                evidence.root = trial_root / 'work'
+                evidence.worker.update(runId=config['runId'], caseId=config['caseId'], trialId=config['trialId'])
+                evidence.bindings = runner._read_json(trial_root / 'bindings.json')
+                for record in evidence.events:
+                    record.update(runId=config['runId'], caseId=config['caseId'], trialId=config['trialId'])
+                if unknown:
+                    evidence.worker['terminalEvidence'] = 'UNKNOWN'
+                if tokens is not None:
+                    model = judge_test.event(len(evidence.events)+1, 'MODEL', target='GLOBAL', role='DIALOGUE', promptTokens=tokens, completionTokens=0, totalTokens=tokens)
+                    model.update(runId=config['runId'], caseId=config['caseId'], trialId=config['trialId'])
+                    evidence.events.append(model)
+                    evidence.worker['metering'].update(logicalModelRequests=1, promptTokens=tokens, completionTokens=0,totalTokens=tokens)
+                evidence.save()
+                return evidence.worker, 4, True
+            finally: evidence.doCleanups()
+        return execute
+
+    def prepare_real_first(self):
+        self.cases[0]['turns'][1]['input'] = '/confirm-refund {{order-a}}'
+        self.cases[0]['expect']['policyCodes'] = ['SEVEN_DAY_NO_REASON']
+        self.cases[0]['manualRubric']['criteria'] = []
+        _write_suite(self.root / 'suite', 'pilot', self.cases)
+
+    def test_actual_orchestration_reserves_before_worker_and_halts_on_reported_tokens(self):
+        self.prepare_real_first(); calls = []
+        helper = self.fixture_helper(calls)
+        with patch.object(runner, '_helper', return_value=(helper, self.root/'backend')), \
+             patch.object(runner, '_read_env_file', return_value={}), \
+             patch.object(runner, '_run_worker', side_effect=self.worker(calls, tokens=2000000)):
+            result = runner.run_batch(self.manifest, self.run, True, False)
+        self.assertEqual('BUDGET_STOP', result['stopReason'])
+        self.assertEqual(1, result['completedTrials'])
+        self.assertEqual(['preflight','prepare','oracle','worker','oracle','shutdown','close'], calls)
+        state = runner._read_json(self.run / 'batch.json')
+        first = runner._read_json(self.run / state['trials'][0]['trialId'] / 'result.json')
+        self.assertEqual('PASS', first['status'], first)
+
+    def test_unknown_write_stops_even_with_empty_after_oracle(self):
+        self.prepare_real_first(); calls = []
+        helper = self.fixture_helper(calls)
+        with patch.object(runner, '_helper', return_value=(helper, self.root/'backend')), \
+             patch.object(runner, '_read_env_file', return_value={}), \
+             patch.object(runner, '_run_worker', side_effect=self.worker(calls, unknown=True)):
+            result = runner.run_batch(self.manifest, self.run, True, False)
+        self.assertEqual('UNRESOLVED_WRITE', result['stopReason'])
+        self.assertEqual(1, result['completedTrials'])
+        self.assertEqual(['preflight','prepare','oracle','worker','oracle','close'], calls)
+        state = runner._read_json(self.run / 'batch.json')
+        first = runner._read_json(self.run / state['trials'][0]['trialId'] / 'result.json')
+        self.assertEqual(['UNRESOLVED_WRITE'], first['failedCriteria'])
+
+    def test_missing_worker_reply_still_saves_unknown_after_oracle_without_replay(self):
+        self.prepare_real_first(); calls=[]; helper=self.fixture_helper(calls)
+        with patch.object(runner,'_helper',return_value=(helper,self.root/'backend')), \
+             patch.object(runner,'_read_env_file',return_value={}), \
+             patch.object(runner,'_run_worker',return_value=(None,3,True)):
+            result=runner.run_batch(self.manifest,self.run,True,False)
+        self.assertEqual('UNRESOLVED_WRITE',result['stopReason'])
+        self.assertEqual(['preflight','prepare','oracle','oracle','close'],calls)
+        state=runner._read_json(self.run/'batch.json')
+        after=runner._read_json(self.run/state['trials'][0]['trialId']/'after.json')
+        self.assertEqual('UNKNOWN',after['terminalEvidence'])
+        self.assertEqual([],after['orders']['order-a']['refundRows'])
+        self.assertEqual(12,result['budget']['chargedRequests'])
+
+    def test_review_only_has_synthetic_binding_without_fixture_prepare_or_database_claim(self):
+        case = self.cases[-1]; calls = []
+        state = runner._initialize_batch(self.manifest, self.run, False)
+        trial = state['trials'][-1]
+        def worker(config, environment, directory):
+            self.assertNotIn('SUPERMALL_TOKEN', environment)
+            self.assertEqual({}, runner._read_json(directory/'bindings.json')['actors'])
+            self.assertEqual(False, runner._read_json(directory/'oracle-scope.json')['databaseProof'])
+            return None, 1, True
+        with patch.object(runner, '_run_worker', side_effect=worker):
+            runner._execute_trial(case, trial, state, self.run, None, None, {}, 'local',
+                runner.BudgetLedger(self.root/'eval/runs/budget-ledger.json'), None)
+        self.assertEqual('NOT_SENT', trial['terminalEvidence'])
+        self.assertEqual('MISSING_EVIDENCE', runner._read_json(self.run/trial['trialId']/'result.json')['failedCriteria'][0])
+
+    def test_no_request_allowance_does_not_occupy_worker_directory(self):
+        state = runner._initialize_batch(self.manifest, self.run, False)
+        ledger = runner.BudgetLedger(self.root/'eval/runs/budget-ledger.json')
+        for i in range(100): ledger.reserve('old.'+str(i))
+        trial = state['trials'][0]
+        with self.assertRaises(runner.BudgetStop):
+            runner._execute_trial(self.cases[0], trial, state, self.run, None, None, {}, 'local', ledger, None)
+        self.assertFalse((self.run/trial['trialId']).exists())
+
+    def test_supplement_is_new_id_and_preserves_failed_first(self):
+        state = runner._initialize_batch(self.manifest, self.run, False)
+        trial = state['trials'][0]
+        trial.update(state='COMPLETE',terminated=True,terminalEvidence='NOT_SENT')
+        folder = self.run/trial['trialId']; folder.mkdir()
+        runner._exclusive_json(folder/'result.json',runner._error_result(state['runId'],trial,'FIXTURE_ERROR'))
+        first = (folder/'result.json').read_bytes()
+        extra = runner._supplement(state,self.run,trial['caseId'],'infrastructure:fixture unavailable')[0]
+        self.assertNotEqual(trial['trialId'], extra['trialId'])
+        self.assertEqual('SUPPLEMENT',extra['trialKind'])
+        self.assertEqual(first,(folder/'result.json').read_bytes())
+
+    def test_backend_probe_uses_saved_actual_reply_and_no_java_or_model_evidence(self):
+        case = copy.deepcopy(self.cases[0]); case['mode'] = 'CONTROLLED'
+        case['control'] = dict(target='BACKEND_TRANSACTION',components=dict(DIALOGUE='ABSENT',REVIEW='ABSENT',
+            EXPLANATION='ABSENT',MCP='ABSENT',BACKEND='REAL'),usesRealModel=False,point='BACKEND_PROBE',probe='ROLLBACK_AFTER_INSERT')
+        case['expect'].update(outcome='NOT_SUBMITTED',orders={'order-a':dict(orderStatus='RECEIVED',newRefundRows=0,refundAmount=None,ownerMatches=True)})
+        state = runner._initialize_batch(self.manifest,self.run,False); trial=state['trials'][0]
+        calls=[]; original=self.fixture_helper(calls)
+        class Probe:
+            def request(self,message):
+                if message['op']=='probe':
+                    calls.append('probe')
+                    return dict(schemaVersion=1,op='probe',status='COMPLETED',probeEvidence=dict(probe='ROLLBACK_AFTER_INSERT',durationMs=9,receiptClass='NOT_APPLICABLE',assertionsPassed=True))
+                if message['op']=='oracle' and message['terminalEvidence']=='COMPLETED':
+                    value=original.request({**message,'terminalEvidence':'NOT_SENT'})
+                    value['oracle']['terminalEvidence']='COMPLETED'; return value
+                return original.request(message)
+        with patch.object(runner,'_run_worker',side_effect=AssertionError('backend probe spawned Java')):
+            result=runner._execute_trial(case,trial,state,self.run,Probe(),self.root/'backend',{},'local',
+                runner.BudgetLedger(self.root/'eval/runs/budget-ledger.json'),None)
+        self.assertEqual('PASS',result['status'],result)
+        metadata=runner._read_json(self.run/trial['trialId']/'metadata.json')
+        self.assertEqual([],metadata['events']); self.assertEqual({},metadata['worker'])
+        self.assertIsNone(metadata['workerDurationMs'])
+        self.assertEqual(0,runner.BudgetLedger(self.root/'eval/runs/budget-ledger.json').snapshot()['chargedRequests'])
+        self.assertEqual(['prepare','oracle','probe','oracle'],calls)
+
+    def test_worker_deadline_kills_owned_process_and_retains_real_exit_record(self):
+        folder=self.root/'trial'; folder.mkdir()
+        jar=self.root/'agent/target/agent.jar'; jar.parent.mkdir(parents=True); jar.write_bytes(b'offline placeholder')
+        actual=runner.OwnedProcess
+        def process(command,**kwargs):
+            return actual([sys.executable,'-c','import time; time.sleep(60)'],**kwargs)
+        environment={key:value for key,value in os.environ.items() if key in ('SystemRoot','PATH','TEMP','TMP')}
+        with patch.object(runner,'OwnedProcess',side_effect=process),patch.object(runner,'DEADLINE_SECONDS',.1):
+            worker,duration,terminated=runner._run_worker(folder/'config.json',environment,folder)
+        self.assertIsNone(worker); self.assertTrue(terminated)
+        self.assertLess(duration,6000)
+        record=runner._read_json(folder/'process.json')
+        self.assertIsNone(record['exitCode']); self.assertTrue(record['terminated'])
+
+
+class FixtureProtocolTest(unittest.TestCase):
+    def setUp(self): self.assertIsNotNone(FixtureClient, 'Task10 strict fixture client is missing')
+
+    def client(self, code, root):
+        return FixtureClient([sys.executable, '-u', '-c', code], cwd=root,
+            environment={key: value for key, value in os.environ.items() if key in ('SystemRoot', 'PATH', 'TEMP', 'TMP')},
+            stderr_path=root / 'helper.stderr', timeout=2)
+
+    def test_persistent_ndjson_validates_each_actual_reply(self):
+        code = 'import sys,json\nfor line in sys.stdin:\n r=json.loads(line); print(json.dumps(dict(schemaVersion=1,op=r["op"],status="COMPLETED")),flush=True)\n if r["op"]=="shutdown": break'
+        with tempfile.TemporaryDirectory() as folder:
+            with self.client(code, Path(folder)) as client:
+                request = dict(schemaVersion=1, op='preflight', runId='run', caseId='NORMAL-001', trialId='one')
+                self.assertEqual('COMPLETED', client.request(request)['status'])
+                self.assertEqual('COMPLETED', client.request({**request, 'op': 'shutdown'})['status'])
+            self.assertTrue(client.terminated)
+
+    def test_wrong_operation_duplicate_key_and_trailing_output_are_rejected(self):
+        bad = ['{"schemaVersion":1,"op":"shutdown","status":"COMPLETED"}',
+               '{"schemaVersion":1,"schemaVersion":1,"op":"preflight","status":"COMPLETED"}',
+               '{"schemaVersion":1,"op":"preflight","status":"COMPLETED"} extra']
+        for reply in bad:
+            with self.subTest(reply=reply), tempfile.TemporaryDirectory() as folder:
+                code = 'import sys\nsys.stdin.readline()\nprint(' + repr(reply) + ',flush=True)'
+                with self.client(code, Path(folder)) as client:
+                    with self.assertRaises(ValueError): client.request(dict(schemaVersion=1, op='preflight', runId='run', caseId='NORMAL-001', trialId='one'))
+
+    def test_owned_tree_closes_child_before_budget_can_be_released(self):
+        from scripts.evaluation_fixture_client import OwnedProcess
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); marker=root/'escaped-child.txt'
+            child='import time,pathlib; time.sleep(.8); pathlib.Path('+repr(str(marker))+').write_text("escaped")'
+            parent='import subprocess,sys,time; p=subprocess.Popen([sys.executable,"-c",'+repr(child)+']); print("CHILD_STARTED",flush=True); time.sleep(60)'
+            with (root/'stdout').open('w') as stdout,(root/'stderr').open('w') as stderr:
+                owned=OwnedProcess([sys.executable,'-u','-c',parent],cwd=root,environment={k:v for k,v in os.environ.items() if k in ('SystemRoot','PATH','TEMP','TMP')},stdout=stdout,stderr=stderr)
+                deadline=time.monotonic()+3
+                try:
+                    while 'CHILD_STARTED' not in (root/'stdout').read_text() and time.monotonic()<deadline: time.sleep(.02)
+                    self.assertIn('CHILD_STARTED',(root/'stdout').read_text())
+                finally: terminated=owned.close()
+            self.assertTrue(terminated)
+            time.sleep(1)
+            self.assertFalse(marker.exists(),'owned child escaped process-tree termination')
+
+
+if __name__ == '__main__': unittest.main()
