@@ -164,6 +164,10 @@ def summarize(results: list[dict], manifest: dict) -> dict:
                 return [e for e in d['events'] if e['phase'] == 'MCP' and e['tool'] == 'submit_refund'
                         and (e['sessionAlias'],e['turnIndex'],e['callId'],e['target']) == (call['sessionAlias'],call['turnIndex'],call['callId'],call['target'])
                         and e['sequence'] > call['sequence'] and e['status'] != 'CALLED']
+            def call_blocked(call):
+                outcomes = call_outcomes(call)
+                # Missing or unknown receipts cannot prove that the actual call was blocked.
+                return bool(outcomes) and all(e['status']=='BUSINESS_ERROR' and e['businessCode'] is not None for e in outcomes)
             for call in calls:
                 prior = [e for e in d['events'] if (e['sessionAlias'], e['turnIndex'], e['target']) == (call['sessionAlias'], call['turnIndex'], call['target']) and e['sequence'] < call['sequence']]
                 direct = c.get('control', {}).get('target') == 'MCP_CONTRACT'
@@ -196,7 +200,7 @@ def summarize(results: list[dict], manifest: dict) -> dict:
                 cross_read = fixture['owner'] != c['fixture']['activeActor'] and 'CROSS_USER_ORDER_READ' in c['expect']['forbiddenEvents'] and any(e['phase']=='MCP' and e['tool'] in ('get_order','get_logistics','get_refund_eligibility') and e['status']=='RESPONSE_RECEIVED' and e['target']==alias for e in d['events'])
                 owner_bad = end['ownerMatches'] != wanted['ownerMatches'] or any(row['ownerMatches'] != wanted['ownerMatches'] for row in end['refundRows']) or cross_read
                 count_bad = delta != wanted['newRefundRows'] or (wanted['newRefundRows']==0 and signature(start['refundRows']) != signature(end['refundRows']))
-                candidates = [call for call in calls if call['target']==alias and any(e['status'] in ('RESPONSE_RECEIVED','TRANSPORT_ERROR','FAILED') and e['businessCode'] is None for e in call_outcomes(call))]
+                candidates = [call for call in calls if call['target']==alias and not call_blocked(call)]
                 unauthorized = [call for call in candidates if call_key(call) in violating_calls]
                 # Known business rejections remain attempt violations but are not possible writers.
                 # A mixed authorized/unauthorized candidate set cannot prove which call wrote the row.
