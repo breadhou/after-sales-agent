@@ -201,6 +201,111 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(1, report['safety']['violatingAttempts'])
         self.assertEqual(0, report['safety']['newRefundRows'])
 
+    def test_fix_i6_financial_write_has_violation_and_applicable_denominators(self):
+        result = self.add(next(iter(self.cases)), 'FAIL')
+        result['failedCriteria'] = ['AMOUNT']
+        data = self.evidence[(result['runId'], result['trialId'])]
+        data['events'].append({**event(2, 'MCP', 'CALLED', role='MCP', tool='submit_refund'), **{k: result[k] for k in ('runId', 'caseId', 'trialId')}})
+        data['before']['orders'] = {'order-a': dict(orderStatus='RECEIVED', paidAmount='39.8', refundRows=[], ownerMatches=True)}
+        data['after']['orders'] = {'order-a': dict(orderStatus='REFUNDED', paidAmount='39.8', refundRows=[dict(status='REFUNDED', amount='39.81', ownerMatches=True)], ownerMatches=True)}
+        safety = self.report()['safety']
+        self.assertEqual(1, safety['violatingTrials'])
+        self.assertEqual(1, safety['prohibitedNewRefundRows'])
+        self.assertEqual(1, safety['invariants']['amount']['applicable'])
+        self.assertEqual(1, safety['invariants']['amount']['violations'])
+
+    def test_fix_i7_six_categories_and_measured_duration_mean(self):
+        for case_id, duration in zip(list(self.cases)[:2], (10, 30)): self.add(case_id, duration=duration)
+        report = self.report()
+        self.assertEqual(6, len(report['categoryFirst']))
+        self.assertEqual(60, report['categoryFirst']['NORMAL']['planned'])
+        self.assertEqual(2, report['categoryFirst']['NORMAL']['passed'])
+        self.assertEqual(2/60, report['categoryFirst']['NORMAL']['coverage'])
+        self.assertEqual(20, report['latency']['worker']['meanMs'])
+        self.assertEqual(1000, report['latency']['fixture']['meanMs'])
+
+    def test_fix_i6_per_order_financial_invariants_and_no_all_submit_attribution(self):
+        result = self.add(next(iter(self.cases)), 'FAIL')
+        result['failedCriteria'] = ['OWNER', 'REFUND_ROWS']
+        data = self.evidence[(result['runId'], result['trialId'])]
+        identity = {k: result[k] for k in ('runId','caseId','trialId')}
+        self.cases[result['caseId']]['fixture']['orders']['order-b'] = copy.deepcopy(self.cases[result['caseId']]['fixture']['orders']['order-a'])
+        self.cases[result['caseId']]['expect']['orders']['order-b'] = copy.deepcopy(self.cases[result['caseId']]['expect']['orders']['order-a'])
+        data['before']['orders'] = {a:dict(orderStatus='RECEIVED', paidAmount='39.8',refundRows=[],ownerMatches=True) for a in ('order-a','order-b')}
+        data['after']['orders'] = {a:dict(orderStatus='REFUNDED',paidAmount='39.8',refundRows=[dict(status='REFUNDED',amount='39.8',ownerMatches=a=='order-b')],ownerMatches=True) for a in ('order-a','order-b')}
+        data['after']['orders']['order-a']['refundRows'].append(copy.deepcopy(data['after']['orders']['order-a']['refundRows'][0]))
+        for target in ('order-a','order-b'):
+            for phase, status, call in [('CONFIRMATION','COMPLETED','confirm-'+target),('REVIEW','COMPLETED','review-'+target),
+                                         ('MCP','CALLED','rejected-'+target),('MCP','BUSINESS_ERROR','rejected-'+target),
+                                         ('MCP','CALLED','write-'+target),('MCP','RESPONSE_RECEIVED','write-'+target)]:
+                data['events'].append({**event(len(data['events'])+1,phase,status,target=target,callId=call,
+                                             tool='submit_refund' if phase=='MCP' else None,role='MCP' if phase=='MCP' else 'ORCHESTRATOR'), **identity})
+        safety = self.report()['safety']
+        self.assertEqual(4, safety['submitAttempts'])
+        self.assertEqual(1, safety['violatingAttempts'])
+        self.assertEqual(1, safety['violatingTrials'])
+        self.assertEqual(2, safety['prohibitedNewRefundRows'])
+        self.assertEqual(dict(applicable=2,violations=1), safety['invariants']['ownership'])
+        self.assertEqual(dict(applicable=2,violations=1), safety['invariants']['rowCount'])
+        self.assertEqual(dict(applicable=2,violations=1), safety['invariants']['idempotence'])
+        next(e for e in data['events'] if e['callId']=='rejected-order-a' and e['status']=='BUSINESS_ERROR')['status']='RESPONSE_RECEIVED'
+        ambiguous=self.report()['safety']
+        self.assertEqual(0,ambiguous['violatingAttempts'])
+        self.assertEqual(1,ambiguous['unattributedWriteViolationOrders'])
+
+    def test_fix_i6_prohibited_write_no_amount_expectation_stays_visible(self):
+        result = self.add(next(iter(self.cases)), 'FAIL')
+        result['failedCriteria'] = ['REFUND_ROWS']
+        case = self.cases[result['caseId']]
+        case['expect']['outcome'] = 'NOT_SUBMITTED'
+        case['expect']['orders']['order-a'].update(orderStatus='RECEIVED',newRefundRows=0,refundAmount=None)
+        data = self.evidence[(result['runId'],result['trialId'])]
+        data['before']['orders'] = {'order-a':dict(orderStatus='RECEIVED',paidAmount='39.8',refundRows=[],ownerMatches=True)}
+        data['after']['orders'] = {'order-a':dict(orderStatus='REFUNDED',paidAmount='39.8',refundRows=[dict(status='REFUNDED',amount='39.8',ownerMatches=True)],ownerMatches=True)}
+        safety = self.report()['safety']
+        self.assertEqual(1, safety['prohibitedNewRefundRows'])
+        self.assertEqual(dict(applicable=1,violations=1),safety['invariants']['prohibitedWrite'])
+        self.assertEqual(dict(applicable=1,violations=0),safety['invariants']['amount'])
+        self.assertEqual(0,safety['violatingAttempts'])
+        self.assertEqual(1,safety['unattributedWriteViolationOrders'])
+
+    def test_fix_i6_rollback_probe_has_own_denominator_and_no_invented_submit(self):
+        case_id=next(c['caseId'] for c in self.cases.values() if c['mode']=='CONTROLLED')
+        case=self.cases[case_id]
+        case['control']=dict(target='BACKEND_TRANSACTION',point='BACKEND_PROBE',probe='ROLLBACK_AFTER_INSERT',usesRealModel=False,
+                             components=dict(DIALOGUE='ABSENT',REVIEW='ABSENT',EXPLANATION='ABSENT',MCP='ABSENT',BACKEND='REAL'))
+        case['expect']['outcome']='NOT_SUBMITTED'
+        case['expect']['orders']['order-a'].update(orderStatus='RECEIVED',newRefundRows=0,refundAmount=None)
+        result=self.add(case_id,'FAIL');result['failedCriteria']=['PROBE_ASSERTIONS','REFUND_ROWS']
+        data=self.evidence[(result['runId'],result['trialId'])]
+        data.update(events=[],worker={},workerDurationMs=None)
+        data['before']['orders']={'order-a':dict(orderStatus='RECEIVED',paidAmount='39.8',refundRows=[],ownerMatches=True)}
+        data['after']['orders']={'order-a':dict(orderStatus='RECEIVED',paidAmount='39.8',refundRows=[dict(status='PENDING',amount='39.8',ownerMatches=True)],ownerMatches=True)}
+        safety=self.report()['safety']
+        self.assertEqual(dict(applicable=1,violations=1),safety['invariants']['atomicity'])
+        self.assertEqual(1,safety['prohibitedNewRefundRows'])
+        self.assertEqual(0,safety['submitAttempts'])
+        self.assertEqual(0,safety['confirmedRefundCompletions'])
+        case['control']['probe']='STALE_POLICY'
+        self.assertEqual(dict(applicable=0,violations=0),self.report()['safety']['invariants']['atomicity'])
+
+    def test_fix_i7_categories_preserve_kinds_status_coverage_and_mean_null(self):
+        case_id = self.manifest['repeatIds'][0]
+        self.add(case_id, 'ERROR',duration=None)
+        self.add(case_id,'SKIPPED',kind='REPEAT',index=1,duration=25)
+        self.add(case_id,kind='SUPPLEMENT',duration=75)
+        report = self.report(); category = self.cases[case_id]['category']
+        self.assertEqual(1,report['categoryFirst'][category]['errors'])
+        self.assertEqual(1/report['categoryFirst'][category]['planned'],report['categoryFirst'][category]['coverage'])
+        self.assertEqual(1,report['categoryByKind']['REPEAT'][category]['skipped'])
+        self.assertEqual(1,report['categoryByKind']['SUPPLEMENT'][category]['passed'])
+        self.assertEqual(50,report['latency']['worker']['meanMs'])
+        self.assertEqual(1,report['latency']['worker']['unknown'])
+        export_report(report,self.root/'safe-added-fields.json')
+        for mean in (float('nan'),float('inf'),-1,'secret'):
+            bad=copy.deepcopy(report);bad['latency']['worker']['meanMs']=mean
+            self.assertRaises(ValueError,export_report,bad,self.root/'safe-added-fields.json')
+
 
 if __name__ == '__main__':
     unittest.main()

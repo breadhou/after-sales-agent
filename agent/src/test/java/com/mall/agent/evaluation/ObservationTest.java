@@ -8,6 +8,7 @@ import com.mall.agent.flow.FlowObserver;
 import com.mall.agent.flow.RefundWorkflow;
 import com.mall.agent.knowledge.ExplanationService;
 import com.mall.agent.knowledge.ExplanationDraft;
+import com.mall.agent.knowledge.CurrentProductIndex;
 import com.mall.agent.model.*;
 import com.mall.agent.policy.PolicyEvidence;
 import com.mall.agent.tools.*;
@@ -54,6 +55,104 @@ class ObservationTest {
 
     private SafeEventRecorder recorder(BindingIndex index, PrivateEvidenceStore store) {
         return new SafeEventRecorder("run-1", "NORMAL-001", "trial-1", index, store);
+    }
+
+    @Test
+    void directActualResultIsPrivatelyBoundToCallAndOriginalAsyncOrigin() throws Exception {
+        PrivateEvidenceStore store = new PrivateEvidenceStore(directory);
+        SafeEventRecorder events = recorder(bindings(), store);
+        ToolExecutionResult result = ok("{\"id\":" + A + ",\"private\":\"" + SECRET + "\"}");
+        CompletableFuture<ToolExecutionResult> original = new CompletableFuture<>();
+        ToolExecutionRequest request = request("get_order", "{\"orderId\":" + A + "}");
+        McpClient delegate = (McpClient) Proxy.newProxyInstance(getClass().getClassLoader(), new Class<?>[]{McpClient.class},
+                (proxy, method, arguments) -> { assertSame(request, arguments[0]); return original; });
+        McpClient observed = ObservedMcpClient.wrap(delegate, bindings(), events);
+        try (AutoCloseable ignored = events.beginTurn("mcp-contract", 2)) {
+            assertSame(original, observed.executeToolAsync(request, null));
+        }
+        try (AutoCloseable ignored = events.beginTurn("other-session", 3)) { original.complete(result); }
+        assertSame(result, original.get());
+        assertTrue(events.awaitObservations(Duration.ofSeconds(1)));
+        assertEquals(1, store.snapshot().stream().filter(r -> r.path("kind").asText().equals("SOURCE")).count());
+        JsonNode source = store.snapshot().stream().filter(r -> r.path("kind").asText().equals("SOURCE")).findFirst().orElseThrow();
+        assertEquals("MCP_RESULT", source.path("sourceKey").asText());
+        assertEquals("mcp-contract", source.path("sessionAlias").asText());
+        assertEquals(2, source.path("turnIndex").asInt());
+        assertEquals(events.snapshot().get(0).path("callId").asText(), source.path("callId").asText());
+        assertEquals(result.resultText(), source.path("text").asText());
+        assertEquals(FlowObserver.textDigest(result.resultText()), source.path("sourceDigest").asText());
+        store.writeFinalReply("mcp-contract", 2, result.resultText());
+        assertEquals(source.path("text").asText(), Files.readString(directory.resolve("reply-mcp-contract-2.txt")));
+        assertNoPrivateData(events.snapshot());
+    }
+
+    @Test
+    void canonicalProductSourceMatchesActualIndexWithSevenSkuOrderAndMoney() throws Exception {
+        PrivateEvidenceStore store = new PrivateEvidenceStore(directory);
+        SafeEventRecorder events = recorder(bindings(), store);
+        var detail = JSON.createObjectNode().put("id", PRODUCT).put("name", "亚麻袋").put("description", "资料").put("status", "ON_SHELF");
+        for (int i = 7; i >= 1; i--) detail.withArray("skus").addObject().put("id", 9007199254741020L + i)
+                .put("specs", "规格" + i).put("price", i == 7 ? 12.50 : 1e-7).put("stock", i);
+        detail.put("extra", SECRET);
+        McpClient observed = ObservedMcpClient.wrap(fake(request -> request.name().equals("get_product_detail") ? ok(detail.toString())
+                : ok("{\"records\":[{\"id\":" + PRODUCT + ",\"name\":\"亚麻袋\",\"description\":\"资料\",\"status\":\"ON_SHELF\"}],\"total\":1,\"size\":20,\"current\":1}")), bindings(), events);
+        com.mall.agent.knowledge.ProductEvidence actual;
+        try (AutoCloseable ignored = events.beginTurn("session-a", 0)) {
+            actual = new CurrentProductIndex(observed).refresh(Set.of(PRODUCT)).evidenceByProductId().get(PRODUCT);
+        }
+        assertNotNull(actual);
+        assertEquals(1, store.snapshot().stream().filter(r -> r.path("kind").asText().equals("SOURCE")).count());
+        JsonNode source = store.snapshot().stream().filter(r -> r.path("kind").asText().equals("SOURCE")).findFirst().orElseThrow();
+        assertEquals("PRODUCT_CANONICAL:product-a", source.path("sourceKey").asText());
+        assertEquals(actual.digest(), source.path("sourceDigest").asText());
+        JsonNode canonical = JSON.readTree(source.path("text").asText());
+        assertEquals(7, canonical.path("skus").size());
+        for (int i = 0; i < 7; i++) {
+            assertEquals(actual.skus().get(i).skuId(), canonical.path("skus").get(i).path("id").longValue());
+            assertEquals(actual.skus().get(i).price().toPlainString(), canonical.path("skus").get(i).path("price").asText());
+        }
+        assertEquals("0.00000010", canonical.path("skus").get(1).path("price").asText());
+        assertEquals(events.snapshot().stream().filter(e -> e.path("tool").asText().equals("get_product_detail")
+                && e.path("status").asText().equals("CALLED")).findFirst().orElseThrow().path("callId").asText(), source.path("callId").asText());
+        assertFalse(store.snapshot().toString().contains(SECRET));
+        assertNoPrivateData(events.snapshot());
+        assertTrue(events.evidenceComplete());
+    }
+
+    @Test
+    void sourceSinkOrProjectionFailureKeepsOriginalDelegateResultFutureAndThrowable() throws Exception {
+        Path blocked = directory.resolve("blocked-source");
+        Files.writeString(blocked, "file");
+        SafeEventRecorder events = recorder(bindings(), new PrivateEvidenceStore(blocked));
+        ToolExecutionResult result = ok("private " + SECRET);
+        McpClient observed = ObservedMcpClient.wrap(fake(request -> result), bindings(), events);
+        try (AutoCloseable ignored = events.beginTurn("mcp-contract", 0)) {
+            assertSame(result, observed.executeTool(request("get_order", "{\"orderId\":" + A + "}")));
+        }
+        assertFalse(events.evidenceComplete());
+        assertFalse(events.awaitObservations(Duration.ofSeconds(1)));
+        CompletableFuture<ToolExecutionResult> original = new CompletableFuture<>();
+        McpClient async = ObservedMcpClient.wrap(async(original), bindings(), events);
+        try (AutoCloseable ignored = events.beginTurn("mcp-contract", 1)) {
+            assertSame(original, async.executeToolAsync(request("get_order", "{\"orderId\":" + A + "}"), null));
+        }
+        original.complete(result);
+        assertSame(result, original.get());
+        assertFalse(events.awaitObservations(Duration.ofSeconds(1)));
+        RuntimeException failure = new RuntimeException(SECRET);
+        McpClient throwing = ObservedMcpClient.wrap(fake(request -> { throw failure; }), bindings(), events);
+        try (AutoCloseable ignored = events.beginTurn("mcp-contract", 2)) {
+            assertSame(failure, assertThrows(RuntimeException.class,
+                    () -> throwing.executeTool(request("get_order", "{\"orderId\":" + A + "}"))));
+        }
+        SafeEventRecorder malformed = recorder(bindings(), new PrivateEvidenceStore(directory.resolve("malformed")));
+        ToolExecutionResult malformedResult = ok("{\"id\":" + PRODUCT + ",\"skus\":null}");
+        McpClient product = ObservedMcpClient.wrap(fake(request -> malformedResult), bindings(), malformed);
+        try (AutoCloseable ignored = malformed.beginTurn("session-a", 0)) {
+            assertSame(malformedResult, product.executeTool(request("get_product_detail", "{\"productId\":" + PRODUCT + "}")));
+        }
+        assertFalse(malformed.evidenceComplete());
+        assertNoPrivateData(events.snapshot());
     }
 
     @Test
@@ -399,7 +498,9 @@ class ObservationTest {
     void targetedToolsUseOnlyTheirDeclaredIdAndKeepInvalidTargetsUnresolved() throws Exception {
         BindingIndex index = bindings();
         SafeEventRecorder events = recorder(index, new PrivateEvidenceStore(directory));
-        McpClient client = ObservedMcpClient.wrap(fake(actual -> ok("{}")), index, events);
+        McpClient client = ObservedMcpClient.wrap(fake(actual -> ok(actual.name().equals("get_product_detail")
+                ? "{\"id\":" + PRODUCT + ",\"name\":\"商品\",\"description\":\"资料\",\"status\":\"ON_SHELF\",\"skus\":[]}"
+                : "{}")), index, events);
         try (AutoCloseable turn = events.beginTurn("session-a", 0)) {
             for (String tool : List.of("get_order", "get_logistics", "get_refund_eligibility", "submit_refund"))
                 client.executeTool(request(tool, "{\"orderId\":" + A + ",\"productId\":" + PRODUCT

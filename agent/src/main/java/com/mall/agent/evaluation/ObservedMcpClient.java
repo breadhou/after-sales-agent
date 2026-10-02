@@ -3,6 +3,8 @@ package com.mall.agent.evaluation;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.mall.agent.flow.FlowObserver;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.exception.ToolExecutionException;
 import dev.langchain4j.mcp.client.McpClient;
@@ -109,10 +111,20 @@ public final class ObservedMcpClient {
                                       ToolExecutionRequest request, Long target, Map<String, Object> base, long started,
                                       ToolExecutionResult result) {
         try {
-            JsonNode body = parse(result == null ? null : result.resultText());
+            String text = result == null ? null : result.resultText();
+            JsonNode body = parse(text);
             Integer businessCode = businessCode(body);
             event(recorder, origin, target, base, result == null ? "FAILED" : result.isError() ? "BUSINESS_ERROR" : "RESPONSE_RECEIVED",
                     elapsed(started), businessCode, null);
+            if (origin != null && origin.sessionAlias().equals("mcp-contract")) {
+                if (text == null) recorder.onObservationFailure(new IllegalStateException());
+                else recorder.sourceEvidence(origin, (String) base.get("callId"), "MCP_RESULT", text, FlowObserver.textDigest(text));
+            } else if (result != null && !result.isError() && request.name().equals("get_product_detail")
+                    && !index.productAlias(target).equals("OUT_OF_ALLOWLIST")) {
+                String canonical = canonicalProduct(body, target);
+                if (canonical != null) recorder.sourceEvidence(origin, (String) base.get("callId"),
+                        "PRODUCT_CANONICAL:" + index.productAlias(target), canonical, FlowObserver.textDigest(canonical));
+            }
             if (result == null || result.isError()) return;
             if (request.name().equals("list_user_orders") || request.name().equals("list_on_shelf_products")) {
                 JsonNode rows = body != null && body.isArray() ? body : body == null ? null : body.get("records");
@@ -128,6 +140,33 @@ public final class ObservedMcpClient {
                 recorder.returnedTargets(origin, (String) base.get("callId"), aliases);
             }
         } catch (Throwable failure) { recorder.onObservationFailure(failure); }
+    }
+
+    // Same canonical fields, returned SKU order and decimal conversion as CurrentProductIndex.digest.
+    // Only the admitted product projection is retained; arbitrary response fields are excluded.
+    private static String canonicalProduct(JsonNode detail, Long requested) {
+        if (detail == null || !detail.isObject() || !Objects.equals(id(detail.get("id")), requested)
+                || !nonblank(detail.get("name")) || !nonblank(detail.get("description"))
+                || !Set.of("DRAFT", "ON_SHELF", "OFF_SHELF").contains(detail.path("status").asText())
+                || !detail.path("skus").isArray()) throw new IllegalArgumentException("Invalid product projection");
+        ObjectNode content = JSON.createObjectNode().put("productId", requested)
+                .put("name", detail.path("name").textValue()).put("description", detail.path("description").textValue());
+        var skus = content.putArray("skus");
+        Set<Long> seen = new HashSet<>();
+        for (JsonNode sku : detail.path("skus")) {
+            Long skuId = id(sku.get("id"));
+            JsonNode price = sku.get("price"), stock = sku.get("stock");
+            if (skuId == null || !seen.add(skuId) || !nonblank(sku.get("specs")) || price == null || !price.isNumber()
+                    || price.decimalValue().signum() < 0 || stock == null || !stock.isIntegralNumber()
+                    || !stock.canConvertToLong() || stock.longValue() < 0) throw new IllegalArgumentException("Invalid SKU projection");
+            skus.addObject().put("id", skuId).put("specs", sku.path("specs").textValue())
+                    .put("price", price.decimalValue().toPlainString()).put("stock", stock.longValue());
+        }
+        return detail.path("status").asText().equals("ON_SHELF") ? content.toString() : null;
+    }
+
+    private static boolean nonblank(JsonNode value) {
+        return value != null && value.isTextual() && !value.textValue().isBlank();
     }
     private static void observeError(SafeEventRecorder recorder, SafeEventRecorder.Turn origin, Long target,
                                      Map<String, Object> base, long started, Throwable error) {

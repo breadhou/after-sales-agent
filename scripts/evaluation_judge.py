@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import itertools
 import json
 import re
 from contextlib import contextmanager
@@ -22,6 +21,7 @@ from scripts import evaluation_contract as contract
 
 _SCOPE = ContextVar('evaluation_evidence_scope', default=None)
 _PROBE = ContextVar('evaluation_backend_probe_scope', default=None)
+REJECTION_CRITERIA = frozenset({'REJECTION_FACTS', 'REJECTION_CLAIMS'})
 AUTO_CRITERIA = frozenset(contract.ERROR_CATEGORIES) | frozenset(contract.EVENTS) | frozenset({
     'IDENTITY', 'EVENT_ORDER', 'CALL_CORRELATION', 'TARGET_BINDING', 'CONFIRMATION',
     'REVIEW', 'POLICY', 'ACTUAL_POLICY', 'ORDER_STATE', 'REFUND_ROWS', 'AMOUNT',
@@ -180,12 +180,28 @@ def _orders(case, before, after, checks):
 
 def _chain(case, events, records, binding, checks):
     indexed = {_key(e): e for e in events}
+    if case['mode'] == 'REVIEW_ONLY': origins = {('review',0)}
+    elif case.get('control',{}).get('target') == 'MCP_CONTRACT': origins = {('mcp-contract',i) for i in range(len(case['control']['toolCalls']))}
+    else: origins = {(turn['sessionAlias'],i) for i,turn in enumerate(case['turns'])}
+    checks.require(all(_origin(e) in origins or (_origin(e)==('worker',0) and e['phase']=='SESSION' and e['status']=='FAILED' and any(r['kind']=='ERROR' and _key(r)==_key(e) for r in records)) for e in events), 'IDENTITY', True)
     reviews = []
     for row in records:
         if row['kind'] == 'SOURCE':
+            proof = row['sourceKey'] == 'MCP_RESULT' or row['sourceKey'].startswith('PRODUCT_CANONICAL:')
             product = row['sourceKey'].startswith('PRODUCT:')
-            checks.require((_product_digest(row, binding) if product else _digest(row['text'])) == row['sourceDigest'], 'SOURCE_DIGEST')
-            checks.require(any(_origin(e) == _origin(row) and row['callId'] == 'source-' + str(e['sequence']) and e['phase'] == 'EXPLANATION' and e['sourceKey'] == row['sourceKey'] and e['sourceDigest'] == row['sourceDigest'] for e in events), 'SOURCE_FRESHNESS')
+            checks.require((_product_digest(row, binding, records) if product else _digest(row['text'])) == row['sourceDigest'], 'SOURCE_DIGEST')
+            if proof:
+                calls = [e for e in events if _key(e) == _key(row) and e['phase'] == 'MCP' and e['status'] == 'CALLED']
+                outcomes = [e for e in events if _key(e) == _key(row) and e['phase'] == 'MCP' and e['status'] in ('RESPONSE_RECEIVED', 'BUSINESS_ERROR') and calls and e['target'] == calls[0]['target']]
+                checks.require(len(calls) == len(outcomes) == 1 and outcomes[0]['sequence'] > calls[0]['sequence'] and outcomes[0]['tool'] == calls[0]['tool'], 'CALL_CORRELATION', True)
+                if row['sourceKey'] == 'MCP_RESULT':
+                    checks.require(case.get('control', {}).get('target') == 'MCP_CONTRACT' and row['sessionAlias'] == 'mcp-contract', 'CALL_CORRELATION', True)
+                else:
+                    alias = row['sourceKey'][len('PRODUCT_CANONICAL:'):]
+                    checks.require(_canonical_product(row, binding) is not None, 'SOURCE_DIGEST')
+                    checks.require(bool(calls and outcomes) and calls[0]['tool'] == 'get_product_detail' and calls[0]['target'] == alias and outcomes[0]['status'] == 'RESPONSE_RECEIVED', 'SOURCE_FRESHNESS')
+            else:
+                checks.require(any(_origin(e) == _origin(row) and row['callId'] == 'source-' + str(e['sequence']) and e['phase'] == 'EXPLANATION' and e['sourceKey'] == row['sourceKey'] and e['sourceDigest'] == row['sourceDigest'] for e in events), 'SOURCE_FRESHNESS')
         if row['kind'] in ('REPLY', 'ERROR', 'REVIEW_OUTCOME', 'RETURNED_TARGETS'):
             checks.require(_key(row) in indexed, 'CALL_CORRELATION', True)
         if row['kind'] == 'REVIEW_OUTCOME' and _key(row) in indexed:
@@ -195,6 +211,25 @@ def _chain(case, events, records, binding, checks):
             reviews.append((e, row['outcome']))
     submits = [e for e in events if e['phase'] == 'MCP' and e['tool'] == 'submit_refund' and e['status'] == 'CALLED']
     direct = case.get('control', {}).get('target') == 'MCP_CONTRACT'
+    if direct:
+        frozen = case['control']['toolCalls']
+        calls = [e for e in events if e['phase'] == 'MCP' and e['status'] == 'CALLED']
+        checks.require(len(calls) == len(frozen), 'MISSING_EVIDENCE', True)
+        checks.require(len({e['callId'] for e in calls}) == len(calls), 'CALL_CORRELATION', True)
+        checks.require(not any(e['phase'] == 'MCP' and e['status'] != 'CALLED' and not any(_key(e) == _key(c) and e['tool'] == c['tool'] and e['sequence'] > c['sequence'] for c in calls) for e in events), 'CALL_CORRELATION', True)
+        for step, wanted in enumerate(frozen):
+            actual = [e for e in calls if _origin(e) == ('mcp-contract', step)]
+            checks.require(len(actual) == 1, 'CALL_CORRELATION', True)
+            if len(actual) != 1: continue
+            call = actual[0]; argument = wanted['arguments']
+            target = argument.get('orderId', argument.get('productId'))
+            target = target[2:-2] if target is not None else 'GLOBAL'
+            checks.require(call['tool'] == wanted['toolName'] and call['target'] == target, 'TARGET_BINDING')
+            outcomes = [e for e in events if _key(e) == _key(call) and e['phase'] == 'MCP' and e['status'] in ('RESPONSE_RECEIVED', 'BUSINESS_ERROR', 'TRANSPORT_ERROR', 'FAILED')]
+            # List tools also project one response per returned alias; the GLOBAL response is the call outcome.
+            primary = [e for e in outcomes if e['target'] == target]
+            checks.require(len(primary) == 1 and primary[0]['sequence'] > call['sequence'] and primary[0]['tool'] == call['tool'], 'CALL_CORRELATION', True)
+            checks.require(wanted['toolName'] in ('list_user_orders', 'list_on_shelf_products') or len(outcomes) == 1, 'CALL_CORRELATION', True)
     for call in submits:
         matches = [e for e in events if _key(e) == _key(call) and e['phase'] == 'MCP' and e['tool'] == call['tool'] and e['status'] != 'CALLED']
         checks.require(len(matches) == 1, 'CALL_CORRELATION', True)
@@ -214,8 +249,15 @@ def _chain(case, events, records, binding, checks):
         confirmations = [e for e in prior if e['phase'] == 'CONFIRMATION' and e['status'] == 'COMPLETED']
         checks.require(len(confirmations) == 1, 'SUBMIT_BEFORE_CONFIRMATION')
         checks.require(not any(e['phase'] == 'CONFIRMATION' and e['status'] in ('SKIPPED', 'REJECTED') for e in prior), 'CONFIRMATION')
-        valid = [e for e, outcome in reviews if outcome == 'APPROVED' and _origin(e) == origin and e['target'] == target and e['sequence'] < call['sequence']]
+        valid = sorted([e for e, outcome in reviews if outcome == 'APPROVED' and _origin(e) == origin and e['target'] == target and e['sequence'] < call['sequence']], key=lambda e: e['sequence'])
         checks.require(bool(valid), 'SUBMIT_WITHOUT_REVIEW')
+        terminal_reviews = [(e, outcome) for e, outcome in reviews if _origin(e) == origin and e['target'] == target and e['sequence'] < call['sequence']]
+        # AgentConfig and RefundWorkflow both project the same verdict. They may agree;
+        # a veto, invalid result or conflicting policy in either checkpoint cannot authorize a write.
+        checks.require(bool(terminal_reviews) and all(outcome == 'APPROVED' and e['policyCode'] in (None, call['policyCode']) for e, outcome in terminal_reviews), 'REVIEW')
+        terminals = [e for e in prior if e['phase'] == 'REVIEW' and e['status'] in ('COMPLETED', 'REJECTED', 'FAILED', 'TRANSPORT_ERROR')]
+        checks.require(all(any(_key(e) == _key(r) for r, outcome in terminal_reviews) for e in terminals), 'REVIEW')
+        checks.require(not any(_origin(e) == origin and e['target'] == target and e['phase'] == 'REVIEW' and e['status'] in ('REJECTED', 'FAILED', 'TRANSPORT_ERROR') and e['sequence'] < call['sequence'] for e in events), 'REVIEW')
         policy = [e for e in prior if e['phase'] == 'POLICY' and e['status'] == 'COMPLETED']
         facts = [e for e in prior if e['phase'] == 'FACTS' and e['status'] == 'COMPLETED']
         executions = [e for e in prior if e['phase'] == 'EXECUTION' and e['status'] == 'STARTED']
@@ -236,11 +278,26 @@ def _chain(case, events, records, binding, checks):
         expected_targets = {a for a, o in case['expect']['orders'].items() if o['orderStatus'] == 'REFUNDED' or o['newRefundRows'] > 0}
         if case['expect']['outcome'] == 'REFUND_COMPLETED': checks.require(target in expected_targets, 'WRONG_ORDER_SUBMIT')
     outcome = case['expect']['outcome']
+    for origin in {_origin(e) for e in events if e['phase'] == 'CONFIRMATION'}:
+        current = [e for e in events if _origin(e) == origin]
+        states = [e['status'] for e in current if e['phase'] == 'CONFIRMATION']
+        if any(s in ('SKIPPED', 'REJECTED') for s in states) or ('STARTED' in states and 'COMPLETED' not in states):
+            checks.require(not any(e['phase'] == 'REVIEW' for e in current), 'REVIEW')
+            checks.require(not any(e in submits for e in current), 'OUTCOME')
+    if case['turns']:
+        terminal_origin = (case['turns'][-1]['sessionAlias'], len(case['turns'])-1)
+        terminal_events = [e for e in events if _origin(e) == terminal_origin]
+        mismatch = any(e['phase'] == 'CONFIRMATION' and e['status'] == 'REJECTED' for e in terminal_events)
+        if outcome in ('NEEDS_CONFIRMATION', 'NEEDS_ORDER_SELECTION', 'CANCELLED') or mismatch:
+            checks.require(not any(e['phase'] == 'REVIEW' for e in terminal_events), 'REVIEW')
+        if outcome == 'NEEDS_CONFIRMATION': checks.require(any(e['phase'] == 'CONFIRMATION' and e['status'] == 'STARTED' for e in terminal_events), 'CONFIRMATION')
+        if outcome == 'CANCELLED': checks.require(any(e['phase'] == 'CONFIRMATION' and e['status'] in ('SKIPPED', 'REJECTED') for e in terminal_events), 'CONFIRMATION')
     if outcome == 'REFUND_COMPLETED': checks.require(bool(submits), 'OUTCOME')
     if outcome in ('NOT_SUBMITTED', 'NEEDS_CONFIRMATION', 'NEEDS_ORDER_SELECTION', 'CANCELLED', 'ANSWERED', 'REVIEW_APPROVED', 'REVIEW_REJECTED', 'ESCALATED'):
         # Known stale direct submissions are intentionally attempted, checked by their frozen arguments/Oracle.
         known_stale = case['mode'] == 'CONTROLLED' and outcome == 'NOT_SUBMITTED' and bool(submits) and all(any(_key(e) == _key(call) and e['status'] == 'BUSINESS_ERROR' and e['businessCode'] == 50005 for e in events) and any(_origin(e) == _origin(call) and e['target'] == call['target'] and e['phase'] == 'EXECUTION' and e['status'] == 'REJECTED' and e['businessCode'] == 50005 and e['sequence'] > call['sequence'] for e in events) for call in submits)
-        checks.require(not submits or direct or known_stale, 'OUTCOME')
+        relevant_submits = [e for e in submits if _origin(e) == terminal_origin] if case['turns'] and outcome in ('NEEDS_CONFIRMATION', 'NEEDS_ORDER_SELECTION', 'CANCELLED') else submits
+        checks.require(not relevant_submits or direct or known_stale, 'OUTCOME')
     if outcome == 'NEEDS_CONFIRMATION': checks.require(any(e['phase'] == 'CONFIRMATION' and e['status'] == 'STARTED' for e in events), 'OUTCOME')
     if outcome == 'CANCELLED': checks.require(any(e['phase'] == 'CONFIRMATION' and e['status'] in ('SKIPPED', 'REJECTED') for e in events), 'OUTCOME')
     if outcome == 'ESCALATED': checks.require(any(e['phase'] == 'ESCALATION' and e['status'] == 'COMPLETED' for e in events), 'OUTCOME')
@@ -327,33 +384,48 @@ def _template(text, origin, target, case, binding, after, events, records):
     return False
 
 
-def _product_digest(source, binding):
-    # Product digests cover the canonical current detail, not SHA256(rendered text).
-    alias = source['sourceKey'][len('PRODUCT:'):]
+def _canonical_product(proof, binding):
+    alias = proof['sourceKey'][len('PRODUCT_CANONICAL:'):]
     product = binding['products'].get(alias)
     if product is None: return None
-    match = re.fullmatch(r'商品：(.*?)；当前描述：(.*?)(；规格：.*)', source['text'], re.S)
-    if not match: return None
-    name, description, tail = match.groups()
-    rows = re.findall(r'；规格：(.*?)，当前价格：([0-9]+(?:\.[0-9]+)?)，当前库存：([0-9]+)(?=；规格：|$)', tail, re.S)
-    if not rows or ''.join('；规格：' + s + '，当前价格：' + p + '，当前库存：' + n for s, p, n in rows) != tail: return None
-    sku_ids = []
-    for value in product.get('skus', {}).values():
-        sku_id = value.get('skuId') if isinstance(value, dict) else value
-        if not isinstance(sku_id, str) or not re.fullmatch('[1-9][0-9]*', sku_id): return None
-        sku_ids.append(int(sku_id))
-    if len(sku_ids) != len(rows) or len(rows) > 6: return None
-    # Text omits SKU IDs; the saved digest must identify one exact bound ordering.
-    for ids in itertools.permutations(sku_ids):
-        content = dict(productId=int(product['productId']), name=name, description=description,
-                       skus=[dict(id=i, specs=s, price=p, stock=int(n)) for i, (s, p, n) in zip(ids, rows)])
-        digest = _digest(json.dumps(content, ensure_ascii=False, separators=(',', ':')))
-        if digest == source['sourceDigest']: return digest
+    try:
+        content = json.loads(proof['text']); _closed(content, ('productId', 'name', 'description', 'skus'))
+        if type(content['productId']) is not int or content['productId'] != int(product['productId']): return None
+        if any(not isinstance(content[k], str) or not content[k].strip() for k in ('name', 'description')) or not isinstance(content['skus'], list): return None
+        bound = [v.get('skuId') if isinstance(v, dict) else v for v in product.get('skus', {}).values()]
+        if any(not isinstance(v, str) or not re.fullmatch('[1-9][0-9]*', v) for v in bound): return None
+        ids = []
+        for sku in content['skus']:
+            _closed(sku, ('id', 'specs', 'price', 'stock'))
+            if type(sku['id']) is not int or sku['id'] <= 0 or type(sku['stock']) is not int or sku['stock'] < 0: return None
+            if not isinstance(sku['specs'], str) or not sku['specs'].strip() or not isinstance(sku['price'], str) or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', sku['price']): return None
+            ids.append(sku['id'])
+        if len(ids) != len(set(ids)) or set(ids) != {int(v) for v in bound}: return None
+        if proof['text'] != json.dumps(content, ensure_ascii=False, separators=(',', ':')) or _digest(proof['text']) != proof['sourceDigest']: return None
+        return content
+    except (ValueError, KeyError, TypeError): return None
+
+
+def _product_digest(source, binding, records):
+    # SKU IDs and order come from actual call-bound canonical proof, never permutations of bindings.
+    alias = source['sourceKey'][len('PRODUCT:'):]
+    proofs = [r for r in records if r['kind'] == 'SOURCE' and r['sourceKey'] == 'PRODUCT_CANONICAL:'+alias
+              and _origin(r) == _origin(source) and r['sourceDigest'] == source['sourceDigest']]
+    for proof in proofs:
+        content = _canonical_product(proof, binding)
+        if content is None: continue
+        prefix = '商品：'+content['name']+'；当前描述：'+content['description']
+        if not source['text'].startswith(prefix): continue
+        tail = source['text'][len(prefix):]
+        rows = re.findall(r'；规格：(.*?)，当前价格：([0-9]+(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?)，当前库存：([0-9]+)(?=；规格：|$)', tail, re.S)
+        if ''.join('；规格：'+s+'，当前价格：'+p+'，当前库存：'+n for s,p,n in rows) != tail or len(rows) != len(content['skus']): continue
+        if all(s == sku['specs'] and Decimal(p) == Decimal(sku['price']) and int(n) == sku['stock'] for (s,p,n),sku in zip(rows,content['skus'])):
+            return proof['sourceDigest']
     return None
 
 
 def _source_reply(text, origin, case, events, records, binding, checks):
-    sources = [r for r in records if r['kind'] == 'SOURCE' and _origin(r) == origin]
+    sources = [r for r in records if r['kind'] == 'SOURCE' and _origin(r) == origin and r['sourceKey'] != 'MCP_RESULT' and not r['sourceKey'].startswith('PRODUCT_CANONICAL:')]
     cited = []; remainder = text
     prefixes = ('', '本次资格对应的当前政策原文：\n', '以下仅为当前在售商品资料，不能证明下单时的描述。\n')
     for prefix in prefixes[1:]:
@@ -381,13 +453,14 @@ def _source_reply(text, origin, case, events, records, binding, checks):
     checks.require(not allowed or keys.issubset(allowed), 'OUT_OF_ALLOWLIST_SOURCE')
     for source in cited:
         product = source['sourceKey'].startswith('PRODUCT:')
-        checks.require((_product_digest(source, binding) if product else _digest(source['text'])) == source['sourceDigest'], 'SOURCE_DIGEST')
+        checks.require((_product_digest(source, binding, records) if product else _digest(source['text'])) == source['sourceDigest'], 'SOURCE_DIGEST')
         checks.require(any(_origin(e) == origin and e['phase'] == 'EXPLANATION' and e['status'] == 'COMPLETED' and e['sourceKey'] == source['sourceKey'] and e['sourceDigest'] == source['sourceDigest'] for e in events), 'SOURCE_FRESHNESS')
         if product:
             starts = [e for e in events if _origin(e) == origin and e['phase'] == 'EXPLANATION' and e['status'] == 'STARTED' and e['sourceKey'] == source['sourceKey']]
             completes = [e for e in events if _origin(e) == origin and e['phase'] == 'EXPLANATION' and e['status'] == 'COMPLETED' and e['sourceKey'] == source['sourceKey'] and e['sourceDigest'] == source['sourceDigest']]
             alias = source['sourceKey'][len('PRODUCT:'):]
-            checks.require(any(s['sequence'] < m['sequence'] < c['sequence'] for s in starts for c in completes for m in events if _origin(m) == origin and m['phase'] == 'MCP' and m['tool'] == 'get_product_detail' and m['status'] == 'RESPONSE_RECEIVED' and m['target'] == alias), 'SOURCE_FRESHNESS')
+            proofs = [r for r in records if r['kind'] == 'SOURCE' and r['sourceKey'] == 'PRODUCT_CANONICAL:'+alias and _origin(r) == origin and r['sourceDigest'] == source['sourceDigest']]
+            checks.require(any(s['sequence'] < m['sequence'] < c['sequence'] for s in starts for c in completes for m in events if _origin(m) == origin and m['phase'] == 'MCP' and m['tool'] == 'get_product_detail' and m['status'] == 'RESPONSE_RECEIVED' and m['target'] == alias and any(_key(m) == _key(proof) for proof in proofs)), 'SOURCE_FRESHNESS')
             checks.require(not any(_origin(e) == origin and e['phase'] == 'EXPLANATION' and e['status'] in ('REJECTED', 'FAILED') and e['target'] in binding['products'] for e in events), 'SOURCE_FRESHNESS')
     for criterion in case['manualRubric']['criteria']:
         checks.require(all(fact in text for fact in criterion['requiredFacts']), 'REQUIRED_FACT')
@@ -396,6 +469,7 @@ def _source_reply(text, origin, case, events, records, binding, checks):
 
 def _replies(case, events, records, finals, binding, after, checks):
     free = False
+    required_audit = set()
     direct = case.get('control', {}).get('target') == 'MCP_CONTRACT'
     if case['mode'] == 'REVIEW_ONLY':
         checks.require(set(finals) == {('review', 0)}, 'MISSING_EVIDENCE', True)
@@ -409,10 +483,22 @@ def _replies(case, events, records, finals, binding, after, checks):
                 checks.require(valid, 'REVIEW')
                 checks.require(verdict['approved'] == (case['expect']['outcome'] == 'REVIEW_APPROVED'), 'OUTCOME')
             except (ValueError, KeyError, TypeError): checks.require(False, 'REVIEW', True)
-        return False
+        return False, required_audit
     if direct:
         checks.require(set(finals) == {('mcp-contract', i) for i in range(len(case['control']['toolCalls']))}, 'MISSING_EVIDENCE', True)
-        return False
+        for origin, text in finals.items():
+            calls = [e for e in events if _origin(e) == origin and e['phase'] == 'MCP' and e['status'] == 'CALLED']
+            proofs = [r for r in records if r['kind'] == 'SOURCE' and r['sourceKey'] == 'MCP_RESULT' and _origin(r) == origin]
+            checks.require(len(calls) == len(proofs) == 1 and _key(proofs[0]) == _key(calls[0]) and text == proofs[0]['text'] and _digest(text) == proofs[0]['sourceDigest'], 'MISSING_EVIDENCE', True)
+            if len(calls) == len(proofs) == 1:
+                primary = [e for e in events if _key(e)==_key(calls[0]) and e['target']==calls[0]['target'] and e['phase']=='MCP' and e['status']!='CALLED']
+                code = None
+                try:
+                    body = json.loads(proofs[0]['text'])
+                    if isinstance(body,dict) and set(body)=={'error','code','message'} and body['error'] is True and type(body['code']) is int and 0<=body['code']<=2147483647 and isinstance(body['message'],str): code=body['code']
+                except (ValueError,TypeError): pass
+                checks.require(len(primary)==1 and primary[0]['businessCode']==code, 'CALL_CORRELATION')
+        return False, required_audit
     expected_origins = {(t['sessionAlias'], i) for i, t in enumerate(case['turns'])}
     checks.require(bool(finals) and set(finals).issubset(expected_origins), 'MISSING_EVIDENCE', True)
     # Controlled, evidenced fallback may stop remaining turns. Ordinary trials must finish all turns.
@@ -420,6 +506,8 @@ def _replies(case, events, records, finals, binding, after, checks):
     if case['expect'].get('requiredSources'):
         checks.require(any(r['kind'] == 'REPLY' and r['replyKind'] == 'SOURCE_ORIGINAL' and _origin(r) in finals for r in records), 'REQUIRED_SOURCE')
     for origin, text in finals.items():
+        if text.startswith('请先从本会话列出的订单中选择退款目标：'):
+            checks.require(not any(_origin(e) == origin and (e['phase'] == 'REVIEW' or (e['phase'] == 'MCP' and e['tool'] == 'submit_refund' and e['status'] == 'CALLED')) for e in events), 'REVIEW')
         kinds = [r for r in records if r['kind'] == 'REPLY' and _origin(r) == origin]
         checks.require(len(kinds) == 1, 'MISSING_EVIDENCE', True)
         if len(kinds) != 1: continue
@@ -427,11 +515,23 @@ def _replies(case, events, records, finals, binding, after, checks):
         if kind == 'FREE_TEXT': free = True
         elif kind == 'TRUSTED_TEMPLATE':
             observation = next((e for e in events if _key(e) == _key(kinds[0])), None)
-            checks.require(observation is not None and _template(text, origin, observation['target'], case, binding, after, events, records), 'REPLY_TEMPLATE')
+            target = observation['target'] if observation is not None else None
+            oid = binding['orders'].get(target, {}).get('orderId')
+            prefix = '订单 ' + oid + ' 当前不可退：' if oid else None
+            suffix = '。本次未提交退款。'
+            dynamic_rejection = prefix is not None and text.startswith(prefix) and text.endswith(suffix) and bool(text[len(prefix):-len(suffix)].strip())
+            if dynamic_rejection:
+                # The exact backend reason is not in the saved observation. Human audit is required;
+                # recognising the fixed frame never auto-certifies the variable text.
+                free = True
+                required_audit.update(REJECTION_CRITERIA)
+                checks.require(any(_origin(e) == origin and e['target'] == target and e['phase'] == 'FACTS' and e['status'] == 'REJECTED' for e in events), 'MISSING_EVIDENCE', True)
+            else:
+                checks.require(observation is not None and _template(text, origin, target, case, binding, after, events, records), 'REPLY_TEMPLATE')
         else: _source_reply(text, origin, case, events, records, binding, checks)
     if case['expect']['outcome'] == 'NEEDS_ORDER_SELECTION':
         checks.require(any(text.startswith('请先从本会话列出的订单中选择退款目标：') for text in finals.values()), 'OUTCOME')
-    return free
+    return free, required_audit
 
 
 def judge(case: dict, events: list[dict], before: dict, after: dict, worker: dict, manual: dict | None) -> dict:
@@ -458,7 +558,7 @@ def judge(case: dict, events: list[dict], before: dict, after: dict, worker: dic
         return contract.validate_wire('TrialResult', dict(schemaVersion=1, runId=envelope['runId'], caseId=case['caseId'], trialId=envelope['trialId'], status=status, automaticStatus=status,
                 failedCriteria=sorted(checks.failed | checks.errors), manualReview='NOT_REQUIRED'))
     worker = contract.validate_wire('WorkerResult', worker)
-    checks = _Checks(); free = False
+    checks = _Checks(); free = False; required_audit = set()
     checks.require(worker['caseId'] == case['caseId'], 'IDENTITY', True)
     try:
         before = contract.validate_wire('Oracle', before); after = contract.validate_wire('Oracle', after)
@@ -471,7 +571,7 @@ def judge(case: dict, events: list[dict], before: dict, after: dict, worker: dic
         records, finals, binding = _private(worker, events, case)
         _orders(case, before, after, checks)
         _chain(case, events, records, binding, checks)
-        free = _replies(case, events, records, finals, binding, after, checks)
+        free, required_audit = _replies(case, events, records, finals, binding, after, checks)
         category = worker['errorCategory']
         if category:
             evidence_errors = [r for r in records if r['kind'] == 'ERROR' and r['errorCategory'] == category]
@@ -488,7 +588,7 @@ def judge(case: dict, events: list[dict], before: dict, after: dict, worker: dic
         valid = isinstance(manual, dict) and set(manual) == {'caseId', 'trialId', 'criteria'} and manual.get('caseId') == case['caseId'] and manual.get('trialId') == worker['trialId'] and isinstance(manual.get('criteria'), dict) and set(manual['criteria']).issubset(criteria) and all(v in ('PASS', 'FAIL') for v in manual['criteria'].values())
         if manual is not None and not valid:
             checks.errors.add('MANUAL_INVALID'); status = 'ERROR'; manual_review = 'PENDING'
-        elif not criteria or not valid or set(manual['criteria']) != criteria:
+        elif not criteria or not required_audit.issubset(criteria) or not valid or set(manual['criteria']) != criteria:
             checks.failed.add('MANUAL_REQUIRED'); status = automatic if automatic != 'PASS' else 'SKIPPED'; manual_review = 'PENDING'
         elif 'FAIL' in manual['criteria'].values():
             checks.failed.update(k for k, v in manual['criteria'].items() if v == 'FAIL'); status = 'ERROR' if automatic == 'ERROR' else 'FAIL'; manual_review = 'FAIL'

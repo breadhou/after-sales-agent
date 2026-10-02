@@ -162,6 +162,17 @@ public final class SafeEventRecorder implements FlowObserver {
         } catch (Throwable failure) { onObservationFailure(failure); }
     }
 
+    /** Call-bound private proof; does not emit a business or public source event. */
+    synchronized void sourceEvidence(Turn origin, String callId, String key, String text, String digest) {
+        try {
+            if (origin == null || callId == null || !callId.matches("mcp-[1-9][0-9]*") || text == null
+                    || digest == null || !digest.matches("[a-f0-9]{64}") || key == null
+                    || !(key.equals("MCP_RESULT") || key.matches("PRODUCT_CANONICAL:[a-z][a-z0-9-]{0,63}")))
+                throw new IllegalArgumentException("Invalid private call proof");
+            append(privateRecord(origin, callId, "SOURCE").put("sourceKey", key).put("sourceDigest", digest).put("text", text));
+        } catch (Throwable failure) { onObservationFailure(failure); }
+    }
+
     private ObjectNode privateRecord(Turn origin, String callId, String kind) {
         return JSON.createObjectNode().put("sessionAlias", origin.sessionAlias()).put("turnIndex", origin.turnIndex())
                 .put("callId", callId).put("kind", kind);
