@@ -32,7 +32,7 @@ public final class ObservedMcpClient {
                     SafeEventRecorder.Turn origin = recorder.captureTurn();
                     String callId = "mcp-" + calls.incrementAndGet();
                     final Long actual = actualTarget(request);
-                    Map<String, Object> base = attributes(request, callId);
+                    Map<String, Object> base = attributes(request, callId, recorder);
                     long started = System.nanoTime();
                     CompletableFuture<Void> observation = recorder.observationStarted();
                     boolean deferred = false;
@@ -83,10 +83,26 @@ public final class ObservedMcpClient {
         if (node != null && node.isIntegralNumber() && node.canConvertToLong() && node.longValue() > 0) return node.longValue();
         return null;
     }
-    private static Map<String, Object> attributes(ToolExecutionRequest request, String callId) {
+    private static Map<String, Object> attributes(ToolExecutionRequest request, String callId, SafeEventRecorder recorder) {
         Map<String, Object> result = new HashMap<>();
         result.put("role", "MCP"); result.put("tool", request.name()); result.put("callId", callId);
         result.put("targetKind", request.name().equals("get_product_detail") || request.name().equals("list_on_shelf_products") ? "PRODUCT" : "ORDER");
+        if (request.name().equals("submit_refund")) {
+            // These are the actual request headers, not the workflow's intended values.
+            // Raw arguments (including reason) never enter either evidence projection.
+            try {
+                JsonNode arguments = JSON.readTree(request.arguments());
+                if (arguments == null || !arguments.isObject()) throw new IllegalArgumentException();
+                JsonNode code = arguments.get("expectedPolicyCode"), fingerprint = arguments.get("expectedCatalogFingerprint");
+                if (code == null || !code.isTextual() || !code.textValue().matches("[A-Z][A-Z0-9_-]{0,63}")
+                        || fingerprint == null || !fingerprint.isTextual() || fingerprint.textValue().isBlank()
+                        || fingerprint.textValue().codePoints().anyMatch(c -> c < 32)) throw new IllegalArgumentException();
+                result.put("policyCode", code.textValue());
+                result.put("policyFingerprint", fingerprint.textValue());
+            } catch (Throwable failure) {
+                recorder.onObservationFailure(failure);
+            }
+        }
         return result;
     }
     private static void observeResult(SafeEventRecorder recorder, BindingIndex index, SafeEventRecorder.Turn origin,

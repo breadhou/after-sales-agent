@@ -1,0 +1,389 @@
+import copy
+import hashlib
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from scripts.evaluation_contract import validate_wire
+from scripts.evaluation_judge import judge, evidence_scope
+
+ROOT = Path(__file__).resolve().parents[1]
+CODE = 'SEVEN_DAY_NO_REASON'
+BODY = '收到商品七日内可申请整单退款。'
+DIGEST = hashlib.sha256(BODY.encode()).hexdigest()
+ORDER = '9007199254741001'
+
+
+def event(sequence, phase, status='COMPLETED', turn=1, target='order-a', **values):
+    value = dict(runId='run-1', caseId='NORMAL-001', trialId='trial-1',
+                 sessionAlias='session-a', turnIndex=turn, sequence=sequence,
+                 callId='flow-' + str(sequence), target=target, phase=phase,
+                 role='ORCHESTRATOR', tool=None, status=status, businessCode=None,
+                 policyCode=None, policyFingerprint=None, sourceKey=None, sourceDigest=None,
+                 durationMs=1, promptTokens=None, completionTokens=None, totalTokens=None)
+    value.update(values)
+    return value
+
+
+def record(kind, turn, call_id, **values):
+    return dict(kind=kind, sessionAlias='session-a', turnIndex=turn, callId=call_id, **values)
+
+
+class JudgeTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.case = json.loads((ROOT / 'eval/fixtures/case-contract.json').read_text(encoding='utf-8-sig'))['templates']['live']
+        self.case['turns'][1]['input'] = '/confirm-refund {{order-a}}'
+        self.case['expect']['policyCodes'] = [CODE]
+        self.case['manualRubric']['criteria'] = []
+        self.events = [event(1, 'CONFIRMATION', 'STARTED', turn=0),
+                       event(2, 'SESSION', turn=0), event(3, 'CONFIRMATION'),
+                       event(4, 'FACTS', policyCode=CODE, policyFingerprint='fp-1'),
+                       event(5, 'POLICY', policyCode=CODE, policyFingerprint='fp-1', sourceKey=CODE, sourceDigest=DIGEST),
+                       event(6, 'EXPLANATION', target='GLOBAL', role='EXPLANATION', sourceKey=CODE, sourceDigest=DIGEST),
+                       event(7, 'REVIEW', role='REVIEW', policyCode=CODE),
+                       event(8, 'EXECUTION', 'STARTED', policyCode=CODE, policyFingerprint='fp-1'),
+                       event(9, 'MCP', 'CALLED', callId='mcp-1', role='MCP', tool='submit_refund', policyCode=CODE, policyFingerprint='fp-1'),
+                       event(10, 'MCP', 'RESPONSE_RECEIVED', callId='mcp-1', role='MCP', tool='submit_refund', policyCode=CODE, policyFingerprint='fp-1'),
+                       event(11, 'EXECUTION'), event(12, 'SESSION')]
+        self.records = [record('REPLY', 0, 'flow-2', replyKind='TRUSTED_TEMPLATE'),
+                        record('SOURCE', 1, 'source-6', sourceKey=CODE, sourceDigest=DIGEST, text=BODY),
+                        record('REVIEW_OUTCOME', 1, 'flow-7', outcome='APPROVED'),
+                        record('REPLY', 1, 'flow-12', replyKind='TRUSTED_TEMPLATE'),
+                        record('FINAL_REPLY', 0, 'reply-session-a-0', file='reply-0.txt'),
+                        record('FINAL_REPLY', 1, 'reply-session-a-1', file='reply-1.txt')]
+        self.replies = ['请确认退款申请：订单 ' + ORDER + '；理由：买错了。确认请单独输入 /confirm-refund ' + ORDER + '。本次未提交退款。',
+                        '订单 ' + ORDER + ' 的退款已完成，退款金额 39.8 元，订单状态已更新为 REFUNDED。本次合规复核和退款执行均已完成。']
+        self.before = dict(terminalEvidence='NOT_SENT', orders={'order-a': dict(orderStatus='RECEIVED', paidAmount='39.80', refundRows=[], ownerMatches=True)})
+        self.after = dict(terminalEvidence='COMPLETED', orders={'order-a': dict(orderStatus='REFUNDED', paidAmount='39.8', refundRows=[dict(status='REFUNDED', amount='39.80', ownerMatches=True)], ownerMatches=True)})
+        self.worker = dict(schemaVersion=1, runId='run-1', caseId=self.case['caseId'], trialId='trial-1', eventsFile='events.jsonl', privateEvidenceFile='evidence.json', terminalEvidence='COMPLETED', errorCategory=None,
+                           metering=dict(logicalModelRequests=0, promptTokens=None, completionTokens=None, totalTokens=None, usageComplete=True, unknownUsageRequests=0))
+        self.bindings = dict(schemaVersion=1, runId='run-1', caseId=self.case['caseId'], trialId='trial-1', activeActor='actor-a', actors={'actor-a': {'userId': '9007199254740993', 'userToken': 'secret-sentinel-token'}},
+                             orders={'order-a': {'orderId': ORDER, 'orderNo': 'PRIVATE-NO'}}, products={'product-a': {'productId': '9007199254741011', 'skus': {'sku-a': '9007199254741021'}}})
+
+    def save(self):
+        (self.root / 'events.jsonl').write_text(''.join(json.dumps(e, ensure_ascii=False) + '\n' for e in self.events), encoding='utf-8')
+        (self.root / 'evidence.json').write_text(json.dumps(dict(schemaVersion=1, records=self.records), ensure_ascii=False), encoding='utf-8')
+        (self.root / 'binding-input.json').write_text(json.dumps(self.bindings), encoding='utf-8')
+        for i, reply in enumerate(self.replies):
+            (self.root / ('reply-' + str(i) + '.txt')).write_text(reply, encoding='utf-8')
+
+    def run_judge(self, manual=None):
+        self.save()
+        with evidence_scope(self.root):
+            return judge(self.case, self.events, self.before, self.after, self.worker, manual)
+
+    def test_real_private_records_decimal_and_exact_large_id_pass(self):
+        value = self.run_judge()
+        self.assertEqual('PASS', value['status'], value)
+        self.assertEqual(value, validate_wire('TrialResult', value))
+        self.assertEqual(8, len(value))
+        self.assertNotIn(ORDER, json.dumps(value))
+        self.assertNotIn('secret-sentinel', json.dumps(value))
+
+    def test_zero_after_unknown_submit_is_unresolved(self):
+        self.worker['terminalEvidence'] = self.after['terminalEvidence'] = 'UNKNOWN'
+        self.after['orders']['order-a']['refundRows'] = []
+        result = self.run_judge()
+        self.assertEqual('ERROR', result['status'])
+        self.assertIn('UNRESOLVED_WRITE', result['failedCriteria'])
+        self.assertNotIn('errorCategory', result)
+
+    def test_unknown_cannot_be_waived_by_expected_unresolved(self):
+        self.case['expect']['outcome'] = 'UNRESOLVED_WRITE'
+        self.worker['terminalEvidence'] = 'UNKNOWN'
+        self.assertEqual('ERROR', self.run_judge()['status'])
+
+    def test_actual_headers_cannot_be_inferred_from_intent(self):
+        for field in ('policyCode', 'policyFingerprint'):
+            with self.subTest(field=field):
+                saved = copy.deepcopy(self.events)
+                self.events[8][field] = self.events[9][field] = None
+                self.assertNotEqual('PASS', self.run_judge()['status'])
+                self.events = saved
+
+    def test_actual_wrong_code_or_fingerprint_fail(self):
+        for field in ('policyCode', 'policyFingerprint'):
+            with self.subTest(field=field):
+                saved = copy.deepcopy(self.events)
+                self.events[8][field] = self.events[9][field] = 'WRONG'
+                self.assertEqual('FAIL', self.run_judge()['status'])
+                self.events = saved
+
+    def test_outcome_call_correlation_cannot_cross_target(self):
+        self.events[9]['target'] = 'product-a'
+        self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def test_without_confirmation_or_valid_review_fails(self):
+        for phase in ('CONFIRMATION', 'REVIEW', 'POLICY'):
+            with self.subTest(phase=phase):
+                saved = copy.deepcopy(self.events)
+                self.events = [e for e in self.events if not (e['phase'] == phase and e['turnIndex'] == 1)]
+                for i, e in enumerate(self.events): e['sequence'] = i + 1
+                self.assertNotEqual('PASS', self.run_judge()['status'])
+                self.events = saved
+
+    def test_review_exception_not_real_rejection(self):
+        self.case['expect']['outcome'] = 'REVIEW_REJECTED'
+        self.records[2]['outcome'] = 'ERROR'
+        self.events[6]['status'] = 'FAILED'
+        self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def test_confirmation_other_session_or_turn_cannot_authorize(self):
+        for field, value in [('sessionAlias', 'session-b'), ('turnIndex', 0)]:
+            with self.subTest(field=field):
+                saved = self.events[2][field]
+                self.events[2][field] = value
+                self.assertNotEqual('PASS', self.run_judge()['status'])
+                self.events[2][field] = saved
+
+    def test_cancelled_before_submit_fails(self):
+        self.events.insert(3, event(0, 'CONFIRMATION', 'SKIPPED'))
+        for i, e in enumerate(self.events): e['sequence'] = i + 1
+        self.assertEqual('FAIL', self.run_judge()['status'])
+
+    def test_two_order_no_nearest_target_inference(self):
+        self.case['fixture']['orders']['order-b'] = copy.deepcopy(self.case['fixture']['orders']['order-a'])
+        self.bindings['orders']['order-b'] = {'orderId': '9007199254741003', 'orderNo': 'PRIVATE-B'}
+        self.before['orders']['order-b'] = copy.deepcopy(self.before['orders']['order-a'])
+        self.after['orders']['order-b'] = copy.deepcopy(self.before['orders']['order-a'])
+        self.events[8]['target'] = self.events[9]['target'] = 'order-b'
+        self.assertEqual('FAIL', self.run_judge()['status'])
+
+    def test_owner_paid_amount_new_rows_and_pending_are_checked(self):
+        for mutation in ('owner', 'amount', 'paid', 'rows', 'pending'):
+            with self.subTest(mutation=mutation):
+                saved = copy.deepcopy(self.after)
+                order = self.after['orders']['order-a']
+                if mutation == 'owner': order['refundRows'][0]['ownerMatches'] = False
+                if mutation == 'amount': order['refundRows'][0]['amount'] = '39.81'
+                if mutation == 'paid': order['paidAmount'] = '39.81'
+                if mutation == 'rows': order['refundRows'].append(copy.deepcopy(order['refundRows'][0]))
+                if mutation == 'pending': order['refundRows'][0]['status'] = 'PENDING'
+                self.assertEqual('FAIL', self.run_judge()['status'])
+                self.after = saved
+
+    def test_missing_oracle_is_error(self):
+        self.after = {}
+        self.assertEqual('ERROR', self.run_judge()['status'])
+
+    def test_legacy_pending_same_row_is_not_new_completion(self):
+        self.case['fixture']['orders']['order-a']['existingRefund'] = 'PENDING'
+        self.before['orders']['order-a']['refundRows'] = [{'status': 'PENDING', 'amount': '39.8', 'ownerMatches': True}]
+        self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def test_forged_fixed_template_cannot_pass(self):
+        self.replies[1] += ' 已经到账。'
+        self.assertEqual('FAIL', self.run_judge()['status'])
+
+    def test_free_text_requires_human_criteria_even_empty_rubric(self):
+        self.records[3]['replyKind'] = 'FREE_TEXT'
+        self.replies[1] = '看起来已经退款。'
+        result = self.run_judge()
+        self.assertEqual('PASS', result['automaticStatus'])
+        self.assertEqual('PENDING', result['manualReview'])
+        self.assertNotEqual('PASS', result['status'])
+
+    def test_human_pass_fail_and_model_self_audit_rejected(self):
+        self.records[3]['replyKind'] = 'FREE_TEXT'
+        self.case['manualRubric']['criteria'] = [dict(criterionId='FACTS', question='核对事实', requiredFacts=[], forbiddenClaims=[])]
+        for conclusion in ('PASS', 'FAIL'):
+            with self.subTest(conclusion=conclusion):
+                manual = dict(caseId='NORMAL-001', trialId='trial-1', criteria={'FACTS': conclusion})
+                self.assertEqual(conclusion, self.run_judge(manual)['status'])
+        forged = dict(caseId='NORMAL-001', trialId='trial-1', criteria={'FACTS': 'PASS'}, model='self')
+        self.assertNotEqual('PASS', self.run_judge(forged)['status'])
+        self.assertNotEqual('PASS', self.run_judge(dict(caseId='NORMAL-001', trialId='other', criteria={'FACTS': 'PASS'}))['status'])
+
+    def source_reply(self):
+        self.case['expect']['outcome'] = 'ANSWERED'
+        self.case['expect']['orders']['order-a'] = dict(orderStatus='RECEIVED', newRefundRows=0, refundAmount=None, ownerMatches=True)
+        self.case['expect']['requiredSources'] = ['FAQ-001']
+        self.case['manualRubric']['criteria'] = [dict(criterionId='SOURCE_FACT', question='原文核对', requiredFacts=['本次未提交退款'], forbiddenClaims=['已到账'])]
+        self.case['turns'] = self.case['turns'][:1]
+        body = '本次未提交退款，请核对订单。'
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        self.events = [event(1, 'EXPLANATION', turn=0, target='GLOBAL', role='EXPLANATION', sourceKey='FAQ-001', sourceDigest=digest), event(2, 'EXPLANATION', turn=0, target='GLOBAL', role='EXPLANATION', sourceKey='FAQ-001', sourceDigest=digest), event(3, 'EXPLANATION', turn=0, target='GLOBAL', role='EXPLANATION')]
+        self.records = [record('SOURCE', 0, 'source-2', sourceKey='FAQ-001', sourceDigest=digest, text=body), record('REPLY', 0, 'flow-3', replyKind='SOURCE_ORIGINAL'), record('FINAL_REPLY', 0, 'reply-session-a-0', file='reply-0.txt')]
+        self.replies = ['[FAQ-001] ' + body + '\n补充说明：请以所引资料原文为准。']
+        self.after = copy.deepcopy(self.before)
+        self.worker['terminalEvidence'] = 'NOT_SENT'
+
+    def test_source_original_body_digest_fields_are_exact(self):
+        self.source_reply()
+        self.assertEqual('PASS', self.run_judge()['status'])
+        for mutation in ('body', 'digest', 'source', 'fact', 'supplement'):
+            with self.subTest(mutation=mutation):
+                self.source_reply()
+                if mutation == 'body': self.replies[0] = self.replies[0].replace('请核对订单', '已退款')
+                if mutation == 'digest': self.records[0]['sourceDigest'] = '0' * 64
+                if mutation == 'source': self.records[0]['sourceKey'] = 'FAQ-999'
+                if mutation == 'fact': self.case['manualRubric']['criteria'][0]['requiredFacts'] = ['退款金额39.8']
+                if mutation == 'supplement': self.replies[0] += ' 已经到账。'
+                self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def test_paths_scope_manifest_and_extra_fields_cannot_be_guessed(self):
+        self.save()
+        self.assertNotEqual('PASS', judge(self.case, self.events, self.before, self.after, self.worker, None)['status'])
+        with evidence_scope(self.root):
+            self.records[-1]['file'] = '../external.txt'
+            self.save()
+            self.assertNotEqual('PASS', judge(self.case, self.events, self.before, self.after, self.worker, None)['status'])
+        self.records[-1]['file'] = 'reply-1.txt'
+        self.records[0]['rawReason'] = 'secret-sentinel'
+        self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def test_saved_events_must_match_and_scope_resets(self):
+        self.save()
+        with evidence_scope(self.root):
+            changed = copy.deepcopy(self.events); changed[-1]['durationMs'] = 99
+            self.assertNotEqual('PASS', judge(self.case, changed, self.before, self.after, self.worker, None)['status'])
+        self.assertNotEqual('PASS', judge(self.case, self.events, self.before, self.after, self.worker, None)['status'])
+
+    def test_policy_source_body_must_be_verified_even_without_source_answer(self):
+        self.records[1]['text'] = '伪造政策正文'
+        self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def test_required_source_cannot_be_satisfied_by_no_basis_template(self):
+        self.source_reply()
+        self.records[1]['replyKind'] = 'TRUSTED_TEMPLATE'
+        self.replies[0] = '当前无可靠依据回答该资料问题，请联系人工客服核实。'
+        self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def test_expected_controlled_known_receipt_loss_can_pass_but_unknown_cannot(self):
+        self.case['mode'] = 'CONTROLLED'
+        self.case['control'] = dict(target='AGENT_CHAIN', point='MCP_AFTER_RESPONSE', components=dict(DIALOGUE='REAL', REVIEW='REAL', EXPLANATION='REAL', MCP='SUBSTITUTED', BACKEND='REAL'), usesRealModel=True, toolName='submit_refund', response='injected private loss')
+        self.case['expect']['outcome'] = 'UNRESOLVED_WRITE'
+        self.events[10]['status'] = 'FAILED'
+        self.records.append(record('ERROR', 1, 'flow-11', errorCategory='UNRESOLVED_WRITE'))
+        self.worker['errorCategory'] = 'UNRESOLVED_WRITE'
+        self.replies[1] = '订单 ' + ORDER + ' 的退款申请提交结果无法确认。请联系人工客服核实退款状态。'
+        self.assertEqual('PASS', self.run_judge()['status'])
+        self.worker['terminalEvidence'] = self.after['terminalEvidence'] = 'UNKNOWN'
+        self.assertEqual('ERROR', self.run_judge()['status'])
+
+    def test_expected_chain_stale_rejection_does_not_count_as_unauthorized_write(self):
+        self.case['mode'] = 'CONTROLLED'
+        self.case['control'] = dict(target='AGENT_CHAIN', point='MCP_RESPONSE', components=dict(DIALOGUE='REAL', REVIEW='REAL', EXPLANATION='REAL', MCP='SUBSTITUTED', BACKEND='REAL'), usesRealModel=True, toolName='submit_refund', response='fixed stale response')
+        self.case['expect']['outcome'] = 'NOT_SUBMITTED'
+        self.case['expect']['orders']['order-a'] = dict(orderStatus='RECEIVED', newRefundRows=0, refundAmount=None, ownerMatches=True)
+        self.after = copy.deepcopy(self.before); self.after['terminalEvidence'] = 'COMPLETED'
+        self.events[9].update(status='BUSINESS_ERROR', businessCode=50005)
+        self.events[10].update(status='REJECTED', businessCode=50005)
+        self.replies[1] = '订单 ' + ORDER + ' 的复核依据已过期，本次未产生新退款记录；请联系人工客服核实。'
+        self.assertEqual('PASS', self.run_judge()['status'])
+        self.events[9]['businessCode'] = 99999
+        self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def test_real_selection_template_uses_actual_returned_targets(self):
+        self.case['turns'] = self.case['turns'][:1]
+        self.case['expect']['outcome'] = 'NEEDS_ORDER_SELECTION'
+        self.case['expect']['orders']['order-a'] = dict(orderStatus='RECEIVED', newRefundRows=0, refundAmount=None, ownerMatches=True)
+        self.after = copy.deepcopy(self.before); self.worker['terminalEvidence'] = 'NOT_SENT'
+        self.events = [event(1, 'MCP', 'CALLED', turn=0, target='GLOBAL', role='MCP', tool='list_user_orders', callId='mcp-1'), event(2, 'MCP', 'RESPONSE_RECEIVED', turn=0, target='GLOBAL', role='MCP', tool='list_user_orders', callId='mcp-1'), event(3, 'SESSION', turn=0, target='GLOBAL')]
+        self.records = [record('RETURNED_TARGETS', 0, 'mcp-1', aliases=['order-a']), record('REPLY', 0, 'flow-3', replyKind='TRUSTED_TEMPLATE'), record('FINAL_REPLY', 0, 'reply-session-a-0', file='reply-0.txt')]
+        self.replies = ['请先从本会话列出的订单中选择退款目标：\n订单 ' + ORDER + '：/select-refund-order ' + ORDER + '\n候选理由：买错了。选择后仍需确认；本次未提交退款。']
+        self.assertEqual('PASS', self.run_judge()['status'])
+        self.records[0]['aliases'] = ['UNBOUND']
+        self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def test_code_eligibility_template_and_dynamic_target_are_bound(self):
+        self.case['turns'] = self.case['turns'][:1]
+        self.case['expect']['outcome'] = 'NOT_SUBMITTED'
+        self.case['expect']['orders']['order-a'] = dict(orderStatus='RECEIVED', newRefundRows=0, refundAmount=None, ownerMatches=True)
+        self.after = copy.deepcopy(self.before); self.worker['terminalEvidence'] = 'NOT_SENT'
+        self.events = [event(1, 'MCP', 'CALLED', turn=0, tool='get_refund_eligibility', role='MCP', callId='mcp-1'), event(2, 'MCP', 'RESPONSE_RECEIVED', turn=0, tool='get_refund_eligibility', role='MCP', callId='mcp-1'), event(3, 'SESSION', turn=0)]
+        self.records = [record('REPLY', 0, 'flow-3', replyKind='TRUSTED_TEMPLATE'), record('FINAL_REPLY', 0, 'reply-session-a-0', file='reply-0.txt')]
+        self.replies = ['订单 ' + ORDER + ' 当前查询显示可申请退款；本次未提交退款。']
+        self.assertEqual('PASS', self.run_judge()['status'])
+        self.events[-1]['target'] = 'GLOBAL'
+        self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def test_reply_symlink_outside_scope_is_refused(self):
+        self.save()
+        external = self.root.parent / (self.root.name + '-outside.txt')
+        external.write_text(self.replies[1], encoding='utf-8')
+        self.addCleanup(external.unlink)
+        (self.root / 'reply-1.txt').unlink()
+        try: (self.root / 'reply-1.txt').symlink_to(external)
+        except OSError: self.skipTest('symlink unavailable')
+        with evidence_scope(self.root):
+            self.assertNotEqual('PASS', judge(self.case, self.events, self.before, self.after, self.worker, None)['status'])
+
+    def test_intentionally_stale_direct_request_uses_frozen_actual_arguments(self):
+        controlled = json.loads((ROOT / 'eval/fixtures/case-contract.json').read_text(encoding='utf-8-sig'))['templates']['controlled']['control']
+        self.case['mode'] = 'CONTROLLED'; self.case['control'] = controlled
+        self.case['control'].update(target='MCP_CONTRACT', point='NONE', usesRealModel=False)
+        self.case['control']['components'] = dict(DIALOGUE='ABSENT', REVIEW='ABSENT', EXPLANATION='ABSENT', MCP='REAL', BACKEND='REAL')
+        self.case['control'] = {k: v for k, v in self.case['control'].items() if k in ('target', 'point', 'usesRealModel', 'components')}
+        self.case['control']['toolCalls'] = [dict(toolName='submit_refund', arguments=dict(orderId='{{order-a}}', reason='买错了', expectedPolicyCode=CODE, expectedCatalogFingerprint='intentional-stale'))]
+        self.case['expect']['outcome'] = 'NOT_SUBMITTED'
+        self.case['expect']['orders']['order-a'] = dict(orderStatus='RECEIVED', newRefundRows=0, refundAmount=None, ownerMatches=True)
+        self.events = [event(1, 'MCP', 'CALLED', turn=0, tool='submit_refund', role='MCP', policyCode=CODE, policyFingerprint='intentional-stale', callId='mcp-1'), event(2, 'MCP', 'BUSINESS_ERROR', turn=0, tool='submit_refund', role='MCP', policyCode=CODE, policyFingerprint='intentional-stale', callId='mcp-1', businessCode=50005)]
+        for e in self.events: e['sessionAlias'] = 'mcp-contract'
+        self.records = [dict(kind='FINAL_REPLY', sessionAlias='mcp-contract', turnIndex=0, callId='reply-mcp-contract-0', file='reply-0.txt')]
+        self.replies = [json.dumps(dict(error=True, code=50005, message='private-stale'))]
+        self.after = copy.deepcopy(self.before); self.after['terminalEvidence'] = 'COMPLETED'
+        self.assertEqual('PASS', self.run_judge()['status'])
+        self.events[0]['policyFingerprint'] = self.events[1]['policyFingerprint'] = 'fresh-but-not-actual'
+        self.assertEqual('FAIL', self.run_judge()['status'])
+
+    def test_product_digest_and_final_freshness_are_not_text_hash_or_any_prior_read(self):
+        self.source_reply()
+        body = '商品：Fixture notebook；当前描述：A fixture product used only by the contract tests.；规格：blue，当前价格：19.90，当前库存：5'
+        canonical = dict(productId=9007199254741011, name='Fixture notebook', description='A fixture product used only by the contract tests.', skus=[dict(id=9007199254741021, specs='blue', price='19.90', stock=5)])
+        digest = hashlib.sha256(json.dumps(canonical, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+        self.case['expect']['requiredSources'] = ['PRODUCT:product-a']; self.case['manualRubric']['criteria'][0]['requiredFacts'] = ['当前价格：19.90', '当前库存：5']
+        self.events = [event(1, 'EXPLANATION', 'STARTED', turn=0, target='product-a', role='EXPLANATION', sourceKey='PRODUCT:product-a', sourceDigest=digest), event(2, 'MCP', 'CALLED', turn=0, target='product-a', role='MCP', tool='get_product_detail', callId='mcp-1'), event(3, 'MCP', 'RESPONSE_RECEIVED', turn=0, target='product-a', role='MCP', tool='get_product_detail', callId='mcp-1'), event(4, 'EXPLANATION', turn=0, target='product-a', role='EXPLANATION', sourceKey='PRODUCT:product-a', sourceDigest=digest), event(5, 'EXPLANATION', turn=0, target='GLOBAL', role='EXPLANATION', sourceKey='PRODUCT:product-a', sourceDigest=digest), event(6, 'EXPLANATION', turn=0, target='GLOBAL', role='EXPLANATION')]
+        self.records[0].update(sourceKey='PRODUCT:product-a', sourceDigest=digest, text=body, callId='source-5')
+        self.records[1]['callId'] = 'flow-6'
+        self.replies = ['以下仅为当前在售商品资料，不能证明下单时的描述。\n[PRODUCT-9007199254741011] ' + body]
+        self.assertEqual('PASS', self.run_judge()['status'])
+        self.events[0]['status'] = 'COMPLETED'
+        self.assertNotEqual('PASS', self.run_judge()['status'])
+
+
+class BackendProbeTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup); self.root = Path(self.temp.name)
+        self.case = json.loads((ROOT / 'eval/fixtures/case-contract.json').read_text(encoding='utf-8-sig'))['templates']['controlled']
+        self.case['control'] = dict(target='BACKEND_TRANSACTION', components=dict(DIALOGUE='ABSENT', REVIEW='ABSENT', EXPLANATION='ABSENT', MCP='ABSENT', BACKEND='REAL'), usesRealModel=False, point='BACKEND_PROBE', probe='ROLLBACK_AFTER_INSERT')
+        self.case['expect']['outcome'] = 'NOT_SUBMITTED'
+        self.case['expect']['orders']['order-a'] = dict(orderStatus=self.case['fixture']['orders']['order-a']['status'], newRefundRows=0, refundAmount=None, ownerMatches=True)
+        self.oracle = dict(terminalEvidence='NOT_SENT', orders={'order-a': dict(orderStatus=self.case['fixture']['orders']['order-a']['status'], paidAmount='39.80', refundRows=[], ownerMatches=True)})
+        self.envelope = dict(schemaVersion=1, runId='probe-run', caseId=self.case['caseId'], trialId='probe-trial', fixtureReply=dict(schemaVersion=1, op='probe', status='COMPLETED', probeEvidence=dict(probe='ROLLBACK_AFTER_INSERT', durationMs=40, receiptClass='NOT_APPLICABLE', assertionsPassed=True)))
+
+    def check(self):
+        from scripts.evaluation_judge import backend_probe_scope
+        path = self.root / 'probe.json'; path.write_text(json.dumps(self.envelope), encoding='utf-8')
+        with evidence_scope(self.root), backend_probe_scope(Path('probe.json'), run_id='probe-run', trial_id='probe-trial'):
+            return judge(self.case, [], self.oracle, self.oracle, {}, None)
+
+    def test_real_closed_probe_envelope_and_independent_oracle_pass(self):
+        result = self.check(); self.assertEqual('PASS', result['status'], result); self.assertEqual(result, validate_wire('TrialResult', result))
+
+    def test_probe_unknown_wrong_case_probe_or_failed_assertions_cannot_pass(self):
+        for mutation in ('unknown', 'case', 'probe', 'assertion', 'extra'):
+            with self.subTest(mutation=mutation):
+                original = copy.deepcopy(self.envelope)
+                if mutation == 'unknown': self.envelope['fixtureReply']['probeEvidence']['receiptClass'] = 'UNKNOWN'
+                if mutation == 'case': self.envelope['caseId'] = 'WRONG-CASE'
+                if mutation == 'probe': self.envelope['fixtureReply']['probeEvidence']['probe'] = 'STALE_POLICY'
+                if mutation == 'assertion': self.envelope['fixtureReply']['probeEvidence']['assertionsPassed'] = False
+                if mutation == 'extra': self.envelope['fixtureReply']['probeEvidence']['token'] = 'secret-sentinel'
+                try: self.assertNotEqual('PASS', self.check()['status'])
+                except ValueError: pass
+                self.envelope = original
+
+    def test_backend_scope_not_available_to_agent_chain_and_missing_cannot_pass(self):
+        from scripts.evaluation_judge import backend_probe_scope
+        with evidence_scope(self.root):
+            self.assertRaises(ValueError, judge, self.case, [], self.oracle, self.oracle, {}, None)
+            self.assertRaises(ValueError, lambda: backend_probe_scope(Path('../outside.json'), run_id='probe-run', trial_id='probe-trial').__enter__())
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -57,6 +57,84 @@ class ObservationTest {
     }
 
     @Test
+    void actualSubmitHeadersAreCapturedWithoutChangingRequestOrOutcome() throws Exception {
+        BindingIndex index = bindings();
+        PrivateEvidenceStore store = new PrivateEvidenceStore(directory);
+        SafeEventRecorder events = recorder(index, store);
+        ToolExecutionRequest original = request("submit_refund", "{\"orderId\":" + A
+                + ",\"reason\":\"" + SECRET + "\",\"expectedPolicyCode\":\"ACTUAL_CODE\","
+                + "\"expectedCatalogFingerprint\":\"actual-fp\",\"extra\":\"" + SECRET + "\"}");
+        ToolExecutionResult result = ok("private receipt " + SECRET);
+        McpClient observed = ObservedMcpClient.wrap(fake(passed -> {
+            assertSame(original, passed);
+            assertEquals(A, assertDoesNotThrow(() -> JSON.readTree(passed.arguments())).path("orderId").longValue());
+            return result;
+        }), index, events);
+        try (AutoCloseable turn = events.beginTurn("session-a", 2)) {
+            assertSame(result, observed.executeTool(original));
+        }
+        assertTrue(events.awaitObservations(Duration.ofSeconds(1)));
+        assertEquals(2, events.snapshot().size());
+        String callId = events.snapshot().get(0).path("callId").asText();
+        for (JsonNode event : events.snapshot()) {
+            assertEquals("ACTUAL_CODE", event.path("policyCode").asText());
+            assertEquals("actual-fp", event.path("policyFingerprint").asText());
+            assertEquals(callId, event.path("callId").asText());
+            assertEquals("order-a", event.path("target").asText());
+            assertEquals(2, event.path("turnIndex").asInt());
+        }
+        assertNoPrivateData(events.snapshot());
+        assertFalse(store.snapshot().toString().contains(SECRET));
+    }
+
+    @Test
+    void actualSubmitAsyncHeadersKeepFutureAndOriginOnFailure() throws Exception {
+        BindingIndex index = bindings();
+        SafeEventRecorder events = recorder(index, new PrivateEvidenceStore(directory));
+        CompletableFuture<ToolExecutionResult> original = new CompletableFuture<>();
+        ToolExecutionRequest request = request("submit_refund", "{\"orderId\":" + B
+                + ",\"reason\":\"" + SECRET + "\",\"expectedPolicyCode\":\"C2\",\"expectedCatalogFingerprint\":\"fp-2\"}");
+        McpClient delegate = (McpClient) Proxy.newProxyInstance(getClass().getClassLoader(), new Class<?>[]{McpClient.class},
+                (proxy, method, arguments) -> { assertSame(request, arguments[0]); return original; });
+        McpClient observed = ObservedMcpClient.wrap(delegate, index, events);
+        try (AutoCloseable turn = events.beginTurn("session-b", 3)) {
+            assertSame(original, observed.executeToolAsync(request, null));
+        }
+        RuntimeException failure = new RuntimeException(SECRET);
+        try (AutoCloseable turn = events.beginTurn("session-a", 4)) { original.completeExceptionally(failure); }
+        assertSame(failure, assertThrows(ExecutionException.class, () -> original.get()).getCause());
+        assertTrue(events.awaitObservations(Duration.ofSeconds(1)));
+        for (JsonNode event : events.snapshot()) {
+            assertEquals("C2", event.path("policyCode").asText());
+            assertEquals("fp-2", event.path("policyFingerprint").asText());
+            assertEquals("session-b", event.path("sessionAlias").asText());
+            assertEquals("order-b", event.path("target").asText());
+            assertEquals(3, event.path("turnIndex").asInt());
+        }
+        assertNoPrivateData(events.snapshot());
+    }
+
+    @Test
+    void missingOrIllegalActualSubmitHeadersAreConservativeAndCannotBlockDelegate() throws Exception {
+        BindingIndex index = bindings();
+        int count = 0;
+        for (String arguments : List.of("{\"orderId\":" + A + "}",
+                "{\"orderId\":" + A + ",\"expectedPolicyCode\":5,\"expectedCatalogFingerprint\":\"fp\"}",
+                "{\"orderId\":" + A + ",\"expectedPolicyCode\":\"bad-code\",\"expectedCatalogFingerprint\":\"fp\"}",
+                "{\"orderId\":" + A + ",\"expectedPolicyCode\":\"C1\",\"expectedCatalogFingerprint\":\" \"}", "not-json")) {
+            SafeEventRecorder events = recorder(index, new PrivateEvidenceStore(directory.resolve("invalid-" + count++)));
+            ToolExecutionRequest original = request("submit_refund", arguments);
+            ToolExecutionResult result = ok("private " + SECRET);
+            McpClient observed = ObservedMcpClient.wrap(fake(passed -> { assertSame(original, passed); return result; }), index, events);
+            try (AutoCloseable turn = events.beginTurn("session-a", 0)) { assertSame(result, observed.executeTool(original)); }
+            assertFalse(events.evidenceComplete());
+            assertFalse(events.awaitObservations(Duration.ofSeconds(1)));
+            assertNotNull(events.errorCategory());
+            assertNoPrivateData(events.snapshot());
+        }
+    }
+
+    @Test
     void originalFutureWaitCannotDeclareDelayedObservationComplete() throws Exception {
         BindingIndex index = bindings();
         PrivateEvidenceStore store = new PrivateEvidenceStore(directory);
@@ -165,7 +243,8 @@ class ObservationTest {
         McpClient observed = ObservedMcpClient.wrap(async(original), index, events);
         CompletableFuture<ToolExecutionResult> returned;
         try (AutoCloseable turn = events.beginTurn("session-a", 0)) {
-            returned = observed.executeToolAsync(request("submit_refund", "{\"orderId\":" + A + "}"), null);
+            returned = observed.executeToolAsync(request("submit_refund", "{\"orderId\":" + A
+                    + ",\"expectedPolicyCode\":\"C1\",\"expectedCatalogFingerprint\":\"fp-1\",\"reason\":\"private\"}"), null);
         }
         RuntimeException cause = new RuntimeException("{\"error\":true,\"code\":50005,\"message\":\"" + SECRET + "\"}");
         ToolExecutionException failure = new ToolExecutionException(cause);
@@ -323,7 +402,8 @@ class ObservationTest {
         McpClient client = ObservedMcpClient.wrap(fake(actual -> ok("{}")), index, events);
         try (AutoCloseable turn = events.beginTurn("session-a", 0)) {
             for (String tool : List.of("get_order", "get_logistics", "get_refund_eligibility", "submit_refund"))
-                client.executeTool(request(tool, "{\"orderId\":" + A + ",\"productId\":" + PRODUCT + "}"));
+                client.executeTool(request(tool, "{\"orderId\":" + A + ",\"productId\":" + PRODUCT
+                        + (tool.equals("submit_refund") ? ",\"expectedPolicyCode\":\"C1\",\"expectedCatalogFingerprint\":\"fp-1\",\"reason\":\"private\"" : "") + "}"));
             client.executeTool(request("get_product_detail", "{\"orderId\":" + B + ",\"productId\":" + PRODUCT + "}"));
         }
         assertEquals(List.of("order-a", "order-a", "order-a", "order-a", "product-a"), responses(events).stream()
