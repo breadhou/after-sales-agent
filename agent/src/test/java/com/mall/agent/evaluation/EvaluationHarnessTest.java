@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -29,6 +30,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** External provider doubles only; EvaluationMain runs the actual worker and production flow. */
@@ -48,6 +51,93 @@ class EvaluationHarnessTest {
             assertFalse(business.has("expect"), value.path("caseId").textValue());
             assertFalse(business.has("manualRubric"), value.path("caseId").textValue());
         }
+    }
+
+    @Test void bootstrapFactoryFailureKeepsItsSensitiveCauseInThePrivateSink() throws Exception {
+        Path config = bootstrapFixture(find("NORMAL-001"), temporary, "bootstrap-factory");
+        var load = EvaluationMain.class.getDeclaredMethod("load", Path.class, Path.class);
+        load.setAccessible(true);
+        Object loaded = load.invoke(null, config, temporary);
+        Class<?> factoryType = Class.forName(EvaluationMain.class.getName() + "$ModelFactory");
+        String sentinel = "FAKE_MODEL_KEY_FOR_BOOTSTRAP_TEST";
+        IllegalStateException failure = new IllegalStateException(sentinel,
+                new IllegalArgumentException("FAKE_NESTED_CAUSE_FOR_BOOTSTRAP_TEST"));
+        Object factory = Proxy.newProxyInstance(factoryType.getClassLoader(), new Class<?>[]{factoryType},
+                (proxy, method, arguments) -> { throw failure; });
+        var run = EvaluationMain.class.getDeclaredMethod("runLoaded", loaded.getClass(), factoryType,
+                java.util.function.Function.class, PrintStream.class);
+        run.setAccessible(true);
+        AtomicInteger clients = new AtomicInteger();
+        java.util.function.Function<String, McpClient> noClients = alias -> {
+            clients.incrementAndGet(); throw new AssertionError("Bootstrap failure must not create a client");
+        };
+        ByteArrayOutputStream protocol = new ByteArrayOutputStream(), publicOut = new ByteArrayOutputStream(), publicErr = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out, originalErr = System.err;
+        try (PrintStream out = new PrintStream(publicOut, true, StandardCharsets.UTF_8);
+             PrintStream err = new PrintStream(publicErr, true, StandardCharsets.UTF_8);
+             PrintStream wire = new PrintStream(protocol, true, StandardCharsets.UTF_8)) {
+            System.setOut(out); System.setErr(err);
+            InvocationTargetException thrown = assertThrows(InvocationTargetException.class,
+                    () -> run.invoke(null, loaded, factory, noClients, wire));
+            assertSame(failure, thrown.getCause(), "The original bootstrap failure must propagate");
+            assertSame(out, System.out); assertSame(err, System.err);
+            assertEquals(0, protocol.size(), "A failed bootstrap cannot publish WorkerResult");
+            assertEquals(0, publicOut.size()); assertEquals(0, publicErr.size());
+        } finally { System.setOut(originalOut); System.setErr(originalErr); }
+        assertEquals(0, clients.get());
+        Path work = config.getParent().resolve("worker");
+        assertFalse(Files.exists(work.resolve("case-input.json")), "No trial execution may start");
+        assertFalse(Files.exists(work.resolve("events.jsonl")));
+        String privateLog = Files.readString(work.resolve("worker-private.log"));
+        assertTrue(privateLog.contains(sentinel), "The trusted private sink must retain the bootstrap cause");
+        assertTrue(privateLog.contains("FAKE_NESTED_CAUSE_FOR_BOOTSTRAP_TEST"));
+        assertTrue(privateLog.contains("java.lang.IllegalStateException"));
+        assertTrue(privateLog.contains("\tat "), "The diagnostic must preserve the stack, not only the message");
+    }
+
+    @Test void bootstrapInitializationFailureKeepsMainProtocolClosedAndExitsOne() throws Exception {
+        Path workspace = temporary.resolve("bootstrap-process");
+        Path scope = workspace.resolve("eval/runs");
+        Path config = bootstrapFixture(find("BOUNDARY-041"), scope, "bootstrap-initialization");
+        ObjectNode value = (ObjectNode)JSON.readTree(Files.readString(config.getParent().resolve("bindings.json")));
+        ((ObjectNode)value.path("actors").path("actor-a")).put("extraField", "FAKE_PRIVATE_BINDING_SECRET");
+        write(config.getParent().resolve("bindings.json"), value);
+        Path stdout = workspace.resolve("stdout.txt"), stderr = workspace.resolve("stderr.txt");
+        Path java = Path.of(System.getProperty("java.home"), "bin", "java" + (System.getProperty("os.name").startsWith("Windows") ? ".exe" : ""));
+        ProcessBuilder command = new ProcessBuilder(java.toString(), "-cp", System.getProperty("java.class.path"),
+                EvaluationMain.class.getName(), "--config", config.toString()).directory(workspace.toFile())
+                .redirectOutput(stdout.toFile()).redirectError(stderr.toFile());
+        command.environment().keySet().removeIf(key -> !Set.of("PATH", "PATHEXT", "SystemRoot", "WINDIR", "TEMP", "TMP", "JAVA_HOME", "USERPROFILE", "HOME").contains(key));
+        Process process = command.start();
+        try {
+            assertTrue(process.waitFor(30, TimeUnit.SECONDS), "Bootstrap child must terminate");
+            assertEquals(1, process.exitValue());
+        } finally {
+            if (process.isAlive()) { process.destroyForcibly(); process.waitFor(10, TimeUnit.SECONDS); }
+        }
+        assertEquals("", Files.readString(stdout), "Main must not publish a WorkerResult or private text");
+        assertEquals("FIXTURE_ERROR", Files.readString(stderr).strip(), "Main stderr must remain a closed error code");
+        Path work = config.getParent().resolve("worker");
+        assertFalse(Files.exists(work.resolve("case-input.json")), "Binding failure precedes chat and client execution");
+        assertFalse(Files.exists(work.resolve("events.jsonl")));
+        String privateLog = Files.readString(work.resolve("worker-private.log"));
+        assertTrue(privateLog.contains("java.lang.IllegalArgumentException: Invalid actor binding"));
+        assertTrue(privateLog.contains("TrialExecutor.validateBindings"));
+        assertTrue(privateLog.contains("\tat "));
+    }
+
+    private Path bootstrapFixture(ObjectNode value, Path scope, String trialId) throws Exception {
+        Path trial = scope.resolve("task11-synthetic").resolve(trialId);
+        Files.createDirectories(trial);
+        write(trial.resolve("case.json"), value);
+        write(trial.resolve("bindings.json"), bindings(value.path("caseId").textValue(), trialId));
+        write(trial.resolve("products.json"), JSON.createObjectNode().put("product-a", 9007199254742001L));
+        Path config = trial.resolve("worker-config.json");
+        write(config, JSON.createObjectNode().put("schemaVersion", 1).put("runId", "task11-synthetic")
+                .put("caseId", value.path("caseId").textValue()).put("trialId", trialId)
+                .put("caseFile", "case.json").put("bindingFile", "bindings.json").put("productManifest", "products.json")
+                .put("workDir", "worker").put("requestAllowance", 12).put("reportedTokenAllowance", 10000));
+        return config;
     }
 
     @Test void exportRealWorkerBaselineFourCounterexamplesAndControlledFailureEvidence() throws Exception {

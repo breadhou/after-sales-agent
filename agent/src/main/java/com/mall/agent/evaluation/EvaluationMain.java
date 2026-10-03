@@ -80,6 +80,9 @@ public final class EvaluationMain {
             try {
                 result = new TrialExecutor(clients, models.create()).execute(loaded.spec, loaded.bindings, output,
                         loaded.config.path("requestAllowance").intValue(), loaded.config.path("reportedTokenAllowance").longValue());
+            } catch (Throwable failure) {
+                failure.printStackTrace(diagnostics);
+                throw failure;
             } finally { System.setOut(oldOut); System.setErr(oldErr); }
         }
         protocol.println(JSON.writeValueAsString(result));
