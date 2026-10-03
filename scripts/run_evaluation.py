@@ -116,8 +116,17 @@ def _validation_selection(manifest, cases, run_dir):
             raise ValueError('Source needs its verified complete first trial')
         comparison = copy.deepcopy(current[case_id])
         if case_id in ('REVIEW-001', 'REVIEW-013'):
-            for key in ('trustedOrder', 'trustedEligibility'):
-                comparison['reviewInput'][key] = old[case_id]['reviewInput'][key]
+            for key, additions in (('trustedOrder', ('createdAt',)),
+                    ('trustedEligibility', ('evaluationTime', 'completeDays', 'synthetic', 'businessClock'))):
+                source_text = old[case_id]['reviewInput'][key]
+                source_facts = strict_json(source_text)
+                current_facts = strict_json(comparison['reviewInput'][key])
+                # Only newly added declared fields are exempt; existing values/types stay bound.
+                for field in additions:
+                    if field not in source_facts: current_facts.pop(field, None)
+                if _hash(current_facts) != _hash(source_facts):
+                    raise ValueError('Validation changes source business facts')
+                comparison['reviewInput'][key] = source_text
         if _hash(comparison) != state['caseHashes'][case_id]: raise ValueError('Validation changes source semantics')
         directory = _confined(source, trial_id)
         result_path = _confined(directory, 'result.json'); process_path = _confined(directory, 'process.json')

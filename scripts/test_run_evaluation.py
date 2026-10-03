@@ -573,6 +573,38 @@ class ValidationSelectionTest(unittest.TestCase):
         with self.assertRaises(ValueError): self.dry()
         self.assertFalse(self.run.exists())
 
+    def test_f5_r1_valid_v2_business_fact_changes_are_rejected_before_dispatch(self):
+        for variant in ('amount', 'identity', 'amount-type', 'unapproved-field'):
+            with self.subTest(variant=variant):
+                changed = copy.deepcopy(self.cases)
+                for case in changed:
+                    if case['caseId'] not in ('REVIEW-001', 'REVIEW-013'): continue
+                    order = json.loads(case['reviewInput']['trustedOrder'])
+                    eligibility = json.loads(case['reviewInput']['trustedEligibility'])
+                    if variant == 'amount':
+                        order['totalAmount'] = eligibility['refundableAmount'] = '49.80'
+                    elif variant == 'identity':
+                        order['id'] = eligibility['orderId'] = 1001
+                    elif variant == 'amount-type':
+                        order['totalAmount'] = eligibility['refundableAmount'] = 39.8
+                    else:
+                        eligibility['unapprovedMetadata'] = {'businessOverride': True}
+                    case['reviewInput']['trustedOrder'] = json.dumps(order)
+                    case['reviewInput']['trustedEligibility'] = json.dumps(eligibility)
+                self.manifest = _write_suite(self.root / 'suite', 'pilot', changed)
+                manifest = runner._read_json(self.manifest); manifest['suiteVersion'] = 'v2-pilot'
+                runner._atomic_json(self.manifest, manifest)
+                # The candidate really passes complete v2 phase/quota/time/hash validation.
+                self.assertEqual(32, len(runner.contract.load_suite(self.manifest)))
+                self.run = self.root / 'eval/runs' / ('changed-' + variant)
+                with patch.object(runner, '_helper', side_effect=AssertionError('fixture touched')), \
+                     patch.object(runner, '_read_env_file', side_effect=AssertionError('credentials touched')), \
+                     patch.object(runner, '_run_worker', side_effect=AssertionError('worker touched')), \
+                     patch.object(runner.BudgetLedger, 'reserve', side_effect=AssertionError('budget touched')):
+                    with self.assertRaisesRegex(ValueError, 'source business facts'):
+                        runner.run_batch(self.manifest, self.run, True, False)
+                self.assertFalse(self.run.exists())
+
     def test_fix5_selection_freezes_source_and_resume_cannot_omit_change_or_expand(self):
         state = runner._initialize_batch(self.manifest, self.run, False)
         self.assertIn('validationSelection', state)
