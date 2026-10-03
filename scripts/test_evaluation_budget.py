@@ -49,6 +49,42 @@ class BudgetTest(unittest.TestCase):
         self.assertEqual(12, self.ledger.snapshot()['chargedRequests'])
         self.assertIsNone(json.loads(self.path.read_text())['trials']['pilot.unknown']['usage']['totalTokens'])
 
+    def test_absent_usage_with_confirmed_termination_closes_without_inventing_usage(self):
+        self.ledger.reserve('pilot.absent')
+        self.ledger.complete('pilot.absent', None, terminated=True)
+        reopened = BudgetLedger(self.path)
+        self.assertEqual(dict(reservedRequests=12, chargedRequests=12, state='COMPLETE',
+                              usage=None, terminated=True),
+                         json.loads(self.path.read_text())['trials']['pilot.absent'])
+        snapshot = reopened.snapshot()
+        self.assertEqual(1, snapshot['trialCount'])
+        self.assertEqual(12, snapshot['chargedRequests'])
+        self.assertEqual(1188, snapshot['remainingRequests'])
+        self.assertEqual(0, snapshot['reportedTokens'])
+        self.assertEqual(0, snapshot['unresolvedReservations'])
+        completed = self.path.read_bytes()
+        for replacement in (None, usage(0)):
+            with self.subTest(replacement=replacement):
+                with self.assertRaises(ValueError):
+                    reopened.complete('pilot.absent', replacement, terminated=True)
+                self.assertEqual(completed, self.path.read_bytes())
+        with self.assertRaises(ValueError):
+            reopened.reserve('pilot.absent')
+        self.assertEqual(completed, self.path.read_bytes())
+
+    def test_absent_usage_requires_strict_confirmed_termination_before_mutation(self):
+        self.ledger.reserve('pilot.absent')
+        reserved = self.path.read_bytes()
+        for termination in (False, None, 1, 'true'):
+            with self.subTest(termination=termination):
+                with self.assertRaises(ValueError):
+                    self.ledger.complete('pilot.absent', None, terminated=termination)
+                self.assertEqual(reserved, self.path.read_bytes())
+        with self.assertRaises(ValueError):
+            self.ledger.complete('missing.reservation', None, terminated=True)
+        self.assertEqual(reserved, self.path.read_bytes())
+        self.assertEqual(1, self.ledger.snapshot()['unresolvedReservations'])
+
     def test_pilot_formal_supplement_share_request_ceiling(self):
         for i in range(99):
             self.ledger.reserve('pilot.' + str(i))

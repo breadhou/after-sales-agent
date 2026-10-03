@@ -108,16 +108,17 @@ class BudgetLedger:
             atomic_json(self.path, value)
             return dict(requestAllowance=granted, reportedTokenAllowance=snapshot['remainingReportedTokens'])
 
-    def complete(self, trial_id: str, usage: dict, terminated: bool) -> None:
-        usage = _usage(usage)
+    def complete(self, trial_id: str, usage: dict | None, terminated: bool) -> None:
+        if usage is not None: usage = _usage(usage)
         if type(terminated) is not bool: raise ValueError('Invalid termination evidence')
+        if usage is None and not terminated: raise ValueError('Missing usage requires confirmed termination')
         with file_lock(self.lock_path):
             value = self._read()
             entry = value['trials'].get(trial_id)
             if entry is None or entry['state'] != 'RESERVED': raise ValueError('Completion cannot overwrite prior usage')
-            if usage['logicalModelRequests'] > entry['reservedRequests']: raise ValueError('Worker exceeded request reservation')
+            if usage is not None and usage['logicalModelRequests'] > entry['reservedRequests']: raise ValueError('Worker exceeded request reservation')
             entry.update(state='COMPLETE', usage=copy.deepcopy(usage), terminated=terminated)
-            if terminated and usage['usageComplete']:
+            if terminated and usage is not None and usage['usageComplete']:
                 entry['chargedRequests'] = usage['logicalModelRequests']
             atomic_json(self.path, value)
 
