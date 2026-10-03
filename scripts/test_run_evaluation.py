@@ -284,6 +284,160 @@ class BatchTest(unittest.TestCase):
         self.assertIsNone(record['exitCode']); self.assertTrue(record['terminated'])
 
 
+class ArchivedAssessmentTest(unittest.TestCase):
+    def setUp(self):
+        BatchTest.setUp(self)
+
+    def archive(self, *, fault=None, rejection=False, fixed_rubric=True):
+        proof = judge_test.JudgeTest(); proof.setUp()
+        self.addCleanup(proof.doCleanups)
+        proof.records[3]['replyKind'] = 'FREE_TEXT'
+        proof.case['manualRubric']['criteria'] = [dict(criterionId='FACTS', question='核对事实', requiredFacts=[], forbiddenClaims=[])]
+        if rejection:
+            proof.case['turns'] = proof.case['turns'][:1]
+            proof.case['expect']['outcome'] = 'NOT_SUBMITTED'
+            proof.case['expect']['orders']['order-a'] = dict(orderStatus='RECEIVED', newRefundRows=0, refundAmount=None, ownerMatches=True)
+            proof.after = copy.deepcopy(proof.before); proof.worker['terminalEvidence'] = 'NOT_SENT'
+            proof.events = [judge_test.event(1, 'FACTS', 'REJECTED', turn=0), judge_test.event(2, 'SESSION', turn=0)]
+            proof.records = [judge_test.record('REPLY', 0, 'flow-2', replyKind='TRUSTED_TEMPLATE'),
+                judge_test.record('FINAL_REPLY', 0, 'reply-session-a-0', file='reply-0.txt')]
+            proof.replies = ['订单 ' + judge_test.ORDER + ' 当前不可退：已有申请。本次未提交退款。']
+            if fixed_rubric:
+                proof.case['manualRubric']['criteria'] = [dict(criterionId=key, question='核对', requiredFacts=[], forbiddenClaims=[])
+                    for key in ('REJECTION_FACTS', 'REJECTION_CLAIMS')]
+        if fault == 'FAIL': proof.after['orders']['order-a']['refundRows'][0]['amount'] = '39.81'
+        if fault == 'UNKNOWN': proof.worker['terminalEvidence'] = proof.after['terminalEvidence'] = 'UNKNOWN'
+        if fault == 'ERROR': proof.after = {}
+        self.cases[0] = proof.case
+        _write_suite(self.root / 'suite', 'pilot', self.cases)
+        state = runner._initialize_batch(self.manifest, self.run, False)
+        trial = state['trials'][0]; directory = self.run / trial['trialId']; directory.mkdir()
+        proof.root = directory / 'work'; proof.root.mkdir()
+        proof.worker.update(runId=state['runId'], trialId=trial['trialId'])
+        proof.bindings.update(runId=state['runId'], trialId=trial['trialId'])
+        for event in proof.events: event.update(runId=state['runId'], trialId=trial['trialId'])
+        proof.save()
+        with runner.evidence_scope(proof.root):
+            first = runner.judge(proof.case, proof.events, proof.before, proof.after, proof.worker, None)
+        metadata = dict(caseId=trial['caseId'], trialKind='FIRST', repeatIndex=0, events=proof.events,
+            worker=proof.worker, before=proof.before, after=proof.after, workerDurationMs=4, fixtureDurationMs=7)
+        for name, value in (('result.json', first), ('metadata.json', metadata), ('case.json', proof.case),
+                ('worker.json', proof.worker), ('before.json', proof.before), ('after.json', proof.after)):
+            runner._exclusive_json(directory / name, value)
+        trial.update(state='COMPLETE', terminated=True, terminalEvidence=proof.worker['terminalEvidence'])
+        if fault == 'UNKNOWN': state['stopReason'] = 'UNRESOLVED_WRITE'
+        runner._atomic_json(self.run / 'batch.json', state)
+        ledger = runner.BudgetLedger(self.root / 'eval/runs/budget-ledger.json')
+        if fault == 'UNKNOWN': ledger.reserve(state['runId'] + '.' + trial['trialId'])
+        self.state, self.trial, self.directory, self.first, self.ledger = state, trial, directory, first, ledger
+        return proof
+
+    def audit(self, criteria):
+        value = dict(caseId=self.trial['caseId'], trialId=self.trial['trialId'], criteria=criteria)
+        (self.run / 'manual-audit.jsonl').write_text(json.dumps(value) + '\n', encoding='utf-8')
+
+    def source_bytes(self):
+        files = [p for p in self.run.rglob('*') if p.is_file() and 'assessments' not in p.relative_to(self.run).parts]
+        files += [self.root / 'eval/runs/budget-ledger.json']
+        return {p: p.read_bytes() for p in files if p.exists()}
+
+    def assess(self, output=None):
+        old = self.source_bytes()
+        with patch.object(runner, '_helper', side_effect=AssertionError('helper action')), \
+             patch.object(runner, '_run_worker', side_effect=AssertionError('worker/model action')), \
+             patch.object(runner, '_read_env_file', side_effect=AssertionError('credential read')), \
+             patch.object(runner.BudgetLedger, 'reserve', side_effect=AssertionError('budget reservation')):
+            value = runner._assess_saved_run(self.run, output or self.root / ('summary-' + str(time.time_ns()) + '.json'))
+        for path, raw in old.items(): self.assertEqual(raw, path.read_bytes(), path)
+        return json.loads(Path(value['resultsFile']).read_text(encoding='utf-8'))['results'][0], value
+
+    def test_late_human_pass_changes_saved_report_without_original_or_action_changes(self):
+        self.archive(); self.audit({'FACTS': 'PASS'}); old = self.source_bytes()
+        self.assertEqual(('SKIPPED', 'PASS', 'PENDING'),
+            (self.first['status'], self.first['automaticStatus'], self.first['manualReview']))
+        with patch.object(runner, '_helper', side_effect=AssertionError('helper action')), \
+             patch.object(runner, '_run_worker', side_effect=AssertionError('worker/model action')), \
+             patch.object(runner, '_read_env_file', side_effect=AssertionError('credential read')):
+            saved = runner._saved_report(self.state, self.run, self.cases, runner._read_json(self.manifest), self.ledger)
+        report = json.loads(Path(saved['reportFile']).read_text(encoding='utf-8'))
+        self.assertEqual(1, report['liveFirst']['passed'])
+        self.assertEqual(0, report['liveFirst']['pending'])
+        for path, raw in old.items(): self.assertEqual(raw, path.read_bytes(), path)
+
+    def test_actual_late_pass_fail_absent_and_invalid_criteria_use_real_judge(self):
+        self.archive()
+        for criteria, expected, review in ((None, 'SKIPPED', 'PENDING'), ({'FACTS':'PASS'}, 'PASS', 'PASS'),
+                ({'FACTS':'FAIL'}, 'FAIL', 'FAIL'), ({'UNDECLARED':'PASS'}, 'ERROR', 'PENDING'), ({}, 'SKIPPED', 'PENDING')):
+            with self.subTest(criteria=criteria):
+                if criteria is not None: self.audit(criteria)
+                result, _ = self.assess()
+                self.assertEqual((expected, 'PASS', review), (result['status'], result['automaticStatus'], result['manualReview']))
+
+    def test_human_pass_never_waives_original_automatic_failure_error_or_unknown(self):
+        for fault, status in (('FAIL', 'FAIL'), ('ERROR', 'ERROR'), ('UNKNOWN', 'ERROR')):
+            with self.subTest(fault=fault):
+                # Each subcase gets an independent frozen run and real judge trace.
+                self.run = self.root / 'eval/runs' / ('archive-' + fault.lower())
+                self.archive(fault=fault); self.audit({'FACTS':'PASS'})
+                result, _ = self.assess()
+                self.assertEqual(status, result['status'])
+                self.assertEqual(self.first['automaticStatus'], result['automaticStatus'])
+                if fault == 'UNKNOWN': self.assertEqual(12, self.ledger.snapshot()['chargedRequests'])
+
+    def test_missing_private_or_worker_evidence_never_passes(self):
+        self.archive(); self.audit({'FACTS':'PASS'})
+        (self.directory / 'work/evidence.json').unlink()
+        result, _ = self.assess(); self.assertEqual('ERROR', result['status'])
+        (self.directory / 'worker.json').unlink()
+        result, _ = self.assess(); self.assertEqual('ERROR', result['status'])
+
+    def test_frozen_hash_or_actual_trial_identity_mismatch_is_refused(self):
+        self.archive(); self.audit({'FACTS':'PASS'})
+        path = self.run / 'cases.json'; original = path.read_bytes()
+        value = runner._read_json(path); value['cases'][0]['variationRationale'] = 'changed'
+        path.write_text(json.dumps(value), encoding='utf-8')
+        with self.assertRaises(ValueError): self.assess()
+        path.write_bytes(original)
+        value = runner._read_json(self.directory / 'worker.json'); value['trialId'] = 'other'
+        (self.directory / 'worker.json').write_text(json.dumps(value), encoding='utf-8')
+        result, _ = self.assess(); self.assertNotEqual('PASS', result['status'])
+
+    def test_invalid_human_envelope_and_source_output_overwrite_are_refused(self):
+        self.archive(); self.audit({'FACTS':'PASS'})
+        value = runner._read_json(self.run / 'manual-audit.jsonl'); value['model'] = 'self-audit'
+        (self.run / 'manual-audit.jsonl').write_text(json.dumps(value) + '\n', encoding='utf-8')
+        with self.assertRaises(ValueError): self.assess()
+        self.audit({'FACTS':'PASS'})
+        with self.assertRaises(ValueError): self.assess(self.directory / 'result.json')
+
+    def test_dynamic_refusal_requires_actual_fixed_fact_and_claim_audits(self):
+        self.archive(rejection=True)
+        self.audit({'REJECTION_FACTS':'PASS'})
+        result, _ = self.assess(); self.assertEqual('PENDING', result['manualReview'])
+        self.audit({'REJECTION_FACTS':'PASS', 'REJECTION_CLAIMS':'PASS'})
+        result, _ = self.assess(); self.assertEqual('PASS', result['status'])
+        self.run = self.root / 'eval/runs/generic-refusal'
+        self.archive(rejection=True, fixed_rubric=False); self.audit({'FACTS':'PASS'})
+        result, _ = self.assess(); self.assertEqual('PENDING', result['manualReview'])
+        self.assertNotEqual('PASS', result['status'])
+
+    def test_real_cli_emits_sanitized_markdown_and_json_from_saved_evidence(self):
+        self.archive(); self.audit({'FACTS':'PASS'}); old = self.source_bytes()
+        for suffix in ('.md', '.json'):
+            output = self.root / ('cli-report' + suffix)
+            completed = subprocess.run([sys.executable, str(ROOT / 'scripts/summarize_evaluation.py'),
+                '--run-dir', str(self.run), '--output', str(output)], capture_output=True, text=True, check=False)
+            self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+            report = output.read_text(encoding='utf-8')
+            if suffix == '.md':
+                self.assertTrue(report.startswith('# Evaluation assessment\n'))
+                self.assertIn('| LIVE_E2E | 1 |', report)
+            else: self.assertEqual(1, json.loads(report)['liveFirst']['passed'])
+            for sensitive in (judge_test.ORDER, 'secret-sentinel-token', 'PRIVATE-NO', 'refundRows', 'reply-1.txt'):
+                self.assertNotIn(sensitive, report)
+        for path, raw in old.items(): self.assertEqual(raw, path.read_bytes(), path)
+
+
 class FixtureProtocolTest(unittest.TestCase):
     def setUp(self): self.assertIsNotNone(FixtureClient, 'Task10 strict fixture client is missing')
 

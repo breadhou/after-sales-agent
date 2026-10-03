@@ -330,18 +330,111 @@ def _execute_trial(case, trial, state, run_dir, client, backend_output, model, b
     return result
 
 
-def _saved_report(state, run_dir, cases, manifest, budget):
-    results = []; metadata = {}
+def _load_saved_run(run_dir):
+    """Verify parent snapshots whose hashes were frozen after load_suite validation."""
+    run_dir = Path(run_dir).absolute()
+    if run_dir.resolve(strict=True) != run_dir or not run_dir.is_dir():
+        raise ValueError('Invalid saved run directory')
+    state = _read_json(_confined(run_dir, 'batch.json'))
+    manifest = contract.validate_wire('Manifest', _read_json(_confined(run_dir, 'manifest.json')))
+    saved = _read_json(_confined(run_dir, 'cases.json'))
+    if not isinstance(saved, dict) or set(saved) != {'cases'} or not isinstance(saved['cases'], list):
+        raise ValueError('Invalid frozen cases')
+    cases = [contract.validate_case(case) for case in saved['cases']]
+    if state.get('schemaVersion') != 1 or state.get('runId') != run_dir.name or state.get('manifestHash') != _hash(manifest) or state.get('caseHashes') != {c['caseId']: _hash(c) for c in cases} or [c['caseId'] for c in cases] != manifest['caseIds']:
+        raise ValueError('Saved frozen suite hash mismatch')
+    seen = set()
     for trial in state['trials']:
-        directory = run_dir / trial['trialId']
+        if not isinstance(trial.get('trialId'), str) or not contract.SAFE_ID_RE.fullmatch(trial['trialId']) or trial['trialId'] in seen or trial['caseId'] not in state['caseHashes'] or trial['state'] not in ('PENDING', 'INFLIGHT', 'COMPLETE'):
+            raise ValueError('Invalid saved trial identity or state')
+        seen.add(trial['trialId'])
+    return state, cases, manifest
+
+
+def _assess_trial(case, trial, state, directory, original, metadata, manual):
+    """Rejudge actual archived proof; the first automatic verdict remains a floor."""
+    run_id, trial_id = state['runId'], trial['trialId']
+    try:
+        frozen = contract.validate_case(_read_json(_confined(directory, 'case.json')))
+        if _hash(frozen) != state['caseHashes'][trial['caseId']]: raise ValueError('Wrong saved trial case')
+        if metadata['caseId'] != trial['caseId'] or metadata['trialKind'] != trial['trialKind'] or metadata['repeatIndex'] != trial['repeatIndex']:
+            raise ValueError('Wrong saved trial classification')
+        before = _read_json(_confined(directory, 'before.json')) if metadata['before'] else {}
+        after = _read_json(_confined(directory, 'after.json')) if metadata['after'] else {}
+        if before != metadata['before'] or after != metadata['after']: raise ValueError('Oracle differs from saved metadata')
+        work = _confined(directory, 'work')
+        with evidence_scope(work):
+            if case.get('control', {}).get('target') == 'BACKEND_TRANSACTION':
+                if metadata['worker'] or metadata['events'] or metadata['workerDurationMs'] is not None:
+                    raise ValueError('Invented probe worker evidence')
+                with backend_probe_scope(Path('probe.json'), run_id=run_id, trial_id=trial_id):
+                    result = judge(case, [], before, after, {}, None)
+            else:
+                worker, events = _load_worker_evidence(_read_json(_confined(directory, 'worker.json')),
+                    work, run_id, case['caseId'], trial_id)
+                if worker != metadata['worker'] or events != metadata['events']:
+                    raise ValueError('Worker differs from saved metadata')
+                if case['mode'] == 'REVIEW_ONLY':
+                    scope = _read_json(_confined(directory, 'oracle-scope.json'))
+                    if scope != {'kind': 'SYNTHETIC_REVIEW', 'databaseProof': False} or worker['terminalEvidence'] != 'NOT_SENT':
+                        raise ValueError('Invalid synthetic review scope')
+                result = judge(case, events, before, after, worker, manual)
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError, ArithmeticError):
+        result = _error_result(run_id, trial, 'MISSING_EVIDENCE')
+    # Human audit completes only the manual portion. It cannot clear a saved
+    # automatic failure, unresolved write, missing proof or unverified process.
+    automatic = original['automaticStatus']
+    result['automaticStatus'] = automatic
+    if automatic != 'PASS':
+        manual_ids = {c['criterionId'] for c in case['manualRubric']['criteria']}
+        old_failures = set(original['failedCriteria']) - manual_ids - {'MANUAL_REQUIRED', 'MANUAL_INVALID', 'MANUAL_FAIL'}
+        result['failedCriteria'] = sorted(set(result['failedCriteria']) | old_failures)
+        if automatic == 'ERROR': result['status'] = 'ERROR'
+        elif automatic == 'FAIL' and result['status'] != 'ERROR': result['status'] = 'FAIL'
+        elif automatic == 'SKIPPED' and result['status'] == 'PASS': result['status'] = 'SKIPPED'
+    if trial.get('terminated') is not True or trial.get('terminalEvidence') == 'UNKNOWN':
+        result['status'] = 'ERROR'
+        result['failedCriteria'] = sorted(set(result['failedCriteria']) | {'UNRESOLVED_WRITE'})
+    return contract.validate_wire('TrialResult', result)
+
+
+def _assess_saved_run(run_dir, output_path=None):
+    """Read-only source assessment, with separate private derived results/report."""
+    run_dir = Path(run_dir).absolute()
+    state, cases, manifest = _load_saved_run(run_dir)
+    output = Path(output_path).absolute() if output_path is not None else None
+    if output is not None:
+        if output.suffix.lower() not in ('.md', '.json') or output.exists() or output.is_symlink() or output.resolve() != output or not output.parent.is_dir() or (output.is_relative_to(run_dir) and output.parent != run_dir):
+            raise ValueError('Report must be a new MD/JSON file outside original trace directories')
+    manual = _manual_records(run_dir)
+    results = []; metadata = {}
+    by_id = {case['caseId']: case for case in cases}
+    for trial in state['trials']:
         if trial['state'] == 'COMPLETE':
-            result = contract.validate_wire('TrialResult', _read_json(directory / 'result.json'))
+            directory = _confined(run_dir, trial['trialId'])
+            original = contract.validate_wire('TrialResult', _read_json(_confined(directory, 'result.json')))
+            if any(original[key] != value for key, value in (('runId', state['runId']), ('caseId', trial['caseId']), ('trialId', trial['trialId']))):
+                raise ValueError('Wrong saved result identity')
+            data = _read_json(_confined(directory, 'metadata.json'))
+            result = _assess_trial(by_id[trial['caseId']], trial, state, directory, original, data,
+                manual.get((trial['caseId'], trial['trialId'])))
             results.append(result)
-            metadata[(state['runId'], trial['trialId'])] = _read_json(directory / 'metadata.json')
+            metadata[(state['runId'], trial['trialId'])] = data
     with summary_scope({c['caseId']: c for c in cases}, metadata): summary = summarize(results, manifest)
-    export_report(summary, run_dir / 'report.json')
+    assessment_root = _confined(run_dir, 'assessments', must_exist=False)
+    assessment_root.mkdir(exist_ok=True)
+    assessment = assessment_root / ('assessment-' + uuid.uuid4().hex); assessment.mkdir()
+    results_path = assessment / 'results.json'
+    _exclusive_json(results_path, dict(schemaVersion=1, results=results))
+    output = output or assessment / 'report.json'
+    export_report(summary, output)
+    return dict(completedTrials=len(results), resultsFile=str(results_path), reportFile=str(output))
+
+
+def _saved_report(state, run_dir, cases, manifest, budget):
+    assessed = _assess_saved_run(run_dir)
     return dict(dryRun=False, runId=state['runId'], plannedTrials=len(state['trials']),
-        completedTrials=len(results), stopReason=state['stopReason'], budget=budget.snapshot(), reportFile=str(run_dir / 'report.json'))
+        completedTrials=assessed['completedTrials'], stopReason=state['stopReason'], budget=budget.snapshot(), reportFile=assessed['reportFile'])
 
 
 def run_batch(manifest_path: Path, run_dir: Path, execute: bool, resume: bool,

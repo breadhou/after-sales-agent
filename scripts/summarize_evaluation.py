@@ -14,14 +14,19 @@ be {}; observations remain unavailable and have explicit report counters.
 """
 from __future__ import annotations
 
+import argparse
 import copy
 import json
 import math
+import sys
 from collections import Counter
 from contextlib import contextmanager
 from contextvars import ContextVar
 from decimal import Decimal
 from pathlib import Path
+
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts import evaluation_contract as contract
 from scripts.evaluation_judge import AUTO_CRITERIA
@@ -353,4 +358,31 @@ def _validate_report(value):
 def export_report(summary: dict, output_path: Path) -> None:
     report = copy.deepcopy(summary)
     _validate_report(report)
-    Path(output_path).write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    payload = json.dumps(report, ensure_ascii=False, indent=2) + '\n'
+    if Path(output_path).suffix.lower() == '.md':
+        rows = ['# Evaluation assessment', '', 'Derived from archived evidence and supplied human audits.', '',
+            '| Mode | Passed | Failed | Errors | Pending | Missing |', '| --- | ---: | ---: | ---: | ---: | ---: |']
+        for mode, key in zip(contract.MODES, ('liveFirst', 'controlledFirst', 'reviewFirst')):
+            rate = report[key]
+            rows.append(f"| {mode} | {rate['passed']} | {rate['failed']} | {rate['errors']} | {rate['pending']} | {rate['missing']} |")
+        payload = '\n'.join(rows) + '\n\n```json\n' + payload + '```\n'
+    Path(output_path).write_text(payload, encoding='utf-8')
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='Assess archived evaluation evidence with actual human audits')
+    parser.add_argument('--run-dir', required=True, type=Path)
+    parser.add_argument('--output', required=True, type=Path)
+    args = parser.parse_args(argv)
+    try:
+        # Deferred import keeps the existing runner/summary import boundary.
+        from scripts.run_evaluation import _assess_saved_run
+        _assess_saved_run(args.run_dir, args.output)
+        print(json.dumps({'status': 'COMPLETED'}, separators=(',', ':')))
+        return 0
+    except Exception as failure:
+        print(json.dumps({'status': 'ERROR', 'exceptionClass': type(failure).__name__}, separators=(',', ':')))
+        return 1
+
+
+if __name__ == '__main__': raise SystemExit(main())
