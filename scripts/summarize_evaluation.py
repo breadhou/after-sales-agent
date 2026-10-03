@@ -306,11 +306,28 @@ def _validate_report(value):
         for metrics in node['invariants'].values():
             obj(metrics, ('applicable', 'violations'))
             for n in metrics.values(): integer(n)
-    obj(value, ('schemaVersion', 'suiteVersion', 'phase', 'liveFirst', 'controlledFirst', 'reviewFirst', 'categoryFirst', 'categoryByKind', 'repeats', 'repeatByMode', 'supplement', 'supplementByMode', 'repeatSequences', 'normalRefund', 'safety', 'safetyByMode', 'reviewGroups', 'cost', 'costByKind', 'costByMode', 'latency', 'latencyByMode', 'evidenceAvailability', 'failures'))
+    selection_keys = ('validationSelection',) if 'validationSelection' in value else ()
+    obj(value, ('schemaVersion', 'suiteVersion', 'phase', 'liveFirst', 'controlledFirst', 'reviewFirst', 'categoryFirst', 'categoryByKind', 'repeats', 'repeatByMode', 'supplement', 'supplementByMode', 'repeatSequences', 'normalRefund', 'safety', 'safetyByMode', 'reviewGroups', 'cost', 'costByKind', 'costByMode', 'latency', 'latencyByMode', 'evidenceAvailability', 'failures', *selection_keys))
     if type(value['schemaVersion']) is not int or value['schemaVersion'] != 1: raise ValueError('Invalid report version')
-    enum(value['phase'], ('pilot', 'full')); enum(value['suiteVersion'], ('v1-pilot', 'v1-full'))
-    if value['suiteVersion'] != 'v1-' + value['phase']: raise ValueError('Mixed report phase')
+    enum(value['phase'], ('pilot', 'full')); enum(value['suiteVersion'], ('v1-pilot', 'v1-full', 'v2-pilot', 'v2-full'))
+    if value['suiteVersion'] not in ('v1-' + value['phase'], 'v2-' + value['phase']): raise ValueError('Mixed report phase')
     for key in ('liveFirst', 'controlledFirst', 'reviewFirst', 'repeats', 'supplement'): rate(value[key])
+    if selection_keys:
+        selection = value['validationSelection']
+        obj(selection, ('selectedPlannedTrials', 'selectedCompletedTrials', 'fullSuitePlannedTrials',
+            'fullSuiteCoverageComplete', 'selectedCaseIds', 'undispatchedCaseIds'))
+        for key in ('selectedPlannedTrials', 'selectedCompletedTrials', 'fullSuitePlannedTrials'): integer(selection[key])
+        boolean(selection['fullSuiteCoverageComplete'])
+        completed = sum(value[key][status] for key in ('liveFirst', 'controlledFirst', 'reviewFirst')
+            for status in ('passed', 'failed', 'errors', 'skipped'))
+        if (value['suiteVersion'] != 'v2-pilot' or selection['selectedPlannedTrials'] != 5
+                or selection['selectedCompletedTrials'] != completed or not 0 <= completed <= 5
+                or selection['fullSuitePlannedTrials'] != 32 or selection['fullSuiteCoverageComplete'] is not False
+                or selection['selectedCaseIds'] != list(contract.VALIDATION_CASE_IDS)
+                or selection['undispatchedCaseIds'] != [i for i in contract.V2_PILOT_CASE_IDS if i not in contract.VALIDATION_CASE_IDS]
+                or [value[key]['planned'] for key in ('liveFirst', 'controlledFirst', 'reviewFirst')] != [22, 8, 2]
+                or value['repeats']['planned'] or value['supplement']['planned']):
+            raise ValueError('Invalid targeted validation coverage')
     obj(value['categoryFirst'], contract.CATEGORIES)
     for node in value['categoryFirst'].values(): rate(node)
     obj(value['categoryByKind'], ('REPEAT', 'SUPPLEMENT'))
@@ -365,6 +382,9 @@ def export_report(summary: dict, output_path: Path) -> None:
         for mode, key in zip(contract.MODES, ('liveFirst', 'controlledFirst', 'reviewFirst')):
             rate = report[key]
             rows.append(f"| {mode} | {rate['passed']} | {rate['failed']} | {rate['errors']} | {rate['pending']} | {rate['missing']} |")
+        if 'validationSelection' in report:
+            selection = report['validationSelection']
+            rows.extend(['', f"New-version infrastructure validation: {selection['selectedCompletedTrials']}/5 selected trials complete; full32 coverage remains incomplete (27 undispatched). Original configuration results remain separate."])
         payload = '\n'.join(rows) + '\n\n```json\n' + payload + '```\n'
     Path(output_path).write_text(payload, encoding='utf-8')
 

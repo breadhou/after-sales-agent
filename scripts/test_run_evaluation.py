@@ -1,4 +1,5 @@
 import copy
+import io
 import json
 import os
 import subprocess
@@ -465,6 +466,163 @@ class ArchivedAssessmentTest(unittest.TestCase):
             for sensitive in (judge_test.ORDER, 'secret-sentinel-token', 'PRIVATE-NO', 'refundRows', 'reply-1.txt'):
                 self.assertNotIn(sensitive, report)
         for path, raw in old.items(): self.assertEqual(raw, path.read_bytes(), path)
+
+
+class ValidationSelectionTest(unittest.TestCase):
+    def setUp(self):
+        BatchTest.setUp(self)
+        self.cases = runner.contract.load_suite(ROOT / 'eval/scenarios/v2/manifest.pilot.json')
+        self.manifest = _write_suite(self.root / 'suite', 'pilot', self.cases)
+        value = runner._read_json(self.manifest); value['suiteVersion'] = 'v2-pilot'
+        runner._atomic_json(self.manifest, value)
+        originals = runner.contract.load_suite(ROOT / 'eval/scenarios/v1/manifest.pilot.json')
+        source_manifest = _write_suite(self.root / 'source-suite', 'pilot', originals)
+        self.source = self.root / 'eval/runs/source-run'
+        self.source_state = runner._initialize_batch(source_manifest, self.source, False)
+        defects = {'NORMAL-008': 'MISSING_EVIDENCE', 'ADVERSARIAL-003': 'OWNER',
+            'INFO-019': 'UNBOUND_TARGET', 'REVIEW-001': 'REVIEW', 'REVIEW-013': 'REVIEW'}
+        sources = []
+        self.source_trials = {}
+        for trial in self.source_state['trials']:
+            if trial['caseId'] not in defects: continue
+            trial.update(state='COMPLETE', terminated=True, terminalEvidence='NOT_SENT')
+            directory = self.source / trial['trialId']; directory.mkdir()
+            result = runner._error_result(self.source.name, trial, defects[trial['caseId']])
+            if trial['caseId'] == 'ADVERSARIAL-003':
+                result.update(status='FAIL', automaticStatus='FAIL', failedCriteria=['OWNER', 'MANUAL_REQUIRED'])
+            runner._exclusive_json(directory / 'result.json', result)
+            runner._exclusive_json(directory / 'process.json', dict(exitCode=0, terminated=True, durationMs=1))
+            self.source_trials[trial['caseId']] = trial
+            sources.append(dict(caseId=trial['caseId'], trialId=trial['trialId']))
+        runner._atomic_json(self.source / 'batch.json', self.source_state)
+        self.spec = dict(schemaVersion=1, reason='infrastructure:FIX4-FIX5-contract-correction',
+            sourceRunId=self.source.name, sources=sources)
+        self.selection_path = self.root / 'selection.json'
+        runner._exclusive_json(self.selection_path, self.spec)
+        token = runner._OPTIONS.set({'validation_selection': self.selection_path})
+        self.addCleanup(runner._OPTIONS.reset, token)
+
+    def source_bytes(self):
+        return {p: p.read_bytes() for p in self.source.rglob('*') if p.is_file()}
+
+    def dry(self):
+        with patch.object(runner, '_helper', side_effect=AssertionError('helper touched')), \
+             patch.object(runner, '_read_env_file', side_effect=AssertionError('credentials touched')), \
+             patch.object(runner, '_run_worker', side_effect=AssertionError('worker touched')):
+            return runner.run_batch(self.manifest, self.run, False, False)
+
+    def test_fix5_selection_dry_run_and_cli_plan_only_five_of_full_frozen_suite(self):
+        before = self.source_bytes()
+        result = self.dry()
+        self.assertEqual((5, 32, 27), (result['plannedTrials'], result.get('fullSuitePlannedTrials'), len(result.get('undispatchedCaseIds', []))))
+        self.assertFalse(result['fullSuiteCoverageComplete'])
+        self.assertFalse(self.run.exists())
+        output = io.StringIO()
+        with patch('sys.stdout', output):
+            native = runner.main(['--manifest', str(self.manifest), '--run-dir', str(self.run),
+                '--validation-selection', str(self.selection_path)])
+        self.assertEqual(0, native)
+        self.assertEqual(5, json.loads(output.getvalue())['plannedTrials'])
+        self.assertEqual(before, self.source_bytes())
+
+    def test_fix5_selection_rejects_wrong_version_ids_reason_and_supplement_mix(self):
+        for change in ({'reason': 'semantic:retry'}, {'reason': 'infrastructure:'}, {'schemaVersion': True},
+                {'extra': 1}, {'sourceRunId': '../source-run'}, {'sources': self.spec['sources'][:-1]},
+                {'sources': self.spec['sources'] + [self.spec['sources'][0]]},
+                {'sources': [dict(caseId='NORMAL-004', trialId='trial-bad'), *self.spec['sources'][1:]]}):
+            with self.subTest(change=change):
+                runner._atomic_json(self.selection_path, {**self.spec, **change})
+                with self.assertRaises(ValueError): self.dry()
+        runner._atomic_json(self.selection_path, self.spec)
+        manifest = runner._read_json(self.manifest)
+        for version in ('v1-pilot', 'v2-full'):
+            runner._atomic_json(self.manifest, {**manifest, 'suiteVersion': version})
+            with self.assertRaises(ValueError): self.dry()
+        runner._atomic_json(self.manifest, manifest)
+        with self.assertRaises(ValueError):
+            runner.run_batch(self.manifest, self.run, False, True, 'NORMAL-008', 'infrastructure:timeout')
+        self.assertFalse(self.run.exists())
+
+    def test_fix5_selection_rejects_semantic_failures_unknown_and_unverified_source(self):
+        trial = self.source_trials['NORMAL-008']
+        result_path = self.source / trial['trialId'] / 'result.json'
+        result = runner._read_json(result_path)
+        for change in ({'status': 'PASS', 'automaticStatus': 'PASS'},
+                {'status': 'FAIL', 'automaticStatus': 'FAIL'}, {'failedCriteria': ['AMOUNT']},
+                {'runId': 'wrong-source'}, {'trialId': 'wrong-trial'}):
+            runner._atomic_json(result_path, {**result, **change})
+            with self.subTest(change=change), self.assertRaises(ValueError): self.dry()
+        runner._atomic_json(result_path, result)
+        owner = self.source_trials['ADVERSARIAL-003']
+        owner_path = self.source / owner['trialId'] / 'result.json'; old_owner = runner._read_json(owner_path)
+        runner._atomic_json(owner_path, {**old_owner, 'failedCriteria': ['OWNER', 'AMOUNT']})
+        with self.assertRaises(ValueError): self.dry()
+        runner._atomic_json(owner_path, old_owner)
+        for change in ({'terminated': False}, {'terminated': 1}, {'terminalEvidence': 'UNKNOWN'},
+                {'state': 'INFLIGHT'}, {'trialKind': 'SUPPLEMENT'}):
+            state = copy.deepcopy(self.source_state)
+            next(t for t in state['trials'] if t['trialId'] == trial['trialId']).update(change)
+            runner._atomic_json(self.source / 'batch.json', state)
+            with self.subTest(change=change), self.assertRaises(ValueError): self.dry()
+        state = copy.deepcopy(self.source_state); state['trials'][0]['state'] = 'INFLIGHT'
+        runner._atomic_json(self.source / 'batch.json', state)
+        with self.assertRaises(ValueError): self.dry()
+        runner._atomic_json(self.source / 'batch.json', self.source_state)
+        process = self.source / trial['trialId'] / 'process.json'
+        runner._atomic_json(process, dict(exitCode=None, terminated=False, durationMs=1))
+        with self.assertRaises(ValueError): self.dry()
+        self.assertFalse(self.run.exists())
+
+    def test_fix5_selection_freezes_source_and_resume_cannot_omit_change_or_expand(self):
+        state = runner._initialize_batch(self.manifest, self.run, False)
+        self.assertIn('validationSelection', state)
+        self.assertEqual(state['validationSelection'], runner._read_json(self.run / 'validation-selection.json'))
+        self.assertEqual(state, runner._initialize_batch(self.manifest, self.run, True))
+        with self.assertRaises(ValueError):
+            runner._supplement(state, self.run, 'NORMAL-008', 'infrastructure:timeout')
+        for change in ({'reason': 'infrastructure:changed'}, {'sources': self.spec['sources'][:-1]},
+                {'sources': list(reversed(self.spec['sources']))}):
+            runner._atomic_json(self.selection_path, {**self.spec, **change})
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                runner._initialize_batch(self.manifest, self.run, True)
+        runner._atomic_json(self.selection_path, self.spec)
+        token = runner._OPTIONS.set({})
+        try:
+            with self.assertRaises(ValueError): runner._initialize_batch(self.manifest, self.run, True)
+        finally: runner._OPTIONS.reset(token)
+        runner._atomic_json(self.source / 'batch.json', {**self.source_state, 'diagnosticChange': True})
+        with self.assertRaises(ValueError): runner._initialize_batch(self.manifest, self.run, True)
+
+    def test_fix5_normal_runner_dispatches_and_reserves_selected_trials_only(self):
+        before = self.source_bytes(); calls = []
+        def execute(case, trial, state, run_dir, client, backend, model, url, ledger, manual):
+            calls.append(case['caseId'])
+            key = state['runId'] + '.' + trial['trialId']; ledger.reserve(key)
+            folder = run_dir / trial['trialId']; folder.mkdir(); (folder / 'work').mkdir()
+            for name, value in (('case.json', case), ('result.json', runner._error_result(state['runId'], trial, 'MISSING_EVIDENCE')),
+                    ('metadata.json', dict(caseId=case['caseId'], trialKind='FIRST', repeatIndex=0,
+                        events=[], worker={}, before={}, after={},
+                        workerDurationMs=None if case.get('control', {}).get('target') == 'BACKEND_TRANSACTION' else 1, fixtureDurationMs=1))):
+                runner._exclusive_json(folder / name, value)
+            ledger.complete(key, dict(logicalModelRequests=0, promptTokens=None, completionTokens=None,
+                totalTokens=None, usageComplete=True, unknownUsageRequests=0), True)
+            trial.update(state='COMPLETE', terminated=True, terminalEvidence='NOT_SENT')
+            runner._atomic_json(run_dir / 'batch.json', state)
+        helper = BatchTest.fixture_helper(self, [])
+        with patch.object(runner, '_helper', return_value=(helper, self.root / 'backend')), \
+             patch.object(runner, '_read_env_file', return_value={}), patch.object(runner, '_execute_trial', side_effect=execute):
+            result = runner.run_batch(self.manifest, self.run, True, False)
+        self.assertEqual([s['caseId'] for s in self.spec['sources']], calls)
+        self.assertEqual((5, 5, 32, 27), (result['plannedTrials'], result['completedTrials'],
+            result['fullSuitePlannedTrials'], len(result['undispatchedCaseIds'])))
+        state = runner._read_json(self.run / 'batch.json')
+        self.assertEqual(27, sum(t['state'] == 'PENDING' for t in state['trials']))
+        budget = runner._read_json(self.root / 'eval/runs/budget-ledger.json')
+        self.assertEqual({state['runId'] + '.' + t['trialId'] for t in state['trials'] if t['state'] == 'COMPLETE'}, set(budget['trials']))
+        report = runner._read_json(result['reportFile'])
+        self.assertEqual(5, report['validationSelection']['selectedCompletedTrials'])
+        self.assertFalse(report['validationSelection']['fullSuiteCoverageComplete'])
+        self.assertEqual(before, self.source_bytes())
 
 
 class FixtureProtocolTest(unittest.TestCase):

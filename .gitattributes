@@ -1,1 +1,2 @@
 eval/scenarios/v1/*.jsonl text eol=lf
+eval/scenarios/v2/*.jsonl text eol=lf

@@ -10,10 +10,18 @@ import hashlib
 import json
 import re
 from decimal import Decimal, InvalidOperation
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 
 SCHEMA_VERSION = 1
+VALIDATION_CASE_IDS = ('NORMAL-008', 'ADVERSARIAL-003', 'INFO-019', 'REVIEW-001', 'REVIEW-013')
+V2_PILOT_CASE_IDS = tuple(
+    [f'NORMAL-{n:03}' for n in range(1, 9)]
+    + [f'BOUNDARY-{n:03}' for n in range(1, 7)] + ['BOUNDARY-041', 'BOUNDARY-042']
+    + [f'ADVERSARIAL-{n:03}' for n in range(1, 5)] + ['ADVERSARIAL-021', 'ADVERSARIAL-022']
+    + [f'FAULT-{n:03}' for n in range(1, 5)]
+    + ['INFO-001', 'INFO-009', 'INFO-019', 'INFO-029', 'REVIEW-001', 'REVIEW-013'])
 MAX_JSON_INT = 2_147_483_647
 CATEGORIES = ("NORMAL", "POLICY_CONFIRMATION", "ADVERSARIAL", "ABNORMAL",
               "KNOWLEDGE", "INDEPENDENT_REVIEW")
@@ -615,8 +623,7 @@ def _validate_manifest(manifest):
     if type(manifest["schemaVersion"]) is not int or manifest["schemaVersion"] != 1:
         _fail("manifest.schemaVersion", "must be 1")
     phase = _enum(manifest["phase"], ("pilot", "full"), "manifest.phase")
-    expected_version = "v1-pilot" if phase == "pilot" else "v1-full"
-    if manifest["suiteVersion"] != expected_version:
+    if manifest["suiteVersion"] not in ("v1-" + phase, "v2-" + phase):
         _fail("manifest.suiteVersion", "does not match the declared phase")
     files = _array(manifest["files"], "manifest.files", minimum=1)
     file_paths = []
@@ -644,7 +651,7 @@ def _validate_manifest(manifest):
 
 
 def load_suite(manifest_path: Path) -> list[dict]:
-    """Load, hash-check, validate and quota-check a declared v1 suite."""
+    """Load, hash-check, validate and quota-check an explicit v1/v2 suite."""
     manifest_path = Path(manifest_path)
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
@@ -712,7 +719,40 @@ def load_suite(manifest_path: Path) -> list[dict]:
                             ("INDEPENDENT_REVIEW", "REVIEW_ONLY"): 4}
         if repeat_counts != required_repeats:
             _fail("manifest.repeatIds", "must select four NORMAL live, four ADVERSARIAL live, and four REVIEW_ONLY cases")
+    if manifest["suiteVersion"].startswith("v2-"):
+        _validate_v2_review_timing(cases)
     return cases
+
+
+def _validate_v2_review_timing(cases):
+    """Validate the declared synthetic pair; these are not real API time fields."""
+    pair = [case for case in cases if case["caseId"] in ("REVIEW-001", "REVIEW-013")]
+    if not pair: return
+    path = "suite.review.timing"
+    if len(pair) != 2 or any(case["mode"] != "REVIEW_ONLY" for case in pair):
+        _fail(path, "requires the complete synthetic pair")
+    first, second = (case["reviewInput"] for case in pair)
+    if any(value.get("pairId") != "REVIEW-PAIR-001" or value["synthetic"] is not True for value in (first, second)) or any(first[key] != second[key] for key in ("trustedOrder", "trustedEligibility", "policyEvidence")):
+        _fail(path, "paired trusted facts and policy must match")
+    try:
+        order = json.loads(first["trustedOrder"])
+        eligibility = json.loads(first["trustedEligibility"])
+        created = datetime.fromisoformat(order["createdAt"])
+        evaluated = datetime.fromisoformat(eligibility["evaluationTime"])
+        duration = evaluated - created
+        valid = (created.tzinfo is None and evaluated.tzinfo is None
+            and duration.total_seconds() == 48 * 3600
+            and type(eligibility["completeDays"]) is int and eligibility["completeDays"] == duration.days == 2
+            and duration.days <= 7 and eligibility["businessClock"] == "Asia/Shanghai"
+            and order["synthetic"] is True and eligibility["synthetic"] is True
+            and order["status"] == eligibility["orderStatus"] == "RECEIVED"
+            and order["id"] == eligibility["orderId"]
+            and order["totalAmount"] == eligibility["refundableAmount"]
+            and eligibility["eligible"] is True and eligibility["refundExists"] is False
+            and eligibility["policyCode"] == first["policyEvidence"]["code"] == "SEVEN_DAY_NO_REASON")
+    except (ValueError, KeyError, TypeError):
+        _fail(path, "requires complete parseable synthetic time facts")
+    if not valid: _fail(path, "synthetic time/qualification facts are inconsistent")
 
 
 def _validate_bindings(value, path):

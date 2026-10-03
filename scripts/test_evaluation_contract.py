@@ -108,6 +108,26 @@ class EvaluationContractTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 contract.load_suite(malformed_path)
 
+    def test_fix5_explicit_v2_versions_keep_exact_phase_quotas(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for phase, count in (("pilot", 32), ("full", 240)):
+                path = _write_suite(Path(temporary) / phase, phase, _build_suite_cases(self.shared, phase))
+                manifest = json.loads(path.read_text())
+                manifest["suiteVersion"] = "v2-" + phase
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+                try:
+                    loaded = contract.load_suite(path)
+                except ValueError as failure:
+                    self.fail('Explicit v2 phase should load: ' + str(failure))
+                self.assertEqual(count, len(loaded))
+                for version in ("v3-" + phase, "v2-full" if phase == "pilot" else "v2-pilot"):
+                    with self.subTest(version=version):
+                        bad = {**manifest, "suiteVersion": version}
+                        with self.assertRaises(ValueError): contract.validate_wire("Manifest", bad)
+                manifest["caseIds"] = manifest["caseIds"][:-1]
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaises(ValueError): contract.load_suite(path)
+
     def test_suite_rejects_duplicate_ids_and_invalid_file_references(self):
         cases = _build_suite_cases(self.shared, "pilot")
         with tempfile.TemporaryDirectory() as directory:

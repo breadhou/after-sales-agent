@@ -2,11 +2,13 @@
 import hashlib
 import importlib
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
@@ -30,6 +32,90 @@ class PilotScenariosTest(unittest.TestCase):
     def cases(self):
         self.assertTrue((SUITE / 'manifest.pilot.json').is_file(), 'Task11 pilot manifest is missing')
         return load_suite(SUITE / 'manifest.pilot.json')
+
+    def test_fix5_v2_changes_only_shared_synthetic_time_facts(self):
+        target = ROOT / 'eval/scenarios/v2'
+        self.assertTrue((target / 'manifest.pilot.json').is_file(), 'Frozen v2 pilot missing')
+        original = {c['caseId']: c for c in self.cases()}
+        revised = load_suite(target / 'manifest.pilot.json')
+        self.assertEqual(list(original), [c['caseId'] for c in revised])
+        pair = []
+        for case in revised:
+            old = original[case['caseId']]
+            if case['caseId'] not in ('REVIEW-001', 'REVIEW-013'):
+                self.assertEqual(old, case)
+                continue
+            stripped = json.loads(json.dumps(case))
+            stripped['reviewInput']['trustedOrder'] = old['reviewInput']['trustedOrder']
+            stripped['reviewInput']['trustedEligibility'] = old['reviewInput']['trustedEligibility']
+            self.assertEqual(old, stripped)
+            order = json.loads(case['reviewInput']['trustedOrder'])
+            eligibility = json.loads(case['reviewInput']['trustedEligibility'])
+            self.assertEqual('2026-09-29T10:00:00', order['createdAt'])
+            self.assertEqual('2026-10-01T10:00:00', eligibility['evaluationTime'])
+            duration = datetime.fromisoformat(eligibility['evaluationTime']) - datetime.fromisoformat(order['createdAt'])
+            self.assertEqual(48 * 3600, duration.total_seconds())
+            self.assertEqual(2, eligibility['completeDays'])
+            self.assertEqual(duration.days, eligibility['completeDays'])
+            self.assertLessEqual(duration.days, 7)
+            self.assertIs(True, order['synthetic'])
+            self.assertIs(True, eligibility['synthetic'])
+            self.assertEqual('Asia/Shanghai', eligibility['businessClock'])
+            self.assertEqual('SEVEN_DAY_NO_REASON', eligibility['policyCode'])
+            self.assertEqual({}, case['fixture'])
+            self.assertEqual([], case['turns'])
+            pair.append(case['reviewInput'])
+        self.assertEqual(2, len(pair))
+        self.assertEqual(pair[0]['trustedOrder'], pair[1]['trustedOrder'])
+        self.assertEqual(pair[0]['trustedEligibility'], pair[1]['trustedEligibility'])
+        self.assertNotEqual(pair[0]['originalUserRequest'], pair[1]['originalUserRequest'])
+        for name in ('normal', 'boundary', 'adversarial', 'fault', 'information'):
+            self.assertEqual((SUITE / (name + '.jsonl')).read_bytes(), (target / (name + '.jsonl')).read_bytes())
+
+    def test_fix5_v2_frozen_hashes_survive_autocrlf_git_checkout(self):
+        source = ROOT / 'eval/scenarios/v2'
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary) / 'repository'; repository.mkdir()
+            destination = repository / 'eval/scenarios/v2'; destination.mkdir(parents=True)
+            (repository / '.gitattributes').write_bytes((ROOT / '.gitattributes').read_bytes())
+            for entry in source.iterdir():
+                if entry.suffix in ('.jsonl', '.json'): (destination / entry.name).write_bytes(entry.read_bytes())
+            def git(*args):
+                completed = subprocess.run(['git', '-C', str(repository), *args], capture_output=True, check=False)
+                self.assertEqual(0, completed.returncode, 'temporary checkout Git native exit')
+            git('init', '--quiet')
+            git('config', 'core.autocrlf', 'true')
+            git('add', '--', '.gitattributes', 'eval/scenarios/v2')
+            exported = Path(temporary) / 'exported'; exported.mkdir()
+            git('checkout-index', '--all', '--prefix=' + str(exported) + os.sep)
+            checked = exported / 'eval/scenarios/v2'
+            for original in source.glob('*.jsonl'):
+                self.assertEqual(hashlib.sha256(original.read_bytes()).hexdigest(),
+                    hashlib.sha256((checked / original.name).read_bytes()).hexdigest(), original.name)
+            self.assertEqual(32, len(load_suite(checked / 'manifest.pilot.json')))
+
+    def test_fix5_v2_rejects_missing_reversed_inconsistent_time_and_stale_hashes(self):
+        target = ROOT / 'eval/scenarios/v2'
+        self.assertTrue((target / 'manifest.pilot.json').is_file(), 'Frozen v2 pilot missing')
+        for field, value in (('createdAt', None), ('createdAt', '2026-10-02T10:00:00'),
+                ('evaluationTime', None), ('completeDays', 1), ('completeDays', True), ('businessClock', None),
+                ('synthetic', False), ('policyCode', 'QUALITY_ISSUE')):
+            with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as temporary:
+                copied = Path(temporary) / 'v2'; shutil.copytree(target, copied)
+                path = copied / 'review.jsonl'
+                cases = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+                for case in cases:
+                    key = 'trustedOrder' if field == 'createdAt' else 'trustedEligibility'
+                    facts = json.loads(case['reviewInput'][key])
+                    if value is None: facts.pop(field)
+                    else: facts[field] = value
+                    case['reviewInput'][key] = json.dumps(facts, ensure_ascii=False)
+                path.write_text('\n'.join(json.dumps(c, ensure_ascii=False) for c in cases) + '\n', encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'sha256'): load_suite(copied / 'manifest.pilot.json')
+                manifest = json.loads((copied / 'manifest.pilot.json').read_text())
+                next(f for f in manifest['files'] if f['path'] == 'review.jsonl')['sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+                (copied / 'manifest.pilot.json').write_text(json.dumps(manifest), encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'timing'): load_suite(copied / 'manifest.pilot.json')
 
     def test_pilot_counts_ids_and_modes(self):
         cases = self.cases()

@@ -42,6 +42,55 @@ class SummaryTest(unittest.TestCase):
         with summary_scope(self.cases, self.evidence):
             return summarize(self.results, self.manifest)
 
+    def fix5_pilot_report(self):
+        path = Path(__file__).resolve().parents[1] / 'eval/scenarios/v2/manifest.pilot.json'
+        cases = load_suite(path)
+        manifest = json.loads(path.read_text(encoding='utf-8'))
+        try:
+            with summary_scope({c['caseId']: c for c in cases}, {}): report = summarize([], manifest)
+        except ValueError as failure:
+            self.fail('Explicit v2 summary should be accepted: ' + str(failure))
+        selected = ['NORMAL-008', 'ADVERSARIAL-003', 'INFO-019', 'REVIEW-001', 'REVIEW-013']
+        report['validationSelection'] = dict(selectedPlannedTrials=5, selectedCompletedTrials=0,
+            fullSuitePlannedTrials=32, fullSuiteCoverageComplete=False, selectedCaseIds=selected,
+            undispatchedCaseIds=[c['caseId'] for c in cases if c['caseId'] not in selected])
+        return report
+
+    def test_fix5_export_explicit_v2_versions_preserves_full_denominators(self):
+        full = self.report(); full['suiteVersion'] = 'v2-full'
+        pilot = self.fix5_pilot_report()
+        for name, report in (('full', full), ('pilot', pilot)):
+            path = self.root / (name + '.json')
+            try: export_report(report, path)
+            except ValueError as failure: self.fail('Truthful v2 report should export: ' + str(failure))
+            self.assertEqual(report, json.loads(path.read_text()))
+        self.assertEqual([22, 8, 2], [pilot[k]['planned'] for k in ('liveFirst', 'controlledFirst', 'reviewFirst')])
+        self.assertEqual(32, sum(pilot[k]['missing'] for k in ('liveFirst', 'controlledFirst', 'reviewFirst')))
+        for phase in ('pilot', 'full'):
+            invalid = copy.deepcopy(pilot if phase == 'pilot' else full)
+            invalid['suiteVersion'] = 'v2-full' if phase == 'pilot' else 'v2-pilot'
+            with self.assertRaises(ValueError): export_report(invalid, self.root / 'invalid.json')
+
+    def test_fix5_selection_export_is_closed_logical_counts_and_never_private_provenance(self):
+        report = self.fix5_pilot_report()
+        try: export_report(report, self.root / 'selection.md')
+        except ValueError as failure: self.fail('Closed selection summary should export: ' + str(failure))
+        self.assertIn('5', (self.root / 'selection.md').read_text())
+        for change in ({'sourceRunId': 'PRIVATE_RUN'}, {'sourceTrialId': 'PRIVATE_TRIAL'},
+                {'reason': 'infrastructure:PRIVATE'}, {'sourceHashes': {}}, {'secret': 'PRIVATE'},
+                {'selectedCompletedTrials': 6}, {'selectedCompletedTrials': 1}, {'selectedPlannedTrials': True},
+                {'fullSuiteCoverageComplete': True}, {'fullSuitePlannedTrials': 5},
+                {'undispatchedCaseIds': ['MODEL_API_KEY_PRIVATE'] * 27},
+                {'selectedCaseIds': ['NORMAL-004', *report['validationSelection']['selectedCaseIds'][1:]]}):
+            with self.subTest(change=change):
+                bad = copy.deepcopy(report); bad['validationSelection'].update(change)
+                path = self.root / 'refused.json'
+                with self.assertRaises(ValueError): export_report(bad, path)
+                self.assertFalse(path.exists())
+        for version in ('v1-pilot', 'v2-full', 'v3-pilot'):
+            bad = copy.deepcopy(report); bad['suiteVersion'] = version
+            with self.assertRaises(ValueError): export_report(bad, self.root / 'refused.json')
+
     def test_formal_live_fixed_denominator_includes_errors_skips_and_missing(self):
         live = [c['caseId'] for c in self.cases.values() if c['mode'] == 'LIVE_E2E']
         for case_id in live[:120]: self.add(case_id)

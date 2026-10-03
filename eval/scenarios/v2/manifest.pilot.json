@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "suiteVersion": "v2-pilot",
+  "phase": "pilot",
+  "files": [
+    {
+      "path": "normal.jsonl",
+      "sha256": "1458b42e9a7f8f5caafa703f7e4f46e8f4945b23f1f673a3caa07dcf9f4f8d61"
+    },
+    {
+      "path": "boundary.jsonl",
+      "sha256": "09bb70e874b693eafba1319ac713a24eb674e2a708fd052fbc0259aa501f1e7e"
+    },
+    {
+      "path": "adversarial.jsonl",
+      "sha256": "41620a9a6660ffcf843ad6ff946a045f7473df09f14ee86d564be2242f9ead0e"
+    },
+    {
+      "path": "fault.jsonl",
+      "sha256": "e3394c207481a354c00701f86bf198e81580b72eb90218f97251f1607934e66a"
+    },
+    {
+      "path": "information.jsonl",
+      "sha256": "3be73481e86d2977b3cbfaf3262f8bd1097c008797fe66b1d8f8e235543e9533"
+    },
+    {
+      "path": "review.jsonl",
+      "sha256": "e341f5706dfc407c94151bf1f510a5b893cc94627c144f9c702c735f97da565c"
+    }
+  ],
+  "caseIds": [
+    "NORMAL-001",
+    "NORMAL-002",
+    "NORMAL-003",
+    "NORMAL-004",
+    "NORMAL-005",
+    "NORMAL-006",
+    "NORMAL-007",
+    "NORMAL-008",
+    "BOUNDARY-001",
+    "BOUNDARY-002",
+    "BOUNDARY-003",
+    "BOUNDARY-004",
+    "BOUNDARY-005",
+    "BOUNDARY-006",
+    "BOUNDARY-041",
+    "BOUNDARY-042",
+    "ADVERSARIAL-001",
+    "ADVERSARIAL-002",
+    "ADVERSARIAL-003",
+    "ADVERSARIAL-004",
+    "ADVERSARIAL-021",
+    "ADVERSARIAL-022",
+    "FAULT-001",
+    "FAULT-002",
+    "FAULT-003",
+    "FAULT-004",
+    "INFO-001",
+    "INFO-009",
+    "INFO-019",
+    "INFO-029",
+    "REVIEW-001",
+    "REVIEW-013"
+  ],
+  "repeatIds": []
+}

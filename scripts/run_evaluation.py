@@ -31,6 +31,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _OPTIONS = ContextVar('evaluation_runner_options', default={})
 DEADLINE_SECONDS = 300
 INFRA_CRITERIA = {'FIXTURE_ERROR', 'FIXTURE_CREATION_UNKNOWN', 'MISSING_EVIDENCE', 'MODEL_ERROR', 'UNRESOLVED_WRITE'}
+VALIDATION_DEFECTS = {'NORMAL-008': 'MISSING_EVIDENCE', 'ADVERSARIAL-003': 'OWNER',
+    'INFO-019': 'UNBOUND_TARGET', 'REVIEW-001': 'REVIEW', 'REVIEW-013': 'REVIEW'}
 
 
 def build_worker_environment(model_environment: dict[str, str], actor_token: str | None,
@@ -79,6 +81,76 @@ def _confined(root, relative, *, must_exist=True):
     return actual
 
 
+def _validation_selection(manifest, cases, run_dir):
+    path = _OPTIONS.get().get('validation_selection')
+    if path is None: return None
+    path = Path(path).absolute()
+    if path.resolve(strict=True) != path or not path.is_file(): raise ValueError('Invalid selection file')
+    spec = _read_json(path)
+    if not isinstance(spec, dict) or set(spec) != {'schemaVersion', 'reason', 'sourceRunId', 'sources'} or type(spec['schemaVersion']) is not int or spec['schemaVersion'] != 1:
+        raise ValueError('Invalid closed validation selection')
+    reason = spec['reason']
+    if not isinstance(reason, str) or not reason.startswith('infrastructure:') or not reason[len('infrastructure:'):].strip():
+        raise ValueError('Validation requires an explicit infrastructure reason')
+    if manifest['suiteVersion'] != 'v2-pilot' or manifest['phase'] != 'pilot' or manifest['repeatIds'] or manifest['caseIds'] != list(contract.V2_PILOT_CASE_IDS):
+        raise ValueError('Validation selection requires the full frozen v2 pilot')
+    source_id = spec['sourceRunId']
+    if not isinstance(source_id, str) or not contract.SAFE_ID_RE.fullmatch(source_id) or source_id == run_dir.name:
+        raise ValueError('Invalid independent source run')
+    sources = spec['sources']
+    if not isinstance(sources, list) or len(sources) != len(VALIDATION_DEFECTS) or any(not isinstance(s, dict) or set(s) != {'caseId', 'trialId'} for s in sources):
+        raise ValueError('Validation requires exactly the five named defect sources')
+    expected = [identifier for identifier in manifest['caseIds'] if identifier in VALIDATION_DEFECTS]
+    if [s['caseId'] for s in sources] != expected or len(expected) != len(VALIDATION_DEFECTS):
+        raise ValueError('Unknown, duplicate, reordered or missing validation cases')
+    source = _confined(REPO_ROOT / 'eval/runs', source_id)
+    state, old_cases, old_manifest = _load_saved_run(source)
+    if old_manifest['suiteVersion'] != 'v1-pilot' or state.get('validationSelection') is not None or state.get('stopReason') == 'UNRESOLVED_WRITE' or any(t['state'] == 'INFLIGHT' or t.get('terminalEvidence') == 'UNKNOWN' for t in state['trials']):
+        raise ValueError('Source must be an original resolved v1 pilot')
+    current = {c['caseId']: c for c in cases}; old = {c['caseId']: c for c in old_cases}
+    bound = []
+    for item in sources:
+        case_id, trial_id = item['caseId'], item['trialId']
+        first = [t for t in state['trials'] if t['caseId'] == case_id and t['trialKind'] == 'FIRST']
+        if len(first) != 1 or first[0]['trialId'] != trial_id or first[0]['state'] != 'COMPLETE' or first[0].get('terminated') is not True or first[0].get('terminalEvidence') not in ('NOT_SENT', 'COMPLETED'):
+            raise ValueError('Source needs its verified complete first trial')
+        comparison = copy.deepcopy(current[case_id])
+        if case_id in ('REVIEW-001', 'REVIEW-013'):
+            for key in ('trustedOrder', 'trustedEligibility'):
+                comparison['reviewInput'][key] = old[case_id]['reviewInput'][key]
+        if _hash(comparison) != state['caseHashes'][case_id]: raise ValueError('Validation changes source semantics')
+        directory = _confined(source, trial_id)
+        result_path = _confined(directory, 'result.json'); process_path = _confined(directory, 'process.json')
+        result = contract.validate_wire('TrialResult', _read_json(result_path))
+        process = _read_json(process_path)
+        if not isinstance(process, dict) or set(process) != {'exitCode', 'terminated', 'durationMs'} or process['terminated'] is not True or type(process['exitCode']) is not int or process['exitCode'] != 0 or type(process['durationMs']) is not int or process['durationMs'] < 0:
+            raise ValueError('Source worker termination is unverified')
+        status = 'FAIL' if case_id == 'ADVERSARIAL-003' else 'ERROR'
+        if any(result[k] != v for k, v in (('runId', source_id), ('caseId', case_id), ('trialId', trial_id), ('status', status), ('automaticStatus', status))) or set(result['failedCriteria']) - {'MANUAL_REQUIRED'} != {VALIDATION_DEFECTS[case_id]}:
+            raise ValueError('Source is not the named evaluator/fixture defect')
+        bound.append(dict(**item, sourceCaseHash=state['caseHashes'][case_id],
+            resultSha256=hashlib.sha256(result_path.read_bytes()).hexdigest(),
+            processSha256=hashlib.sha256(process_path.read_bytes()).hexdigest()))
+    return dict(schemaVersion=1, reason=reason, sourceRunId=source_id, sources=bound,
+        sourceControlHashes={name: hashlib.sha256(_confined(source, name).read_bytes()).hexdigest()
+            for name in ('batch.json', 'manifest.json', 'cases.json')})
+
+
+def _selected_trials(state):
+    selection = state.get('validationSelection')
+    if selection is None: return state['trials']
+    ids = {item['caseId'] for item in selection['sources']}
+    return [trial for trial in state['trials'] if trial['caseId'] in ids]
+
+
+def _selection_counts(state):
+    selected = _selected_trials(state)
+    return dict(selectedPlannedTrials=len(selected), selectedCompletedTrials=sum(t['state'] == 'COMPLETE' for t in selected),
+        fullSuitePlannedTrials=len(state['trials']), fullSuiteCoverageComplete=False,
+        selectedCaseIds=[t['caseId'] for t in selected],
+        undispatchedCaseIds=[t['caseId'] for t in state['trials'] if t not in selected])
+
+
 def _initialize_batch(manifest_path, run_dir, resume):
     manifest = contract.validate_wire('Manifest', _read_json(manifest_path))
     cases = contract.load_suite(manifest_path)
@@ -87,6 +159,7 @@ def _initialize_batch(manifest_path, run_dir, resume):
     allowed = (REPO_ROOT / 'eval/runs').resolve()
     if run_dir.resolve() != run_dir or run_dir.parent != allowed or not contract.SAFE_ID_RE.fullmatch(run_dir.name):
         raise ValueError('Run directory must be a direct confined eval/runs child')
+    selection = _validation_selection(manifest, cases, run_dir)
     state_path = run_dir / 'batch.json'
     options = _OPTIONS.get()
     config_hash = _hash(dict(supermallRoot=str(Path(options.get('supermall_root', REPO_ROOT.parent / 'supermall')).resolve()),
@@ -96,6 +169,10 @@ def _initialize_batch(manifest_path, run_dir, resume):
         state = _read_json(state_path)
         if state.get('schemaVersion') != 1 or state.get('runId') != run_dir.name or state.get('manifestHash') != _hash(manifest) or state.get('caseHashes') != hashes or state.get('configHash') != config_hash:
             raise ValueError('Resume version or configuration mismatch')
+        if state.get('validationSelection') != selection:
+            raise ValueError('Resume validation selection/source mismatch')
+        if selection is not None:
+            _verify_saved_selection(state, run_dir, manifest)
         return state
     if run_dir.exists(): raise ValueError('Run ID cannot be reused')
     run_dir.mkdir(parents=True)
@@ -109,6 +186,9 @@ def _initialize_batch(manifest_path, run_dir, resume):
                 trials.append(dict(trialId='trial-' + uuid.uuid4().hex, caseId=case_id, trialKind='REPEAT', repeatIndex=index, state='PENDING'))
     state = dict(schemaVersion=1, runId=run_dir.name, manifestHash=_hash(manifest), caseHashes=hashes,
         configHash=config_hash, trials=trials, stopReason=None)
+    if selection is not None:
+        state['validationSelection'] = selection
+        _exclusive_json(run_dir / 'validation-selection.json', selection)
     _atomic_json(state_path, state)
     return state
 
@@ -208,6 +288,7 @@ def _request(client, message, path):
 
 
 def _supplement(state, run_dir, case_id, reason):
+    if state.get('validationSelection') is not None: raise ValueError('Versioned validation cannot use same-batch supplements')
     if not isinstance(reason, str) or not reason.startswith('infrastructure:') or not reason[len('infrastructure:'):].strip():
         raise ValueError('Supplement requires an explicit infrastructure reason')
     originals = [t for t in state['trials'] if t['caseId'] == case_id and t['trialKind'] == 'FIRST']
@@ -354,7 +435,18 @@ def _load_saved_run(run_dir):
         if not isinstance(trial.get('trialId'), str) or not contract.SAFE_ID_RE.fullmatch(trial['trialId']) or trial['trialId'] in seen or trial['caseId'] not in state['caseHashes'] or trial['state'] not in ('PENDING', 'INFLIGHT', 'COMPLETE'):
             raise ValueError('Invalid saved trial identity or state')
         seen.add(trial['trialId'])
+    if state.get('validationSelection') is not None: _verify_saved_selection(state, run_dir, manifest)
     return state, cases, manifest
+
+
+def _verify_saved_selection(state, run_dir, manifest):
+    selection = state['validationSelection']
+    if selection != _read_json(_confined(run_dir, 'validation-selection.json')) or manifest['suiteVersion'] != 'v2-pilot':
+        raise ValueError('Frozen validation selection mismatch')
+    if not isinstance(selection, dict) or not isinstance(selection.get('sources'), list) or [s.get('caseId') for s in selection['sources']] != [i for i in manifest['caseIds'] if i in VALIDATION_DEFECTS]:
+        raise ValueError('Invalid saved validation cohort')
+    if [t['caseId'] for t in state['trials']] != manifest['caseIds'] or any(t['trialKind'] != 'FIRST' or t['repeatIndex'] != 0 or (t['caseId'] not in VALIDATION_DEFECTS and t['state'] != 'PENDING') for t in state['trials']):
+        raise ValueError('Validation cannot expand coverage or repeat trials')
 
 
 def _assess_trial(case, trial, state, directory, original, metadata, manual):
@@ -427,6 +519,7 @@ def _assess_saved_run(run_dir, output_path=None):
             results.append(result)
             metadata[(state['runId'], trial['trialId'])] = data
     with summary_scope({c['caseId']: c for c in cases}, metadata): summary = summarize(results, manifest)
+    if state.get('validationSelection') is not None: summary['validationSelection'] = _selection_counts(state)
     assessment_root = _confined(run_dir, 'assessments', must_exist=False)
     assessment_root.mkdir(exist_ok=True)
     assessment = assessment_root / ('assessment-' + uuid.uuid4().hex); assessment.mkdir()
@@ -439,8 +532,10 @@ def _assess_saved_run(run_dir, output_path=None):
 
 def _saved_report(state, run_dir, cases, manifest, budget):
     assessed = _assess_saved_run(run_dir)
-    return dict(dryRun=False, runId=state['runId'], plannedTrials=len(state['trials']),
+    result = dict(dryRun=False, runId=state['runId'], plannedTrials=len(_selected_trials(state)),
         completedTrials=assessed['completedTrials'], stopReason=state['stopReason'], budget=budget.snapshot(), reportFile=assessed['reportFile'])
+    if state.get('validationSelection') is not None: result.update(_selection_counts(state))
+    return result
 
 
 def run_batch(manifest_path: Path, run_dir: Path, execute: bool, resume: bool,
@@ -449,7 +544,19 @@ def run_batch(manifest_path: Path, run_dir: Path, execute: bool, resume: bool,
     manifest = contract.validate_wire('Manifest', _read_json(manifest_path))
     cases = contract.load_suite(manifest_path)
     if (supplement_case is None) != (reason is None): raise ValueError('Supplement case and reason must be supplied together')
+    if _OPTIONS.get().get('validation_selection') is not None and (supplement_case is not None or reason is not None):
+        raise ValueError('Validation selection cannot combine with supplements')
     if not execute:
+        selection = _validation_selection(manifest, cases, run_dir)
+        if selection is not None:
+            if not resume and run_dir.exists(): raise ValueError('Validation run ID cannot be reused')
+            if resume: _initialize_batch(manifest_path, run_dir, True)
+            ids = {s['caseId'] for s in selection['sources']}
+            return dict(dryRun=True, plannedTrials=len(ids), selectedPlannedTrials=len(ids),
+                fullSuitePlannedTrials=len(cases), fullSuiteCoverageComplete=False,
+                selectedCaseIds=[c['caseId'] for c in cases if c['caseId'] in ids],
+                undispatchedCaseIds=[c['caseId'] for c in cases if c['caseId'] not in ids],
+                phase=manifest['phase'], suiteVersion=manifest['suiteVersion'])
         return dict(dryRun=True, plannedTrials=len(cases)+2*len(manifest['repeatIds']),
                     phase=manifest['phase'], suiteVersion=manifest['suiteVersion'])
     runs_root = REPO_ROOT / 'eval/runs'
@@ -459,7 +566,7 @@ def run_batch(manifest_path: Path, run_dir: Path, execute: bool, resume: bool,
         if supplement_case is not None:
             if not resume: raise ValueError('Supplement requires resume of its first batch')
             selected = _supplement(state, run_dir, supplement_case, reason)
-        else: selected = state['trials']
+        else: selected = _selected_trials(state)
         if any(t['state'] == 'INFLIGHT' for t in state['trials']):
             return dict(dryRun=False, stopReason='INFLIGHT', budget=budget.snapshot())
         if state.get('stopReason') == 'UNRESOLVED_WRITE':
@@ -524,8 +631,10 @@ def main(argv=None):
     parser.add_argument('--backend-env-file', type=Path, default=REPO_ROOT / '.env')
     parser.add_argument('--supplement-case')
     parser.add_argument('--reason')
+    parser.add_argument('--validation-selection', type=Path)
     args = parser.parse_args(argv)
-    token = _OPTIONS.set(dict(supermall_root=args.supermall_root, backend_env_file=args.backend_env_file))
+    token = _OPTIONS.set(dict(supermall_root=args.supermall_root, backend_env_file=args.backend_env_file,
+        validation_selection=args.validation_selection))
     try:
         result = run_batch(args.manifest, args.run_dir, args.execute, args.resume, args.supplement_case, args.reason)
         print(json.dumps(result, separators=(',', ':')))
