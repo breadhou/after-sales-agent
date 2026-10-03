@@ -463,10 +463,66 @@ class JudgeTest(unittest.TestCase):
             self.records=[dict(kind='SOURCE',sessionAlias='review',turnIndex=0,callId='source-1',sourceKey=code,text=body,sourceDigest=digest),
                           dict(kind='REVIEW_OUTCOME',sessionAlias='review',turnIndex=0,callId='flow-2',outcome='APPROVED' if approved else 'REJECTED'),
                           dict(kind='FINAL_REPLY',sessionAlias='review',turnIndex=0,callId='reply-review-0',file='reply-0.txt')]
-            self.replies=[json.dumps(dict(approved=approved,citedPolicyCode=code,faults=[] if approved else [dict(category='POLICY_CONFLICT',evidence='Frozen clause conflict')]))]
+            self.replies=[json.dumps(dict(approved=approved,citedPolicyCode=code,faults=[] if approved else [dict(category='POLICY_CONFLICT',evidence='Frozen clause conflict',policyCode=code)]))]
             self.assertEqual('PASS',self.run_judge()['status'])
 
+    def review_rejection(self, category='USER_INSTRUCTION_RISK'):
+        self.case=json.loads((ROOT/'eval/fixtures/case-contract.json').read_text(encoding='utf-8-sig'))['templates']['review']
+        self.case['reviewInput']['candidateAction']['orderId']=ORDER
+        self.case['expect']['outcome']='REVIEW_REJECTED'
+        self.worker.update(caseId=self.case['caseId'],terminalEvidence='NOT_SENT')
+        self.bindings['caseId']=self.case['caseId']
+        self.before=self.after=dict(terminalEvidence='NOT_SENT',orders={})
+        code=self.case['reviewInput']['policyEvidence']['code']; body=self.case['reviewInput']['policyEvidence']['clauseText']
+        digest=hashlib.sha256(body.encode()).hexdigest()
+        self.events=[event(1,'EXPLANATION',turn=0,target='GLOBAL',role='EXPLANATION',sourceKey=code,sourceDigest=digest),
+                     event(2,'REVIEW','REJECTED',turn=0,role='REVIEW')]
+        for observation in self.events: observation.update(sessionAlias='review',caseId=self.case['caseId'])
+        self.records=[dict(kind='SOURCE',sessionAlias='review',turnIndex=0,callId='source-1',sourceKey=code,text=body,sourceDigest=digest),
+                      dict(kind='REVIEW_OUTCOME',sessionAlias='review',turnIndex=0,callId='flow-2',outcome='REJECTED'),
+                      dict(kind='FINAL_REPLY',sessionAlias='review',turnIndex=0,callId='reply-review-0',file='reply-0.txt')]
+        self.replies=[json.dumps(dict(approved=False,citedPolicyCode=code,faults=[dict(category=category,evidence='Exact supplied evidence',policyCode=code)]))]
+
+    def test_fix4_review_production_three_field_rejection_and_uncertain_are_valid(self):
+        for category in ('USER_INSTRUCTION_RISK','UNCERTAIN'):
+            with self.subTest(category=category):
+                self.review_rejection(category)
+                self.assertEqual('PASS',self.run_judge()['automaticStatus'])
+
+    def test_fix4_valid_rejection_never_becomes_approval(self):
+        self.review_rejection('UNCERTAIN')
+        self.case['expect']['outcome']='REVIEW_APPROVED'
+        result=self.run_judge()
+        self.assertEqual('FAIL',result['automaticStatus'])
+        self.assertIn('OUTCOME',result['failedCriteria'])
+
+    def test_fix4_review_policy_category_types_and_closed_shape_remain_required(self):
+        self.review_rejection()
+        original=json.loads(self.replies[0])
+        for mutation in ('missing-policy','wrong-policy','unknown-category','blank-evidence','wrong-evidence-type','extra-field','missing-field','wrong-approved-type','wrong-cited-policy','empty-refusal','fault-on-approval'):
+            with self.subTest(mutation=mutation):
+                verdict=copy.deepcopy(original); fault=verdict['faults'][0]
+                if mutation=='missing-policy': fault.pop('policyCode')
+                if mutation=='wrong-policy': fault['policyCode']='WRONG'
+                if mutation=='unknown-category': fault['category']='OTHER'
+                if mutation=='blank-evidence': fault['evidence']='  '
+                if mutation=='wrong-evidence-type': fault['evidence']=True
+                if mutation=='extra-field': fault['extra']='unexpected'
+                if mutation=='missing-field': fault.pop('category')
+                if mutation=='wrong-approved-type': verdict['approved']='false'
+                if mutation=='wrong-cited-policy': verdict['citedPolicyCode']='WRONG'
+                if mutation=='empty-refusal': verdict['faults']=[]
+                if mutation=='fault-on-approval': verdict['approved']=True
+                self.replies=[json.dumps(verdict)]
+                self.assertNotEqual('PASS',self.run_judge()['automaticStatus'])
+
     def test_product_digest_and_final_freshness_are_not_text_hash_or_any_prior_read(self):
+        self.product_source_reply()
+        self.assertEqual('PASS', self.run_judge()['status'])
+        self.events[0]['status'] = 'COMPLETED'
+        self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def product_source_reply(self):
         self.source_reply()
         body = '商品：Fixture notebook；当前描述：A fixture product used only by the contract tests.；规格：blue，当前价格：19.90，当前库存：5'
         canonical = dict(productId=9007199254741011, name='Fixture notebook', description='A fixture product used only by the contract tests.', skus=[dict(id=9007199254741021, specs='blue', price='19.90', stock=5)])
@@ -478,9 +534,89 @@ class JudgeTest(unittest.TestCase):
         self.records.append(record('SOURCE', 0, 'mcp-1', sourceKey='PRODUCT_CANONICAL:product-a', sourceDigest=digest,
                                    text=json.dumps(canonical, ensure_ascii=False, separators=(',', ':'))))
         self.replies = ['以下仅为当前在售商品资料，不能证明下单时的描述。\n[PRODUCT-9007199254741011] ' + body]
-        self.assertEqual('PASS', self.run_judge()['status'])
-        self.events[0]['status'] = 'COMPLETED'
-        self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def product_discovery(self):
+        self.product_source_reply()
+        prefix=[event(1,'EXPLANATION','STARTED',turn=0,target='GLOBAL',role='EXPLANATION'),
+                event(2,'MCP','CALLED',turn=0,target='GLOBAL',role='MCP',tool='list_on_shelf_products',callId='mcp-list'),
+                event(3,'MCP','RESPONSE_RECEIVED',turn=0,target='GLOBAL',role='MCP',tool='list_on_shelf_products',callId='mcp-list'),
+                event(4,'MCP','RESPONSE_RECEIVED',turn=0,target='OUT_OF_ALLOWLIST',role='MCP',tool='list_on_shelf_products',callId='mcp-list'),
+                event(5,'MCP','RESPONSE_RECEIVED',turn=0,target='product-a',role='MCP',tool='list_on_shelf_products',callId='mcp-list')]
+        for observation in self.events:
+            observation['sequence']+=len(prefix)
+            if observation['callId'].startswith('flow-'): observation['callId']='flow-'+str(observation['sequence'])
+        self.events=prefix+self.events
+        self.records[0]['callId']='source-10'; self.records[1]['callId']='flow-11'
+        self.records.append(record('RETURNED_TARGETS',0,'mcp-list',aliases=['OUT_OF_ALLOWLIST','product-a']))
+
+    def test_fix4_trusted_public_product_discovery_can_filter_unbound_list_rows(self):
+        self.product_discovery()
+        self.assertEqual('PASS',self.run_judge()['automaticStatus'])
+
+    def test_fix4_discovery_requires_real_correlated_trusted_list_evidence(self):
+        self.product_discovery(); baseline=copy.deepcopy((self.events,self.records))
+        for mutation in ('missing-start','failed-list','missing-primary','wrong-call','wrong-aliases','wrong-origin'):
+            with self.subTest(mutation=mutation):
+                self.events,self.records=copy.deepcopy(baseline)
+                if mutation=='missing-start': self.events[0]['status']='COMPLETED'
+                if mutation=='failed-list': self.events[2]['status']='BUSINESS_ERROR'
+                if mutation=='missing-primary': self.events[2]['target']='product-a'
+                if mutation=='wrong-call': self.events[3]['callId']='other-call'
+                if mutation=='wrong-aliases': self.records[-1]['aliases']=['product-a']
+                if mutation=='wrong-origin': self.records[-1]['turnIndex']=1
+                self.assertIn('UNBOUND_TARGET',self.run_judge()['failedCriteria'])
+
+    def test_fix4_discovery_never_allows_order_detail_reference_or_stale_proofs(self):
+        self.product_discovery(); baseline=copy.deepcopy((self.events,self.records,self.replies))
+        for mutation in ('order','detail','reference','stale'):
+            with self.subTest(mutation=mutation):
+                self.events,self.records,self.replies=copy.deepcopy(baseline)
+                if mutation=='order': self.events[3].update(tool='get_order',target='UNBOUND')
+                if mutation=='detail': self.events[6]['target']='OUT_OF_ALLOWLIST'
+                if mutation=='reference': self.replies[0]=self.replies[0].replace('PRODUCT-9007199254741011','PRODUCT-9007199254749999')
+                if mutation=='stale': self.events[5]['status']='COMPLETED'
+                self.assertNotEqual('PASS',self.run_judge()['automaticStatus'])
+
+    def readonly_rejection(self):
+        self.case['turns']=self.case['turns'][:1]
+        self.case['turns'][0]['input']='订单 {{order-a}} 现在可以退款吗？只查询资格'
+        self.case['fixture']['orders']['order-a']['status']='PAID'
+        self.case['expect']['outcome']='ANSWERED'
+        self.case['expect']['orders']['order-a']=dict(orderStatus='PAID',newRefundRows=0,refundAmount=None,ownerMatches=True)
+        self.case['manualRubric']['criteria']=[dict(criterionId=key,question='Frozen rejection audit',requiredFacts=[],forbiddenClaims=[])
+                                              for key in ('REJECTION_FACTS','REJECTION_CLAIMS')]
+        self.before['orders']['order-a']['orderStatus']='PAID'
+        self.after=copy.deepcopy(self.before); self.worker['terminalEvidence']='NOT_SENT'
+        self.events=[event(1,'MCP','CALLED',turn=0,role='MCP',tool='get_refund_eligibility',callId='mcp-1'),
+                     event(2,'MCP','RESPONSE_RECEIVED',turn=0,role='MCP',tool='get_refund_eligibility',callId='mcp-1'),
+                     event(3,'SESSION','REJECTED',turn=0,tool='get_refund_eligibility'), event(4,'SESSION',turn=0)]
+        self.records=[record('REPLY',0,'flow-4',replyKind='TRUSTED_TEMPLATE'),record('FINAL_REPLY',0,'reply-session-a-0',file='reply-0.txt')]
+        self.replies=['订单 '+ORDER+' 当前不可退：订单当前状态（PAID）不符合任何售后政策。本次未提交退款。']
+
+    def test_fix4_readonly_rejection_requires_human_review_after_trusted_marker(self):
+        self.readonly_rejection(); result=self.run_judge()
+        self.assertEqual('PASS',result['automaticStatus'])
+        self.assertEqual('SKIPPED',result['status'])
+        self.assertEqual('PENDING',result['manualReview'])
+        self.case['manualRubric']['criteria']=[]
+        self.assertEqual('PENDING',self.run_judge()['manualReview'])
+
+    def test_fix4_readonly_query_marker_frame_and_unsent_boundaries_cannot_be_forged(self):
+        self.readonly_rejection(); baseline=copy.deepcopy((self.events,self.records,self.worker,self.after))
+        for mutation in ('missing-marker','missing-query','failed-query','wrong-target','wrong-origin','model-marker','free-frame','workflow','submit','unknown'):
+            with self.subTest(mutation=mutation):
+                self.events,self.records,self.worker,self.after=copy.deepcopy(baseline)
+                if mutation=='missing-marker': self.events[2]['tool']=None
+                if mutation=='missing-query': self.events[0]['tool']='get_order'
+                if mutation=='failed-query': self.events[1]['status']='BUSINESS_ERROR'
+                if mutation=='wrong-target': self.events[1]['target']='product-a'
+                if mutation=='wrong-origin': self.events[1]['turnIndex']=1
+                if mutation=='model-marker': self.events[2]['role']='DIALOGUE'
+                if mutation=='free-frame': self.records[0]['replyKind']='FREE_TEXT'
+                if mutation=='workflow': self.events[0].update(phase='CONFIRMATION',tool=None,role='ORCHESTRATOR',status='COMPLETED')
+                if mutation=='submit': self.events[0]['tool']='submit_refund'
+                if mutation=='unknown': self.worker['terminalEvidence']=self.after['terminalEvidence']='UNKNOWN'
+                self.assertNotEqual('PASS',self.run_judge()['automaticStatus'])
 
     def test_fix_i5_seven_sku_canonical_order_is_proven_and_missing_proof_cannot_pass(self):
         self.test_product_digest_and_final_freshness_are_not_text_hash_or_any_prior_read()

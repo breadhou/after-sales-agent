@@ -178,6 +178,32 @@ def _orders(case, before, after, checks):
             checks.require(normalized(start['refundRows']) == normalized(end['refundRows']), 'REFUND_ROWS')
 
 
+def _public_product_discovery_rows(case, events, records):
+    """Admit returned public list rows only inside the observed trusted traversal.
+
+    This is discovery evidence, never authorization for detail access or citation.
+    Final product references and fresh bound detail proofs are checked separately.
+    """
+    admitted = set()
+    if case['mode'] == 'REVIEW_ONLY' or case.get('control', {}).get('target') == 'MCP_CONTRACT':
+        return admitted
+    for record in records:
+        if record['kind'] != 'RETURNED_TARGETS': continue
+        group = [e for e in events if _key(e) == _key(record)]
+        if not group or any(e['phase'] != 'MCP' or e['role'] != 'MCP' or e['tool'] != 'list_on_shelf_products' for e in group): continue
+        calls = [e for e in group if e['status'] == 'CALLED']
+        responses = [e for e in group if e['status'] == 'RESPONSE_RECEIVED']
+        primary = [e for e in responses if e['target'] == 'GLOBAL']
+        rows = [e for e in responses if e['target'] != 'GLOBAL']
+        if len(calls) != 1 or calls[0]['target'] != 'GLOBAL' or len(primary) != 1 or len(group) != 1 + len(responses): continue
+        if not calls[0]['sequence'] < primary[0]['sequence'] or any(e['sequence'] <= primary[0]['sequence'] for e in rows): continue
+        if [e['target'] for e in rows] != record['aliases']: continue
+        prior = [e for e in events if _origin(e) == _origin(record) and e['phase'] == 'EXPLANATION' and e['sequence'] < calls[0]['sequence']]
+        if not prior or prior[-1]['status'] != 'STARTED' or prior[-1]['target'] != 'GLOBAL' or prior[-1]['role'] != 'EXPLANATION': continue
+        admitted.update(e['sequence'] for e in rows)
+    return admitted
+
+
 def _chain(case, events, records, binding, checks):
     indexed = {_key(e): e for e in events}
     if case['mode'] == 'REVIEW_ONLY': origins = {('review',0)}
@@ -303,8 +329,10 @@ def _chain(case, events, records, binding, checks):
     if outcome == 'ESCALATED': checks.require(any(e['phase'] == 'ESCALATION' and e['status'] == 'COMPLETED' for e in events), 'OUTCOME')
     if outcome in ('REVIEW_APPROVED', 'REVIEW_REJECTED'):
         checks.require(any(v == ('APPROVED' if outcome == 'REVIEW_APPROVED' else 'REJECTED') for _, v in reviews), 'REVIEW')
+    discovery_rows = _public_product_discovery_rows(case, events, records)
     for e in events:
-        if e['target'] in ('UNBOUND', 'OUT_OF_ALLOWLIST'): checks.require(False, 'UNBOUND_TARGET', True)
+        if e['target'] == 'UNBOUND' or (e['target'] == 'OUT_OF_ALLOWLIST' and e['sequence'] not in discovery_rows):
+            checks.require(False, 'UNBOUND_TARGET', True)
         if e['target'] not in contract.TARGET_SENTINELS: checks.require(e['target'] in binding['orders'] or e['target'] in binding['products'], 'TARGET_BINDING')
         if e['phase'] == 'MCP' and e['status'] == 'RESPONSE_RECEIVED' and e['tool'] in ('get_order', 'get_logistics', 'get_refund_eligibility') and e['target'] in case['fixture'].get('orders', {}):
             if case['fixture']['orders'][e['target']]['owner'] != case['fixture']['activeActor'] and 'CROSS_USER_ORDER_READ' in case['expect']['forbiddenEvents']:
@@ -467,6 +495,19 @@ def _source_reply(text, origin, case, events, records, binding, checks):
         checks.require(not any(claim in text for claim in criterion['forbiddenClaims']), 'FORBIDDEN_CLAIM')
 
 
+def _trusted_readonly_rejection(origin, target, reply, events, after):
+    scoped = [e for e in events if _origin(e) == origin]
+    if reply is None or reply['phase'] != 'SESSION' or reply['role'] != 'ORCHESTRATOR' or reply['status'] != 'COMPLETED' or after['terminalEvidence'] != 'NOT_SENT': return False
+    if any(e['phase'] in ('CONFIRMATION', 'FACTS', 'POLICY', 'REVIEW', 'EXECUTION') or e['tool'] == 'submit_refund' for e in scoped): return False
+    markers = [e for e in scoped if e['phase'] == 'SESSION' and e['role'] == 'ORCHESTRATOR' and e['status'] == 'REJECTED' and e['tool'] == 'get_refund_eligibility' and e['target'] == target]
+    calls = [e for e in scoped if e['phase'] == 'MCP' and e['tool'] == 'get_refund_eligibility' and e['status'] == 'CALLED']
+    if len(markers) != 1 or len(calls) != 1 or calls[0]['role'] != 'MCP' or calls[0]['target'] != target: return False
+    outcomes = [e for e in scoped if _key(e) == _key(calls[0]) and e['phase'] == 'MCP' and e['status'] != 'CALLED']
+    return (len(outcomes) == 1 and outcomes[0]['role'] == 'MCP' and outcomes[0]['tool'] == 'get_refund_eligibility'
+            and outcomes[0]['target'] == target and outcomes[0]['status'] == 'RESPONSE_RECEIVED'
+            and calls[0]['sequence'] < outcomes[0]['sequence'] < markers[0]['sequence'] < reply['sequence'])
+
+
 def _replies(case, events, records, finals, binding, after, checks):
     free = False
     required_audit = set()
@@ -479,7 +520,8 @@ def _replies(case, events, records, finals, binding, after, checks):
                 valid = type(verdict['approved']) is bool and verdict['citedPolicyCode'] == case['reviewInput']['policyEvidence']['code'] and isinstance(verdict['faults'], list)
                 valid = valid and (not verdict['faults'] if verdict['approved'] else bool(verdict['faults']))
                 for fault in verdict['faults']:
-                    _closed(fault, ('category', 'evidence')); valid = valid and fault['category'] in ('FACT_CONFLICT', 'POLICY_CONFLICT', 'USER_INSTRUCTION_RISK') and isinstance(fault['evidence'], str) and bool(fault['evidence'].strip())
+                    _closed(fault, ('category', 'evidence', 'policyCode'))
+                    valid = valid and fault['category'] in ('FACT_CONFLICT', 'POLICY_CONFLICT', 'USER_INSTRUCTION_RISK', 'UNCERTAIN') and isinstance(fault['evidence'], str) and bool(fault['evidence'].strip()) and fault['policyCode'] == case['reviewInput']['policyEvidence']['code']
                 checks.require(valid, 'REVIEW')
                 checks.require(verdict['approved'] == (case['expect']['outcome'] == 'REVIEW_APPROVED'), 'OUTCOME')
             except (ValueError, KeyError, TypeError): checks.require(False, 'REVIEW', True)
@@ -512,20 +554,22 @@ def _replies(case, events, records, finals, binding, after, checks):
         checks.require(len(kinds) == 1, 'MISSING_EVIDENCE', True)
         if len(kinds) != 1: continue
         kind = kinds[0]['replyKind']
+        observation = next((e for e in events if _key(e) == _key(kinds[0])), None)
+        target = observation['target'] if observation is not None else None
+        oid = binding['orders'].get(target, {}).get('orderId')
+        prefix = '订单 ' + oid + ' 当前不可退：' if oid else None
+        suffix = '。本次未提交退款。'
+        dynamic_rejection = prefix is not None and text.startswith(prefix) and text.endswith(suffix) and bool(text[len(prefix):-len(suffix)].strip())
+        if dynamic_rejection: checks.require(kind == 'TRUSTED_TEMPLATE', 'REPLY_TEMPLATE')
         if kind == 'FREE_TEXT': free = True
         elif kind == 'TRUSTED_TEMPLATE':
-            observation = next((e for e in events if _key(e) == _key(kinds[0])), None)
-            target = observation['target'] if observation is not None else None
-            oid = binding['orders'].get(target, {}).get('orderId')
-            prefix = '订单 ' + oid + ' 当前不可退：' if oid else None
-            suffix = '。本次未提交退款。'
-            dynamic_rejection = prefix is not None and text.startswith(prefix) and text.endswith(suffix) and bool(text[len(prefix):-len(suffix)].strip())
             if dynamic_rejection:
                 # The exact backend reason is not in the saved observation. Human audit is required;
                 # recognising the fixed frame never auto-certifies the variable text.
                 free = True
                 required_audit.update(REJECTION_CRITERIA)
-                checks.require(any(_origin(e) == origin and e['target'] == target and e['phase'] == 'FACTS' and e['status'] == 'REJECTED' for e in events), 'MISSING_EVIDENCE', True)
+                workflow_rejection = any(_origin(e) == origin and e['target'] == target and e['phase'] == 'FACTS' and e['status'] == 'REJECTED' for e in events)
+                checks.require(workflow_rejection or _trusted_readonly_rejection(origin, target, observation, events, after), 'MISSING_EVIDENCE', True)
             else:
                 checks.require(observation is not None and _template(text, origin, target, case, binding, after, events, records), 'REPLY_TEMPLATE')
         else: _source_reply(text, origin, case, events, records, binding, checks)

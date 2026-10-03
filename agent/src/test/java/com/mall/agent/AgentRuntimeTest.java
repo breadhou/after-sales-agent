@@ -189,6 +189,70 @@ class AgentRuntimeTest {
                 Set.of(), sessionId, observer, sink);
     }
 
+    @Test
+    void readonlyEligibilityRejectionHasTrustedSameTargetMarker() {
+        FakeMcp mcp = new FakeMcp();
+        mcp.eligibilityText = "{\"orderId\":" + ORDER + ",\"eligible\":false,\"refundExists\":false,\"reason\":\"PAID不可退\"}";
+        RecordingObserver observer = new RecordingObserver();
+        ReplyModel review = new ReplyModel(APPROVAL);
+        AgentRuntime runtime = create(new DialogueModel(), review, mcp, "session-a", observer, ignored -> { });
+        String answer = runtime.coordinator().handleTurn("session-a", "订单 " + ORDER + " 现在可以退款吗？只查询资格");
+        assertEquals("订单 " + ORDER + " 当前不可退：PAID不可退。本次未提交退款。", answer);
+        List<Seen> markers = observer.events.stream().filter(AgentRuntimeTest::readonlyMarker).toList();
+        assertEquals(1, markers.size());
+        assertEquals(ORDER, markers.get(0).target);
+        assertEquals(Map.of("status", "REJECTED", "tool", "get_refund_eligibility"), markers.get(0).attributes);
+        assertTrue(observer.events.indexOf(markers.get(0)) < observer.events.size() - 1);
+        assertEquals(List.of("get_refund_eligibility"), mcp.calls.stream().map(ToolExecutionRequest::name).toList());
+        assertTrue(review.requests.isEmpty());
+        assertFalse(observer.events.stream().anyMatch(seen -> seen.phase.equals("FACTS")));
+    }
+
+    @Test
+    void readonlyEligibilityRejectsUntrustedObjectsWithoutMarker() {
+        for (String body : List.of("not-json", "{\"orderId\":" + (ORDER + 1) + ",\"eligible\":false,\"refundExists\":false,\"reason\":\"拒绝\"}",
+                "{\"orderId\":" + ORDER + ",\"eligible\":\"false\",\"refundExists\":false,\"reason\":\"拒绝\"}",
+                "{\"orderId\":" + ORDER + ",\"eligible\":false,\"refundExists\":\"false\",\"reason\":\"拒绝\"}",
+                "{\"orderId\":" + ORDER + ",\"eligible\":true,\"refundExists\":false,\"reason\":\"拒绝\"}",
+                "{\"orderId\":" + ORDER + ",\"eligible\":false,\"refundExists\":false,\"reason\":\"  \"}",
+                "{\"orderId\":" + ORDER + ",\"eligible\":false,\"refundExists\":false,\"reason\":7}",
+                "{\"error\":true,\"code\":403,\"message\":\"拒绝\"}")) {
+            FakeMcp mcp = new FakeMcp(); mcp.eligibilityText = body;
+            RecordingObserver observer = new RecordingObserver();
+            AgentRuntime runtime = create(new DialogueModel(), new ReplyModel(APPROVAL), mcp, "session-a", observer, ignored -> { });
+            runtime.coordinator().handleTurn("session-a", "订单 " + ORDER + " 现在可以退款吗？只查询资格");
+            assertTrue(observer.events.stream().noneMatch(AgentRuntimeTest::readonlyMarker), body);
+        }
+        FakeMcp failed = new FakeMcp(); failed.eligibilityFailure = true;
+        RecordingObserver observer = new RecordingObserver();
+        AgentRuntime runtime = create(new DialogueModel(), new ReplyModel(APPROVAL), failed, "session-a", observer, ignored -> { });
+        assertTrue(runtime.coordinator().handleTurn("session-a", "订单 " + ORDER + " 现在可以退款吗？只查询资格").contains("无法确认"));
+        assertTrue(observer.events.stream().noneMatch(AgentRuntimeTest::readonlyMarker));
+    }
+
+    @Test
+    void readonlyEligibilityObservationFailureDoesNotChangeReply() {
+        FakeMcp mcp = new FakeMcp();
+        mcp.eligibilityText = "{\"orderId\":" + ORDER + ",\"eligible\":false,\"refundExists\":false,\"reason\":\"PAID不可退\"}";
+        AtomicInteger failures = new AtomicInteger();
+        FlowObserver observer = new FlowObserver() {
+            public void onEvent(String phase, Long target, Map<String, Object> attributes) {
+                if (readonlyMarker(new Seen(phase, target, attributes))) throw new IllegalStateException("fake-observer-sentinel");
+            }
+            public void onSourceEvidence(String key, String text, String digest) { }
+            public void onObservationFailure(Throwable failure) { failures.incrementAndGet(); }
+        };
+        AgentRuntime runtime = create(new DialogueModel(), new ReplyModel(APPROVAL), mcp, "session-a", observer, ignored -> { });
+        assertEquals("订单 " + ORDER + " 当前不可退：PAID不可退。本次未提交退款。",
+                runtime.coordinator().handleTurn("session-a", "订单 " + ORDER + " 现在可以退款吗？只查询资格"));
+        assertEquals(1, failures.get());
+    }
+
+    private static boolean readonlyMarker(Seen seen) {
+        return seen.phase.equals("SESSION") && "REJECTED".equals(seen.attributes.get("status"))
+                && "get_refund_eligibility".equals(seen.attributes.get("tool"));
+    }
+
     private static String turn(AgentRuntime runtime, boolean cli, String input) throws Exception {
         if (!cli) return runtime.coordinator().handleTurn("session-a", input);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -248,6 +312,8 @@ class AgentRuntimeTest {
     }
 
     private static final class FakeMcp {
+        private String eligibilityText;
+        private boolean eligibilityFailure;
         private List<ToolSpecification> advertised = List.of(tool("get_order"), tool("list_user_orders"),
                 tool("get_logistics"), tool("get_refund_eligibility"), tool("list_policy_clauses"), tool("submit_refund"));
         private final List<ToolExecutionRequest> calls = new ArrayList<>();
@@ -263,6 +329,10 @@ class AgentRuntimeTest {
                 });
         private ToolExecutionResult execute(ToolExecutionRequest request) {
             calls.add(request);
+            if (request.name().equals("get_refund_eligibility")) {
+                if (eligibilityFailure) throw new IllegalStateException("fake-mcp-failure");
+                if (eligibilityText != null) return ToolExecutionResult.builder().isError(false).resultText(eligibilityText).build();
+            }
             String text = switch (request.name()) {
                 case "get_order" -> "{\"id\":" + ORDER + ",\"status\":\"RECEIVED\",\"totalAmount\":199.99}";
                 case "get_refund_eligibility" -> "{\"orderId\":" + ORDER + ",\"orderStatus\":\"RECEIVED\","

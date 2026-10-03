@@ -54,7 +54,7 @@ public final class AgentRuntime {
                 executor::apply, escalation, sharedObserver);
         ConversationCoordinator coordinator = new ConversationCoordinator(agent, handoff, escalation,
                 () -> listedOrderIds(mcp::executeTool),
-                orderId -> eligibilityReply(orderId, mcp::executeTool),
+                orderId -> eligibilityReply(orderId, mcp::executeTool, sharedObserver),
                 orderId -> isOrderRefunded(orderId, mcp::executeTool),
                 workflow::apply, explanationTools, explanationService::answer, sharedObserver);
         return new AgentRuntime(coordinator, escalation);
@@ -97,7 +97,13 @@ public final class AgentRuntime {
 
     /** 资格询问由可信 MCP 事实形成固定回复，不交给决策模型解释。 */
     static String eligibilityReply(Long orderId,
-                                   Function<ToolExecutionRequest, ToolExecutionResult> toolCaller) {
+                                    Function<ToolExecutionRequest, ToolExecutionResult> toolCaller) {
+        return eligibilityReply(orderId, toolCaller, FlowObserver.NOOP);
+    }
+
+    static String eligibilityReply(Long orderId,
+                                   Function<ToolExecutionRequest, ToolExecutionResult> toolCaller,
+                                   FlowObserver observer) {
         String unavailable = "订单 " + orderId + " 的退款资格无法确认；本次未提交退款。";
         if (orderId == null || orderId <= 0) {
             return unavailable;
@@ -120,6 +126,8 @@ public final class AgentRuntime {
             JsonNode reason = fact.path("reason");
             if (!fact.path("eligible").booleanValue()
                     && reason.isTextual() && !reason.textValue().isBlank()) {
+                FlowObserver.event(observer, "SESSION", orderId,
+                        java.util.Map.of("status", "REJECTED", "tool", "get_refund_eligibility"));
                 return "订单 " + orderId + " 当前不可退：" + reason.textValue() + "。本次未提交退款。";
             }
             return unavailable;
