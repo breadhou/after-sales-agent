@@ -44,6 +44,35 @@ class BatchTest(unittest.TestCase):
                           'SUPERMALL_TOKEN': 'new-fixture', 'SUPERMALL_BASE_URL': 'http://localhost:8081'}, environment)
         self.assertNotIn('SUPERMALL_TOKEN', runner.build_worker_environment({}, None, 'local', None, parent))
 
+    def test_windows_worker_environment_preserves_normalized_runtime_and_fresh_auth(self):
+        parent = {'SYSTEMROOT': 'windows-root', 'WINDIR': 'windows-directory', 'PATH': 'runtime-path',
+                  'JAVA_HOME': 'runtime-jdk', 'MERCHANT_JWT_SECRET': 'backend-sentinel',
+                  'SPRING_DATASOURCE_PASSWORD': 'db-sentinel', 'JAVA_TOOL_OPTIONS': 'unsafe',
+                  'SUPERMALL_TOKEN': 'old-customer', 'MODEL_API_KEY': 'old-model',
+                  'DEMO_PRODUCT_MANIFEST': 'untrusted-manifest'}
+        model = {'MODEL_NAME': 'chosen', 'MODEL_API_KEY': 'new-model',
+                 'MERCHANT_JWT_SECRET': 'untrusted-backend'}
+        manifest = self.root / 'fixture-products.json'
+        with patch.object(runner.os, 'name', 'nt'):
+            environment = runner.build_worker_environment(model, 'fresh-actor', 'fixture-base', manifest, parent)
+            without_actor = runner.build_worker_environment({}, None, 'fixture-base', None, parent)
+        self.assertEqual({'SystemRoot': 'windows-root', 'WINDIR': 'windows-directory', 'PATH': 'runtime-path',
+                          'JAVA_HOME': 'runtime-jdk', 'MODEL_NAME': 'chosen', 'MODEL_API_KEY': 'new-model',
+                          'SUPERMALL_TOKEN': 'fresh-actor', 'SUPERMALL_BASE_URL': 'fixture-base',
+                          'DEMO_PRODUCT_MANIFEST': str(manifest)}, environment)
+        self.assertNotIn('SUPERMALL_TOKEN', without_actor)
+        self.assertNotIn('DEMO_PRODUCT_MANIFEST', without_actor)
+
+    def test_posix_worker_environment_keeps_runtime_names_case_sensitive(self):
+        parent = {'SYSTEMROOT': 'wrong-case-root', 'path': 'wrong-case-path', 'PATH': 'exact-path',
+                  'windir': 'wrong-case-directory', 'SUPERMALL_TOKEN': 'old-customer'}
+        with patch.object(runner.os, 'name', 'posix'):
+            environment = runner.build_worker_environment({}, None, 'fixture-base', None, parent)
+            with_exact_root = runner.build_worker_environment({}, None, 'fixture-base', None,
+                                                             dict(parent, SystemRoot='exact-root'))
+        self.assertEqual({'PATH': 'exact-path', 'SUPERMALL_BASE_URL': 'fixture-base'}, environment)
+        self.assertEqual(dict(environment, SystemRoot='exact-root'), with_exact_root)
+
     def test_dry_run_makes_no_fixture_or_model_calls(self):
         with patch.object(runner, 'FixtureClient', side_effect=AssertionError('fixture touched')), \
              patch.object(runner, '_run_worker', side_effect=AssertionError('model touched')), \

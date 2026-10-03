@@ -35,7 +35,13 @@ INFRA_CRITERIA = {'FIXTURE_ERROR', 'FIXTURE_CREATION_UNKNOWN', 'MISSING_EVIDENCE
 
 def build_worker_environment(model_environment: dict[str, str], actor_token: str | None,
         base_url: str, manifest_path: Path | None, parent_environment: dict[str, str]) -> dict[str, str]:
-    environment = {key: parent_environment[key] for key in RUNTIME_KEYS if key in parent_environment}
+    windows = os.name == 'nt'
+    runtime_keys = {key.upper() if windows else key: key for key in RUNTIME_KEYS}
+    environment = {}
+    # dict(os.environ) normalizes Windows names; emit only the canonical whitelist keys.
+    for key, value in parent_environment.items():
+        inherited_key = runtime_keys.get(key.upper() if windows else key)
+        if inherited_key is not None: environment[inherited_key] = value
     environment.update({key: model_environment[key] for key in MODEL_KEYS if key in model_environment})
     environment['SUPERMALL_BASE_URL'] = base_url
     if actor_token is not None:
