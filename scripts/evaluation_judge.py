@@ -534,6 +534,75 @@ def _replies(case, events, records, finals, binding, after, checks):
     return free, required_audit
 
 
+def _proved_before_send(case, events, records, before, after, worker):
+    """Recognize only the actual injected pre-send failure and its authority chain.
+
+    No submit CALLED event is invented: the SCRIPTED checkpoint occurs outside
+    the observed send boundary. Thus confirmation/review authority must also be
+    checked here, since the ordinary write loop has no actual call to traverse.
+    Existing identity, private correlation, source, reply and Oracle checks still
+    run and retain their failure floor.
+    """
+    control = case.get('control', {})
+    if (case['mode'] != 'CONTROLLED' or control.get('target') != 'AGENT_CHAIN'
+            or control.get('point') != 'MCP_BEFORE_REQUEST' or control.get('toolName') != 'submit_refund'
+            or case['expect']['outcome'] != 'NOT_SUBMITTED'
+            or worker['terminalEvidence'] != 'NOT_SENT' or before['terminalEvidence'] != 'NOT_SENT'
+            or after['terminalEvidence'] != 'NOT_SENT' or worker['errorCategory'] != 'UNRESOLVED_WRITE'):
+        return False
+    # Compare every actual order independently of its expected outcome labels.
+    normalize = lambda orders: {alias: (row['orderStatus'], Decimal(row['paidAmount']), row['ownerMatches'],
+            sorted((r['status'], Decimal(r['amount']), r['ownerMatches']) for r in row['refundRows']))
+            for alias, row in orders.items()}
+    if normalize(before['orders']) != normalize(after['orders']): return False
+    scripts = [e for e in events if e['phase'] == 'MCP' and e['tool'] == 'submit_refund' and e['status'] == 'SCRIPTED']
+    if len(scripts) != 1: return False
+    script = scripts[0]; origin = _origin(script); target = script['target']
+    if target not in case['fixture']['orders'] or script['role'] != 'MCP': return False
+    # No real submission, failed transport observation, or second execution is
+    # compatible with this *proved unsent* boundary.
+    if any(e['phase'] == 'MCP' and (e['status'] in ('TRANSPORT_ERROR', 'FAILED')
+            or (e['tool'] == 'submit_refund' and e['status'] != 'SCRIPTED')) for e in events): return False
+    starts = [e for e in events if e['phase'] == 'EXECUTION' and e['status'] == 'STARTED']
+    if len(starts) != 1: return False
+    execution = starts[0]
+    if _origin(execution) != origin or execution['target'] != target or execution['sequence'] >= script['sequence']: return False
+    errors = [r for r in records if r['kind'] == 'ERROR']
+    if len(errors) != 1 or errors[0]['errorCategory'] != 'UNRESOLVED_WRITE' or _origin(errors[0]) != origin: return False
+    failure = next((e for e in events if _key(e) == _key(errors[0])), None)
+    if (failure is None or failure['phase'] != 'EXECUTION' or failure['status'] != 'FAILED'
+            or failure['target'] != target or failure['sequence'] <= script['sequence']
+            or failure.get('exceptionClass') != 'com.mall.agent.evaluation.ControlledAdapters$InjectedFailure'):
+        return False
+    prior = [e for e in events if _origin(e) == origin and e['target'] == target and e['sequence'] < execution['sequence']]
+    confirmations = [e for e in prior if e['phase'] == 'CONFIRMATION' and e['status'] == 'COMPLETED']
+    if len(confirmations) != 1 or any(e['phase'] == 'CONFIRMATION' and e['status'] in ('REJECTED', 'SKIPPED') for e in prior): return False
+    confirmation = confirmations[0]; turn = confirmation['turnIndex']
+    if (turn >= len(case['turns']) or case['turns'][turn]['sessionAlias'] != confirmation['sessionAlias']
+            or case['turns'][turn]['input'].strip() != '/confirm-refund {{' + target + '}}'): return False
+    pending = [e for e in events if e['phase'] == 'CONFIRMATION' and e['sessionAlias'] == confirmation['sessionAlias']
+               and e['sequence'] < confirmation['sequence']]
+    if not pending or pending[-1]['status'] != 'STARTED' or pending[-1]['target'] != target or pending[-1]['turnIndex'] >= turn: return False
+    facts = [e for e in prior if e['phase'] == 'FACTS' and e['status'] == 'COMPLETED']
+    policies = [e for e in prior if e['phase'] == 'POLICY' and e['status'] == 'COMPLETED']
+    reviews = [e for e in prior if e['phase'] == 'REVIEW' and e['status'] in ('COMPLETED', 'REJECTED', 'FAILED', 'TRANSPORT_ERROR')]
+    if not facts or not policies or not reviews: return False
+    fact, policy = facts[-1], policies[-1]
+    code, fingerprint = policy['policyCode'], policy['policyFingerprint']
+    if not code or not fingerprint or (code, fingerprint) != (fact['policyCode'], fact['policyFingerprint']) or (code, fingerprint) != (execution['policyCode'], execution['policyFingerprint']): return False
+    if case['expect'].get('policyCodes') and code not in case['expect']['policyCodes']: return False
+    for review in reviews:
+        verdicts = [r for r in records if r['kind'] == 'REVIEW_OUTCOME' and _key(r) == _key(review)]
+        if review['status'] != 'COMPLETED' or review['policyCode'] not in (None, code) or len(verdicts) != 1 or verdicts[0]['outcome'] != 'APPROVED': return False
+    # reviewSafely emits an uncoded approval, followed by the workflow's
+    # policy-coded approval. The final approving checkpoint must bind the code.
+    if max(reviews, key=lambda e: e['sequence'])['policyCode'] != code: return False
+    if not (confirmation['sequence'] < fact['sequence'] < policy['sequence'] < min(e['sequence'] for e in reviews)
+            <= max(e['sequence'] for e in reviews) < execution['sequence']): return False
+    return (policy['sourceKey'] == code and bool(policy['sourceDigest']) and any(r['kind'] == 'SOURCE'
+            and _origin(r) == origin and r['sourceKey'] == code and r['sourceDigest'] == policy['sourceDigest'] for r in records))
+
+
 def judge(case: dict, events: list[dict], before: dict, after: dict, worker: dict, manual: dict | None) -> dict:
     case = contract.validate_case(case)
     if case.get('control', {}).get('target') == 'BACKEND_TRANSACTION':
@@ -576,7 +645,8 @@ def judge(case: dict, events: list[dict], before: dict, after: dict, worker: dic
         if category:
             evidence_errors = [r for r in records if r['kind'] == 'ERROR' and r['errorCategory'] == category]
             known_loss = case['expect']['outcome'] == 'UNRESOLVED_WRITE' and category == 'UNRESOLVED_WRITE' and worker['terminalEvidence'] == after['terminalEvidence'] == 'COMPLETED'
-            controlled = case['mode'] == 'CONTROLLED' and bool(evidence_errors) and (known_loss or (case['expect']['outcome'] in ('ERROR', 'ESCALATED', 'NOT_SUBMITTED') and category in ('MODEL_ERROR', 'REVIEW_FORMAT_ERROR', 'MISSING_EVIDENCE')))
+            proved_unsent = _proved_before_send(case, events, records, before, after, worker)
+            controlled = case['mode'] == 'CONTROLLED' and bool(evidence_errors) and (known_loss or proved_unsent or (case['expect']['outcome'] in ('ERROR', 'ESCALATED', 'NOT_SUBMITTED') and category in ('MODEL_ERROR', 'REVIEW_FORMAT_ERROR', 'MISSING_EVIDENCE')))
             checks.require(controlled, category, True)
         elif case['expect']['outcome'] == 'ERROR': checks.require(False, 'OUTCOME')
     except (OSError, UnicodeError, ValueError, KeyError, TypeError, ArithmeticError):

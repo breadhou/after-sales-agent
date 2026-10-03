@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -564,6 +565,123 @@ class BackendProbeTest(unittest.TestCase):
         with evidence_scope(self.root):
             self.assertRaises(ValueError, judge, self.case, [], self.oracle, self.oracle, {}, None)
             self.assertRaises(ValueError, lambda: backend_probe_scope(Path('../outside.json'), run_id='probe-run', trial_id='probe-trial').__enter__())
+
+
+class ProvedBeforeSendTest(unittest.TestCase):
+    """Mutate the actual worker export, retaining the existing judge and scopes."""
+    def setUp(self):
+        source = ROOT / 'agent/target/evaluation-counterexamples/before-send'
+        self.assertTrue((source / 'trial.json').is_file(), 'Run EvaluationHarnessTest before this offline evidence suite')
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / 'trial'; shutil.copytree(source, self.root)
+        self.saved = json.loads((self.root / 'trial.json').read_text(encoding='utf-8'))
+        self.private = json.loads((self.root / 'worker/evidence.json').read_text(encoding='utf-8'))
+
+    def check(self):
+        work = self.root / 'worker'
+        (work / 'events.jsonl').write_text(''.join(json.dumps(e, ensure_ascii=False) + '\n' for e in self.saved['events']), encoding='utf-8')
+        (work / 'evidence.json').write_text(json.dumps(self.private, ensure_ascii=False), encoding='utf-8')
+        with evidence_scope(work):
+            return judge(self.saved['case'], self.saved['events'], self.saved['before'],
+                         self.saved['after'], self.saved['worker'], None)
+
+    def remove_events(self, predicate):
+        kept = [e for e in self.saved['events'] if not predicate(e)]
+        sequences = {e['sequence']: i for i, e in enumerate(kept, 1)}
+        for e in kept: e['sequence'] = sequences[e['sequence']]
+        self.saved['events'] = kept
+        for row in self.private['records']:
+            if row['kind'] == 'SOURCE' and row['callId'].startswith('source-'):
+                row['callId'] = 'source-' + str(sequences[int(row['callId'][7:])])
+
+    def test_actual_pre_send_not_sent_zero_write_with_confirmed_approved_chain_passes(self):
+        result = self.check()
+        self.assertEqual('PASS', result['status'], result)
+        self.assertEqual('PASS', result['automaticStatus'], result)
+        self.assertEqual('NOT_REQUIRED', result['manualReview'])
+
+    def test_unknown_never_passes_even_with_zero_rows(self):
+        self.saved['worker']['terminalEvidence'] = self.saved['after']['terminalEvidence'] = 'UNKNOWN'
+        result = self.check(); self.assertEqual('ERROR', result['status']); self.assertIn('UNRESOLVED_WRITE', result['failedCriteria'])
+
+    def test_live_or_wrong_control_cannot_use_the_pre_send_exception(self):
+        for change in ('live', 'point', 'tool', 'target', 'outcome'):
+            with self.subTest(change=change):
+                original = copy.deepcopy(self.saved['case'])
+                if change == 'live': self.saved['case']['mode'] = 'LIVE_E2E'; del self.saved['case']['control']
+                if change == 'point': self.saved['case']['control'].update(point='MCP_AFTER_RESPONSE', response='lost')
+                if change == 'tool': self.saved['case']['control']['toolName'] = 'get_order'
+                if change == 'target':
+                    self.saved['case']['control'] = dict(target='BACKEND_TRANSACTION', components=dict(DIALOGUE='ABSENT', REVIEW='ABSENT', EXPLANATION='ABSENT', MCP='ABSENT', BACKEND='REAL'), usesRealModel=False, point='BACKEND_PROBE', probe='ROLLBACK_AFTER_INSERT')
+                if change == 'outcome': self.saved['case']['expect']['outcome'] = 'UNRESOLVED_WRITE'
+                try: self.assertNotEqual('PASS', self.check()['status'])
+                except ValueError: pass
+                self.saved['case'] = original
+
+    def test_missing_real_scripted_checkpoint_cannot_pass(self):
+        self.remove_events(lambda e: e['phase'] == 'MCP' and e['status'] == 'SCRIPTED')
+        self.assertNotEqual('PASS', self.check()['status'])
+
+    def test_missing_original_error_private_record_cannot_pass(self):
+        self.private['records'] = [r for r in self.private['records'] if r['kind'] != 'ERROR']
+        self.assertNotEqual('PASS', self.check()['status'])
+
+    def test_scripted_checkpoint_wrong_origin_or_unbound_target_cannot_pass(self):
+        scripted = next(e for e in self.saved['events'] if e['phase'] == 'MCP' and e['status'] == 'SCRIPTED')
+        original = copy.deepcopy(scripted)
+        for values in ({'turnIndex': 0}, {'target': 'UNBOUND'}, {'trialId': 'wrong-trial'}, {'caseId': 'NORMAL-001'}, {'sessionAlias': 'other-session'}):
+            with self.subTest(values=values):
+                scripted.update(values); self.assertNotEqual('PASS', self.check()['status'])
+                scripted.clear(); scripted.update(original)
+
+    def test_error_checkpoint_wrong_target_origin_or_exception_cannot_pass(self):
+        failure = next(e for e in self.saved['events'] if e['phase'] == 'EXECUTION' and e['status'] == 'FAILED')
+        original = copy.deepcopy(failure)
+        for values in ({'target': 'UNBOUND'}, {'turnIndex': 0}, {'exceptionClass': 'UnexpectedTransportFailure'}):
+            with self.subTest(values=values):
+                failure.update(values); self.assertNotEqual('PASS', self.check()['status'])
+                failure.clear(); failure.update(original)
+
+    def test_actual_submit_or_unknown_transport_or_retry_cannot_pass(self):
+        scripted = next(e for e in self.saved['events'] if e['phase'] == 'MCP' and e['status'] == 'SCRIPTED')
+        original = copy.deepcopy(self.saved['events'])
+        for status in ('CALLED', 'TRANSPORT_ERROR', 'FAILED'):
+            with self.subTest(status=status):
+                extra = copy.deepcopy(scripted); extra.update(sequence=len(original) + 1, status=status, callId='untrusted-extra-call')
+                self.saved['events'] = copy.deepcopy(original) + [extra]
+                self.assertNotEqual('PASS', self.check()['status'])
+        self.saved['events'] = copy.deepcopy(original)
+        extra = copy.deepcopy(scripted); extra.update(sequence=len(original) + 1, callId='retry-checkpoint')
+        self.saved['events'].append(extra); self.assertNotEqual('PASS', self.check()['status'])
+
+    def test_nonzero_refund_or_changed_state_amount_owner_cannot_pass(self):
+        order = self.saved['after']['orders']['order-a']; original = copy.deepcopy(order)
+        for values in ({'refundRows': [dict(status='REFUNDED', amount='39.80', ownerMatches=True)]},
+                       {'orderStatus': 'REFUNDED'}, {'paidAmount': '40.00'}, {'ownerMatches': False}):
+            with self.subTest(values=values):
+                order.update(values); self.assertNotEqual('PASS', self.check()['status'])
+                order.clear(); order.update(copy.deepcopy(original))
+
+    def test_deleted_confirmation_cannot_pass_without_an_actual_submit_call(self):
+        self.remove_events(lambda e: e['phase'] == 'CONFIRMATION' and e['status'] == 'COMPLETED')
+        self.assertNotEqual('PASS', self.check()['status'])
+
+    def test_deleted_review_cannot_pass_without_an_actual_submit_call(self):
+        self.remove_events(lambda e: e['phase'] == 'REVIEW')
+        self.private['records'] = [r for r in self.private['records'] if r['kind'] != 'REVIEW_OUTCOME']
+        self.assertNotEqual('PASS', self.check()['status'])
+
+    def test_invalid_or_conflicting_review_and_stale_policy_cannot_pass(self):
+        record = next(r for r in self.private['records'] if r['kind'] == 'REVIEW_OUTCOME')
+        event = next(e for e in self.saved['events'] if e['callId'] == record['callId'])
+        record['outcome'] = 'INVALID'; event['status'] = 'FAILED'
+        self.assertNotEqual('PASS', self.check()['status'])
+        record['outcome'] = 'APPROVED'; event['status'] = 'COMPLETED'; event['policyCode'] = 'QUALITY_ISSUE'
+        self.assertNotEqual('PASS', self.check()['status'])
+        event['policyCode'] = CODE
+        policy = next(e for e in self.saved['events'] if e['phase'] == 'POLICY' and e['status'] == 'COMPLETED')
+        policy['policyFingerprint'] = 'stale-mutated-policy'
+        self.assertNotEqual('PASS', self.check()['status'])
 
 
 if __name__ == '__main__':
