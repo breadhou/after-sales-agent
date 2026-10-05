@@ -78,7 +78,7 @@
     "eval/scenarios/v2/review.jsonl": "e341f5706dfc407c94151bf1f510a5b893cc94627c144f9c702c735f97da565c"
   },
   "manifestSha256": {
-    "manifest.full.json": "455b46e1eb3352dcd52e7dda841e09f6af50a03ffbb66edb746966be2ee68f21",
+    "manifest.full.json": "51c256061f4f7f51db37228af3d92f219936f9a0941387602f07821782d2563c",
     "manifest.pilot.json": "886b0663150cfbf47cecba30edced242ddb770cfc9c0ea2b29d3bd4c3ef3135c"
   },
   "inputSha256": {
@@ -104,7 +104,16 @@
     "agent/src/main/java/com/mall/agent/knowledge/FaqCorpus.java": "f20fb58d564072d743431bbd916e3df6aabd2d0e57cec3cbac4e5b57726f3a6c",
     "agent/src/main/java/com/mall/agent/knowledge/ExplanationDraft.java": "1b9d5fb67e41b14cf4c2c83e2a2499d2f7997b496c7ff2e3c0c662acbf4a4169",
     "agent/src/main/java/com/mall/agent/knowledge/CurrentProductIndex.java": "cf8e42a5a389a9fde376a2b0678d26f32ff48f9372a2b39060aedefa9737a6e2",
-    "agent/src/main/java/com/mall/agent/policy/PolicyCatalogConsumer.java": "4e097c4297565688caeaaabc5f6b709bda665ef39d157c638681e36ac9d54f59"
+    "agent/src/main/java/com/mall/agent/policy/PolicyCatalogConsumer.java": "4e097c4297565688caeaaabc5f6b709bda665ef39d157c638681e36ac9d54f59",
+    "agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java": "29c387409b490d8be414f44213a18c7521618b6ace45d74d439dd5c21001555e",
+    "agent/src/main/java/com/mall/agent/flow/FlowObserver.java": "18788cee1da5a078b19b2dbc7da7cd57e8ae6dd8afe5280b78d92892531c82f1",
+    "agent/src/main/java/com/mall/agent/agent/DecisionAgent.java": "1f2b66a78cc244e4a27b3d9fefd34d2c4ddfdac4788160c13df38f0691bdab18",
+    "agent/src/main/java/com/mall/agent/policy/PolicyEvidence.java": "ef3588b16803f9eac00b4807f3447d9e4afb0f391493489671d82057598f845e",
+    "agent/src/main/java/com/mall/agent/policy/CatalogSnapshot.java": "2ece6628edebe19bc796f5dda5f6628bf3a5dd118345eee8f7e63d897c12a46a",
+    "agent/src/main/java/com/mall/agent/tools/RefundHandoffTools.java": "55b6e83e0cb2e9e97cdab02bb3fa6456b5cd6dc05396e6fd9681f3eb48acfdf7",
+    "agent/src/main/java/com/mall/agent/tools/ExplanationRequestTools.java": "b9855a0824d900eaee454950fc50c1f001c991372e2beede715269858c4d88a9",
+    "agent/src/main/java/com/mall/agent/tools/EscalationTools.java": "14169188408390af66185dcf1d9aaa22328908d40d613f80f1a3e6a281998aa3",
+    "docs/known-issues.md": "ef3ef799c90d4da00a19a6893ddce4dda4347908a14e494bbee765560bf477f9"
   },
   "backendInputSha256": {
     "mall-server/src/main/java/com/mall/module/order/enums/AfterSalesPolicy.java": "31493a0835afb9b4d1129cff7fbace9627ce80ad0f289ffe837c793467196f7b",
@@ -114,7 +123,7 @@
     "mall-server/src/test/java/com/mall/module/order/service/AfterSalesDatabaseEvaluationIT.java": "7f6ea0eb13e44ac778e8ad3de1b0a96d2831d109df5a9eb5621831596f76b977",
     "mall-server/src/test/java/com/mall/module/order/service/RefundEligibilityEvaluatorFixedTimeTest.java": "903495f6a8474cd807ac01df8944e31ffda2c2353c6276a5a9f6430e71a6c42e"
   },
-  "agentPreparationSourceHead": "18db2902f23065c651d09a5e4f7baca487dbd0e0",
+  "agentPreparationSourceHead": "1e60a8acbe9eb13976b58bf5a07b38cf3a8741f3",
   "backendSourceHead": "1b609bd9da267f3c94388787b7e8b19a47cc93e7",
   "staticSdkVersions": {
     "langchain4j": "1.20.0",
@@ -126,7 +135,7 @@
   "jdkReleaseSha256": "f763c32f9c2902d62ee158cc2f35410c33d7e07d889c689c40a120bb474dd6e2",
   "configuredModelSha256": "0b4f29fb2dd350aa4d3dc16fbfede0f2d09e65b4a3114881bf29922f5db538e2",
   "savedPolicyFingerprintSetSha256": "822c1d93f40117172e51e85c55bf017efc957a4c72cdd672e83992d657440968",
-  "preparatoryPrivateProofSha256": "33f34f4f807fc17343f31bd37dfdabfe2a09c14e586e39a98d92178655f9a6d0",
+  "preparatoryPrivateProofSha256": "0ca4fd1067abafb5ceea84808768ad068a4ab8b4ac24760c964dacc46aa69e22",
   "formalRuntimeBound": false,
   "runtimeBindingRule": "Task14 must bind the actual source commits, build/runtime identity, configured model and policy snapshot before any formal execution. This preparatory freeze is not execution permission.",
   "pairedPolicies": [

@@ -1167,6 +1167,21 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 **影响与后续**：需要人工阅读中文诊断时，当前原始输出不足以作为准确文字证据。是否调整后续原生输出/读取编码或增加可读诊断摘要，留待判断；不为重建“干净日志”重跑历史套件，不改生产日志策略，不覆盖原始证据。此项与 K-53 的模型异常根因、诊断字段问题分别保留，K-53 不因此关闭。
 
 ---
+## K-60 fixed-clock 单测存在 Mockito / JVM 动态 agent 警告
+
+| | |
+|---|---|
+| **状态** | **待判断** |
+| **发现于** | 2026-10-06，阶段 4 Task 13 唯一 Spec/Quality 审查 T13-N01 |
+| **位置** | 忽略的 `.superpowers/sdd/2026-10-01-phase4-single-model-evaluation/task-13-backend-time-green.log:113–118`；supermall `mall-server/src/test/java/com/mall/module/order/service/RefundEligibilityEvaluatorFixedTimeTest.java:26` |
+| **严重性** | 低——test-only Mockito 静态 mock 的工具链警告，不阻塞本次 JDK 22 的 1/1 GREEN 或 Task 13 |
+
+**现状**：保存的 GREEN 原生日志报告 Mockito inline mock maker 自附加、动态 Java agent 将来默认禁用，以及 bootstrap classpath 追加导致的 CDS 限制。本次 JDK 22 测试实际通过；未新增依赖，也没有未来 JDK 已失败的证据。
+
+**影响与后续**：若以后迁移 JDK 并出现具体失败，再判断测试工具链适配。当前只保留观察，不为消除警告修改测试或生产源码、不重跑旧套件；不改变其他隐患状态。
+
+---
+
 ## 已处理（保留供追溯）
 
 ### K-59 补证选择器的时间字段豁免可能掩盖业务事实变化
