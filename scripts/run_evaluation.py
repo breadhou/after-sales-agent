@@ -188,11 +188,13 @@ def _initialize_batch(manifest_path, run_dir, resume):
     _exclusive_json(run_dir / 'manifest.json', manifest)
     _exclusive_json(run_dir / 'cases.json', {'cases': cases})
     trials = []
+    repeats = []
     for case_id in manifest['caseIds']:
         trials.append(dict(trialId='trial-' + uuid.uuid4().hex, caseId=case_id, trialKind='FIRST', repeatIndex=0, state='PENDING'))
         if case_id in manifest['repeatIds']:
             for index in (1, 2):
-                trials.append(dict(trialId='trial-' + uuid.uuid4().hex, caseId=case_id, trialKind='REPEAT', repeatIndex=index, state='PENDING'))
+                repeats.append(dict(trialId='trial-' + uuid.uuid4().hex, caseId=case_id, trialKind='REPEAT', repeatIndex=index, state='PENDING'))
+    trials.extend(repeats)
     state = dict(schemaVersion=1, runId=run_dir.name, manifestHash=_hash(manifest), caseHashes=hashes,
         configHash=config_hash, trials=trials, stopReason=None)
     if selection is not None:

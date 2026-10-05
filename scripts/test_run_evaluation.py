@@ -97,6 +97,107 @@ class BatchTest(unittest.TestCase):
         with self.assertRaises(ValueError): runner.run_batch(self.manifest, self.run, True, True)
         self.assertEqual(state['manifestHash'], runner._read_json(self.run / 'batch.json')['manifestHash'])
 
+    def test_new_full_batch_dispatches_all_first_before_repeats(self):
+        cases = _build_suite_cases(SHARED, 'full')
+        for case in cases:
+            if case['mode'] == 'REVIEW_ONLY': case['reviewInput'].pop('pairId', None)
+        reviews = [case for case in cases if case['mode'] == 'REVIEW_ONLY']
+        for case in reviews[12:24]: case['expect']['outcome'] = 'REVIEW_REJECTED'
+        for index, case in enumerate(reviews[24:]):
+            case['reviewInput']['pairId'] = f'ORDER-PAIR-{index // 2 + 1:03d}'
+        manifest_path = _write_suite(self.root / 'full-suite', 'full', cases)
+        manifest = runner._read_json(manifest_path)
+        manifest['suiteVersion'] = 'v2-full'
+        runner._atomic_json(manifest_path, manifest)
+        dispatched = []
+
+        def offline_worker(case, trial, state, run_dir, client, backend_output,
+                           model, base_url, budget, manual):
+            dispatched.append((trial['trialId'], case['caseId'], trial['trialKind'], trial['repeatIndex']))
+            key = state['runId'] + '.' + trial['trialId']
+            budget.reserve(key, allowance=0)
+            budget.complete(key, dict(logicalModelRequests=0, promptTokens=0, completionTokens=0,
+                totalTokens=0, usageComplete=True, unknownUsageRequests=0), True)
+            directory = run_dir / trial['trialId']; directory.mkdir()
+            runner._exclusive_json(directory / 'result.json',
+                runner._error_result(state['runId'], trial, 'FIXTURE_ERROR'))
+            runner._exclusive_json(directory / 'metadata.json', dict(caseId=case['caseId'],
+                trialKind=trial['trialKind'], repeatIndex=trial['repeatIndex'], events=[], worker={},
+                before={}, after={}, workerDurationMs=None, fixtureDurationMs=0))
+            trial.update(state='COMPLETE', terminated=True, terminalEvidence='NOT_SENT')
+
+        with patch.object(runner, '_helper', return_value=(self.fixture_helper([]), self.root / 'backend')), \
+             patch.object(runner, '_read_env_file', return_value={}), \
+             patch.dict(runner.os.environ, {}, clear=True), \
+             patch.object(runner, 'FixtureClient', side_effect=AssertionError('real helper touched')), \
+             patch.object(runner, '_run_worker', side_effect=AssertionError('real worker touched')), \
+             patch.object(runner, '_execute_trial', side_effect=offline_worker):
+            report = runner.run_batch(manifest_path, self.run, True, False)
+        state = runner._read_json(self.run / 'batch.json')
+        trials = state['trials']
+        self.assertEqual(264, report['plannedTrials'])
+        self.assertEqual(264, len(dispatched))
+        self.assertEqual(['FIRST'] * 240 + ['REPEAT'] * 24, [t['trialKind'] for t in trials])
+        self.assertEqual([(c['caseId'], 0) for c in cases],
+                         [(t['caseId'], t['repeatIndex']) for t in trials[:240]])
+        repeat_cases = ['NORMAL-001', 'NORMAL-002', 'NORMAL-003', 'NORMAL-004',
+                        'ADVERSARIAL-111', 'ADVERSARIAL-112', 'ADVERSARIAL-113', 'ADVERSARIAL-114',
+                        'INDEPENDENT_REVIEW-211', 'INDEPENDENT_REVIEW-212',
+                        'INDEPENDENT_REVIEW-213', 'INDEPENDENT_REVIEW-214']
+        self.assertEqual(repeat_cases, manifest['repeatIds'])
+        self.assertEqual([(case_id, index) for case_id in repeat_cases for index in (1, 2)],
+                         [(t['caseId'], t['repeatIndex']) for t in trials[240:]])
+        self.assertEqual(264, len({t['trialId'] for t in trials}))
+        for trial in trials:
+            self.assertRegex(trial['trialId'], r'^trial-[0-9a-f]{32}$')
+        self.assertEqual(dispatched,
+            [(t['trialId'], t['caseId'], t['trialKind'], t['repeatIndex']) for t in runner._selected_trials(state)])
+        self.assertEqual(264, report['budget']['trialCount'])
+        self.assertEqual(0, report['budget']['chargedRequests'])
+        self.assertEqual(0, report['budget']['unresolvedReservations'])
+
+    def test_resume_preserves_persisted_interleaved_trial_order(self):
+        cases = _build_suite_cases(SHARED, 'full')
+        for case in cases:
+            if case['mode'] == 'REVIEW_ONLY': case['reviewInput'].pop('pairId', None)
+        manifest_path = _write_suite(self.root / 'full-suite', 'full', cases)
+        manifest = runner._read_json(manifest_path)
+        manifest['suiteVersion'] = 'v2-full'
+        runner._atomic_json(manifest_path, manifest)
+        state = runner._initialize_batch(manifest_path, self.run, False)
+        by_identity = {(t['caseId'], t['trialKind'], t['repeatIndex']): t for t in state['trials']}
+        historical = []
+        for case_id in manifest['caseIds']:
+            historical.append(by_identity[(case_id, 'FIRST', 0)])
+            if case_id in manifest['repeatIds']:
+                historical.extend(by_identity[(case_id, 'REPEAT', index)] for index in (1, 2))
+        state['trials'] = historical
+        self.assertEqual(['FIRST', 'REPEAT', 'REPEAT', 'FIRST'], [t['trialKind'] for t in historical[:4]])
+        historical[0].update(state='COMPLETE', terminated=True, terminalEvidence='NOT_SENT')
+        historical[1]['state'] = 'INFLIGHT'
+        directory = self.run / historical[0]['trialId']; directory.mkdir()
+        runner._exclusive_json(directory / 'result.json',
+            runner._error_result(state['runId'], historical[0], 'MISSING_EVIDENCE'))
+        runner._atomic_json(self.run / 'batch.json', state)
+        budget = runner.BudgetLedger(self.root / 'eval/runs/budget-ledger.json')
+        budget.reserve(state['runId'] + '.' + historical[1]['trialId'], allowance=2)
+        saved = {p: p.read_bytes() for p in self.run.rglob('*') if p.is_file()}
+        saved[budget.path] = budget.path.read_bytes()
+        resumed = runner._initialize_batch(manifest_path, self.run, True)
+        self.assertEqual(state, resumed)
+        self.assertEqual(historical, runner._selected_trials(resumed))
+        with patch.object(runner, '_helper', side_effect=AssertionError('inflight helper replay')), \
+             patch.object(runner, '_read_env_file', side_effect=AssertionError('credentials read')), \
+             patch.object(runner, '_execute_trial', side_effect=AssertionError('inflight trial replay')), \
+             patch.object(runner, '_run_worker', side_effect=AssertionError('inflight worker replay')):
+            report = runner.run_batch(manifest_path, self.run, True, True)
+        self.assertEqual('INFLIGHT', report['stopReason'])
+        self.assertEqual(2, report['budget']['chargedRequests'])
+        self.assertEqual(1, report['budget']['unresolvedReservations'])
+        self.assertEqual(state, runner._read_json(self.run / 'batch.json'))
+        for path, raw in saved.items():
+            self.assertEqual(raw, path.read_bytes(), path)
+
     def test_resume_keeps_reservations_and_first_results(self):
         state = runner._initialize_batch(self.manifest, self.run, False)
         first = state['trials'][0]
