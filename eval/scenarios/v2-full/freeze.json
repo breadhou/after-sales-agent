@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "suiteVersion": "v2-full",
+  "phase": "full",
+  "categoryCounts": {
+    "NORMAL": 60,
+    "POLICY_CONFIRMATION": 50,
+    "ADVERSARIAL": 40,
+    "ABNORMAL": 30,
+    "KNOWLEDGE": 30,
+    "INDEPENDENT_REVIEW": 30
+  },
+  "modeCounts": {
+    "LIVE_E2E": 150,
+    "CONTROLLED": 60,
+    "REVIEW_ONLY": 30
+  },
+  "formalPlannedTrials": 264,
+  "semanticTrialIndices": [
+    1,
+    2,
+    3
+  ],
+  "repeatWireMapping": {
+    "firstRepeatIndex": 0,
+    "repeatRepeatIndices": [
+      1,
+      2
+    ]
+  },
+  "normalIntentCounts": {
+    "refund": 32,
+    "query": 16,
+    "eligibility": 12
+  },
+  "pilotCaseHashes": {
+    "NORMAL-001": "64b513263040ab75ac7162f84744f91eb2c70ff56999207ebd7f2c28fa780dde",
+    "NORMAL-002": "0c76b59220bd7bff68366ba437769748461bd4b7a94ddd83260171559033a80e",
+    "NORMAL-003": "bf1e7e33f9a107693b6b556f98ac6bda7a20e3e52db957199699b4d04944f5af",
+    "NORMAL-004": "6740634fffb860c81571a4aab2a3a807f5e8178f879cdf3006364b9f71d6dc47",
+    "NORMAL-005": "4a234b8c2d121dbc3fd4930afdbca0ce7a720b0f0d715d2fc9649e82ee025f75",
+    "NORMAL-006": "1240a9fee2db3fa74ddcedab87bf06e198698b78d43da5b65e7e7147d008ef93",
+    "NORMAL-007": "a9e8f83c077d1c203324a2d9fec2c70fb4e2f3cb21a7b57d02211d602d7f8020",
+    "NORMAL-008": "1d6de1549d20e2d352f5a2354f568eb40d5b0eb98911109ff0ddf277333d5ffd",
+    "BOUNDARY-001": "85b8d0fc59269d80ee452437cf7031d05eb3357563c6cb3073b1f41b38b27e32",
+    "BOUNDARY-002": "bb69e6ddde60237f983d2a5238c99ec75b6c550671de317e94176eec50b3cced",
+    "BOUNDARY-003": "c8df9021c12673995333a6d269775fe647dfcf0271486680771fac7d5933e677",
+    "BOUNDARY-004": "878a10842f50cf039d3c51578e8b954f006b996d05bd02d8d4b166b20c7689c3",
+    "BOUNDARY-005": "f0c7400fb4b22c26064709e13bd8cb6928a4a013c24fc3dd1cb6a70db1c42202",
+    "BOUNDARY-006": "38e576546eeb6f2fefcef4a3e754927845863b0a31acd7df9d95003b57a5d8cc",
+    "BOUNDARY-041": "7c4968f8a46f0b7041f11e7ecfa5a1eaad8664c0dded53ce8713f8afa392597e",
+    "BOUNDARY-042": "9153fe06aa60064310785515921ec7fdfb5c81f6c5f139a5b06d096e01c7181a",
+    "ADVERSARIAL-001": "4958da673cfdb897840123e3f4576d864310c05083b795514884a846c7b4dd1e",
+    "ADVERSARIAL-002": "7a39af46967762ac143ee2dd5d2665fae8c72ec9d182ea24e3273913884c1cc9",
+    "ADVERSARIAL-003": "accaf31318712958de1bca7f85d4b376a357942aac360e2342d8a48638c668f7",
+    "ADVERSARIAL-004": "b18b2cd2f575a229c0a65dc682faf8bc1db168182dcd515b4428e635d9408dc4",
+    "ADVERSARIAL-021": "9e3c1f4f59ea0d660a451558f1ee8174793b9431c2419a38cbd6aba7661e5d64",
+    "ADVERSARIAL-022": "db9e96acba594563327068495d6094bc1a16af875fd58421b07360a85a7ec526",
+    "FAULT-001": "b551ad0f753bf806dbeef1479729f2d601b4b1e5d09fe2cc7100dbc05dfb4003",
+    "FAULT-002": "f63d4809980afef7b971a5a1b928b3d172917e67bc2097a49e9a559e167d786d",
+    "FAULT-003": "ddca9b000fd0370d567aaf2cda00c517d1f9b6e00396920b91fea593673cf9a7",
+    "FAULT-004": "f2d23ca665e55be65abef071333df3e8ce0c792302553aefa71e4298ff2c848a",
+    "INFO-001": "3ee50e92b9397317cf8c1a5d9ac7cfb117f0312e7e2a8fe7d739f5d3b91bde9e",
+    "INFO-009": "3c29cd52b6c1b242224eaf943a9167f722cd4daff0229b128c4402642f732e67",
+    "INFO-019": "52aad8a562f9d9b0e97950d3d770d6e54fa409d2cae5a774e6e15d45b6e0d664",
+    "INFO-029": "03a93ea67a60dae792743acd1c10fe6ed81793e4806f2abd39acb98a59253c6f",
+    "REVIEW-001": "58d9e62427bb0e5ed464f77d39204d6f3e47f28e3bbe5534cc771eff73384eb2",
+    "REVIEW-013": "efb822a41b1f36308c9a2ac13b11286c450fc3827e929203a418ee68ac6e5913"
+  },
+  "immutablePilotFileSha256": {
+    "eval/scenarios/v2/adversarial.jsonl": "41620a9a6660ffcf843ad6ff946a045f7473df09f14ee86d564be2242f9ead0e",
+    "eval/scenarios/v2/boundary.jsonl": "09bb70e874b693eafba1319ac713a24eb674e2a708fd052fbc0259aa501f1e7e",
+    "eval/scenarios/v2/fault.jsonl": "e3394c207481a354c00701f86bf198e81580b72eb90218f97251f1607934e66a",
+    "eval/scenarios/v2/information.jsonl": "3be73481e86d2977b3cbfaf3262f8bd1097c008797fe66b1d8f8e235543e9533",
+    "eval/scenarios/v2/manifest.pilot.json": "e4e3bb2b2de04b17609a16c11fe3a6c67f05b10265b3eaaf42f688698ef75610",
+    "eval/scenarios/v2/normal.jsonl": "1458b42e9a7f8f5caafa703f7e4f46e8f4945b23f1f673a3caa07dcf9f4f8d61",
+    "eval/scenarios/v2/README.md": "b36af315d6948d67b28b3b97fba8a1a0f9ba644e7e897cf5751c4af54a24ba38",
+    "eval/scenarios/v2/review.jsonl": "e341f5706dfc407c94151bf1f510a5b893cc94627c144f9c702c735f97da565c"
+  },
+  "manifestSha256": {
+    "manifest.full.json": "14acdef28e011d71f12a6c6aa098209d52f9dbced214ecd938f24c0a01efec9c",
+    "manifest.pilot.json": "886b0663150cfbf47cecba30edced242ddb770cfc9c0ea2b29d3bd4c3ef3135c"
+  },
+  "inputSha256": {
+    "pom.xml": "5040acb79c73b706f2b4ea60367353c80be2368915620d156bca968811c2d85f",
+    "agent/pom.xml": "69a765e62cb33b56d321fcccc2b69f190505068cb251465f0df31d0242c8e3e2",
+    "mcp-server/pom.xml": "cbbb61b76efe90941a13523422abb130fb1b01f4f6fb599a24ed6dfbfac925bf",
+    ".gitattributes": "12b56a097b7302ec68632e9699fb2fcd7c7259c6eda940bbb3f720370a31f9f6",
+    "scripts/test_evaluation_scenarios.py": "f7c7e79cc503171d1b806400e22554691ba90c02109ea08256a2b431ec80ca0c",
+    "scripts/evaluation_contract.py": "0d40fae8def67475472c79aa9faed10acffea85ce6db235655048fa89b96700e",
+    "scripts/run_evaluation.py": "507e4790dac83f4926cf9dbb3e8dd8fc6c3b29fcb850a7adfaf7b49abc220ac8",
+    "scripts/evaluation_judge.py": "640eea417059df68d160767895bde92e2258584459f66bb21d2b49cee14fc823",
+    "scripts/evaluation_budget.py": "167cf801bcf9eaf6bc8c0b0970afe5b37070a9468b488a2df0a0e0c124fddf43",
+    "data/demo-products.json": "f33a486ad52ca8a54f4a7f41a6baee446d52fc02f47442cd1540930d30daf88b",
+    "agent/src/main/resources/corpus/faq.json": "061d161fc69e2db2dd226e037aa3e63800e54c6f938c1ebf44a7338d6fbcdd66",
+    "agent/src/main/resources/agent.properties": "876c355729b4c99fb337c3f16c9516f2a6d7a9efe1642e81eef940c1e147430f",
+    "agent/src/main/java/com/mall/agent/knowledge/ExplanationService.java": "4aeb0ab56505b1f7e547a35d5c207ff0b95289df041eca7c91d33ee05ac8bb4c",
+    "agent/src/main/java/com/mall/agent/config/AgentConfig.java": "a3f57683dd5e8c9473cedc22f43a5063a5d2331641298e01572f9cd37089cfcf",
+    "agent/src/main/java/com/mall/agent/evaluation/CaseSpec.java": "6d0c877beacb8a47062c869001b7923d64454d87cfa79cd5454b27e33d7b0bbf",
+    "eval/protocol.md": "ebe25a3ad2709adccf154a07d2cbb9d5a152a8c21101e40316ef610812cd26b1",
+    "agent/src/main/resources/prompts/decision-system.txt": "3f6bac1f3fab76532baf321a9051d44cff3693061c339f5934ee8c67e216097b",
+    "agent/src/main/resources/prompts/review-system.txt": "5dc65611cac115cd59b232e1071f514c61006caa7ead61a71832385158be7730"
+  },
+  "backendInputSha256": {
+    "mall-server/src/main/java/com/mall/module/order/enums/AfterSalesPolicy.java": "31493a0835afb9b4d1129cff7fbace9627ce80ad0f289ffe837c793467196f7b",
+    "mall-server/src/main/java/com/mall/module/order/service/RefundEligibilityEvaluator.java": "41f38cff0d78f265cb900c37866960c01dbd2431fd9809b6507d97da3c7ad14c",
+    "mall-server/src/main/java/com/mall/module/order/service/AfterSalesPolicyCatalog.java": "00838bf6cc66201f2772ebe752ef6c927df454fa8c9fb8bbc8aec492d4e89f43",
+    "scripts/after_sales_eval_fixture.py": "47e67dea665719a7bb777d2e06378850aa05b9ce78f5908cc1bfa6fd07cf84cd",
+    "mall-server/src/test/java/com/mall/module/order/service/AfterSalesDatabaseEvaluationIT.java": "7f6ea0eb13e44ac778e8ad3de1b0a96d2831d109df5a9eb5621831596f76b977",
+    "mall-server/src/test/java/com/mall/module/order/service/RefundEligibilityEvaluatorFixedTimeTest.java": "903495f6a8474cd807ac01df8944e31ffda2c2353c6276a5a9f6430e71a6c42e"
+  },
+  "agentPreparationSourceHead": "8926057690947c358a4af9ed0e937feee0415657",
+  "backendSourceHead": "1b609bd9da267f3c94388787b7e8b19a47cc93e7",
+  "staticSdkVersions": {
+    "langchain4j": "1.20.0",
+    "langchain4jIntegration": "1.20.0-beta30",
+    "mcp": "0.10.0",
+    "agentJackson": "2.22.1"
+  },
+  "recordedJdkVersion": "22.0.2",
+  "jdkReleaseSha256": "f763c32f9c2902d62ee158cc2f35410c33d7e07d889c689c40a120bb474dd6e2",
+  "configuredModelSha256": "0b4f29fb2dd350aa4d3dc16fbfede0f2d09e65b4a3114881bf29922f5db538e2",
+  "savedPolicyFingerprintSetSha256": "822c1d93f40117172e51e85c55bf017efc957a4c72cdd672e83992d657440968",
+  "preparatoryPrivateProofSha256": "5fd4d03110489bb66be81993e3eb7e6363215af199b35419dcdd3341948b4f9e",
+  "formalRuntimeBound": false,
+  "runtimeBindingRule": "Task14 must bind the actual source commits, build/runtime identity, configured model and policy snapshot before any formal execution. This preparatory freeze is not execution permission.",
+  "pairedPolicies": [
+    {
+      "pairId": "REVIEW-POLICY-PAIR-001",
+      "caseIds": [
+        "REVIEW-025",
+        "REVIEW-026"
+      ],
+      "expectedChange": [
+        "REVIEW_APPROVED",
+        "REVIEW_REJECTED"
+      ]
+    },
+    {
+      "pairId": "REVIEW-POLICY-PAIR-002",
+      "caseIds": [
+        "REVIEW-027",
+        "REVIEW-028"
+      ],
+      "expectedChange": [
+        "REVIEW_APPROVED",
+        "REVIEW_REJECTED"
+      ]
+    },
+    {
+      "pairId": "REVIEW-POLICY-PAIR-003",
+      "caseIds": [
+        "REVIEW-029",
+        "REVIEW-030"
+      ],
+      "expectedChange": [
+        "REVIEW_APPROVED",
+        "REVIEW_REJECTED"
+      ]
+    }
+  ]
+}

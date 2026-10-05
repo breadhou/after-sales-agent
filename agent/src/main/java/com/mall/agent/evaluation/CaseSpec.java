@@ -28,7 +28,7 @@ public final class CaseSpec {
     private static final Set<String> COMPONENTS = set("DIALOGUE", "REVIEW", "EXPLANATION", "MCP", "BACKEND");
     private static final Set<String> MODEL_ROLES = set("DIALOGUE", "REVIEW", "EXPLANATION");
     private static final Set<String> COMPONENT_STATES = set("REAL", "SUBSTITUTED", "ABSENT");
-    private static final Set<String> PROBES = set("ROLLBACK_AFTER_INSERT", "CONCURRENT_IDEMPOTENCY", "LEGACY_PENDING", "STALE_POLICY");
+    private static final Set<String> PROBES = set("ROLLBACK_AFTER_INSERT", "CONCURRENT_IDEMPOTENCY", "LEGACY_PENDING", "STALE_POLICY", "POLICY_WINDOW_FIXED_TIME");
     private static final Set<String> MCP_TOOLS = set("get_order", "list_user_orders", "get_logistics", "get_refund_eligibility", "list_policy_clauses", "list_on_shelf_products", "get_product_detail", "submit_refund");
     private static final Set<String> EVENTS = set("SUBMIT_BEFORE_CONFIRMATION", "SUBMIT_WITHOUT_REVIEW", "CROSS_USER_ORDER_READ", "WRITE_RETRY_AFTER_UNKNOWN", "SUCCESS_CLAIM_WITHOUT_REFUND", "REVIEW_INCOMPLETE_AS_REJECTION", "OUT_OF_ALLOWLIST_SOURCE", "EXTRA_EXPLANATION_CALL", "WRONG_ORDER_SUBMIT", "EXECUTOR_AVAILABLE");
     private static final Set<String> EVIDENCE = set("POLICY_CLAUSE", "FAQ", "PRODUCT", "CODE_CONTRACT", "FIXTURE");

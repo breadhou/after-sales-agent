@@ -207,6 +207,131 @@ class PilotScenariosTest(unittest.TestCase):
                 self.assertTrue(all(c['requiredFacts'] or c['forbiddenClaims']
                                     for c in case['manualRubric']['criteria']))
 
+    def test_full_counts_category_modes_and_repeat_plan(self):
+        full = ROOT / 'eval/scenarios/v2-full'
+        self.assertTrue((full / 'manifest.full.json').is_file(), 'Frozen 240-case formal suite missing')
+        cases = load_suite(full / 'manifest.full.json')
+        manifest = json.loads((full / 'manifest.full.json').read_text(encoding='utf-8'))
+        self.assertEqual(240, len(cases))
+        self.assertEqual([f'{prefix}-{number:03}' for prefix, count in
+                          [('NORMAL', 60), ('BOUNDARY', 50), ('ADVERSARIAL', 40),
+                           ('FAULT', 30), ('INFO', 30), ('REVIEW', 30)]
+                          for number in range(1, count + 1)], manifest['caseIds'])
+        self.assertEqual({'NORMAL': 60, 'POLICY_CONFIRMATION': 50, 'ADVERSARIAL': 40,
+                          'ABNORMAL': 30, 'KNOWLEDGE': 30, 'INDEPENDENT_REVIEW': 30},
+                         dict(Counter(c['category'] for c in cases)))
+        self.assertEqual({'LIVE_E2E': 150, 'CONTROLLED': 60, 'REVIEW_ONLY': 30},
+                         dict(Counter(c['mode'] for c in cases)))
+        self.assertEqual(240, len({c['caseId'] for c in cases}))
+        def normal_intent(case):
+            if case['expect']['outcome'] == 'REFUND_COMPLETED':
+                intent = 'intent-refund'
+            elif any(token in case['turns'][0]['input'] for token in ('能退', '可以退', '退款资格', '是否可退')):
+                intent = 'intent-eligibility'
+            else:
+                intent = 'intent-query'
+            declared = [t for t in case['tags'] if t.startswith('intent-')]
+            if declared:
+                self.assertEqual([intent], declared)
+            return intent
+        normal_intents = Counter(normal_intent(c) for c in cases if c['category'] == 'NORMAL')
+        self.assertEqual({'intent-refund': 32, 'intent-query': 16, 'intent-eligibility': 12},
+                         dict(normal_intents))
+        repeat_ids = ['NORMAL-001', 'NORMAL-002', 'NORMAL-004', 'NORMAL-005',
+                      'ADVERSARIAL-001', 'ADVERSARIAL-002', 'ADVERSARIAL-003',
+                      'ADVERSARIAL-005', 'REVIEW-001', 'REVIEW-002', 'REVIEW-013',
+                      'REVIEW-014']
+        self.assertEqual(repeat_ids, manifest['repeatIds'])
+        self.assertEqual(264, len(cases) + 2 * len(repeat_ids))
+        by_id = {c['caseId']: c for c in cases}
+        clock_case = by_id['BOUNDARY-043']
+        self.assertEqual(('BACKEND_TRANSACTION', 'BACKEND_PROBE', 'POLICY_WINDOW_FIXED_TIME'),
+                         tuple(clock_case['control'][key] for key in ('target', 'point', 'probe')))
+        self.assertEqual({'DIALOGUE': 'ABSENT', 'REVIEW': 'ABSENT', 'EXPLANATION': 'ABSENT',
+                          'MCP': 'ABSENT', 'BACKEND': 'REAL'}, clock_case['control']['components'])
+        self.assertFalse(clock_case['control']['usesRealModel'])
+        self.assertEqual(0, clock_case['expect']['orders']['order-a']['newRefundRows'])
+        for prefix, cutoff, first_mode, second_mode in (
+                ('BOUNDARY', 40, 'LIVE_E2E', 'CONTROLLED'),
+                ('ADVERSARIAL', 20, 'LIVE_E2E', 'CONTROLLED')):
+            for identifier, case in by_id.items():
+                if identifier.startswith(prefix + '-'):
+                    self.assertEqual(first_mode if int(identifier.split('-')[1]) <= cutoff else second_mode,
+                                     case['mode'], identifier)
+        self.assertEqual([('NORMAL', 'LIVE_E2E')] * 4 +
+                         [('ADVERSARIAL', 'LIVE_E2E')] * 4 +
+                         [('INDEPENDENT_REVIEW', 'REVIEW_ONLY')] * 4,
+                         [(by_id[i]['category'], by_id[i]['mode']) for i in repeat_ids])
+        for case in cases:
+            with self.subTest(case=case['caseId']):
+                self.assertTrue(case['variationRationale'].strip())
+                self.assertTrue(case['expect']['basis'])
+                self.assertGreaterEqual(len(case['manualRubric']['criteria']), 2)
+                self.assertTrue(all(c['requiredFacts'] or c['forbiddenClaims']
+                                    for c in case['manualRubric']['criteria']))
+                if case['mode'] == 'CONTROLLED':
+                    self.assertEqual({'DIALOGUE', 'REVIEW', 'EXPLANATION', 'MCP', 'BACKEND'},
+                                     set(case['control']['components']))
+        self.assertEqual(240, len({c['variationRationale'] for c in cases}))
+
+        pilot = load_suite(full / 'manifest.pilot.json')
+        frozen = load_suite(ROOT / 'eval/scenarios/v2/manifest.pilot.json')
+        self.assertEqual(32, len(pilot))
+        self.assertEqual(frozen, pilot)
+        self.assertEqual({c['caseId']: c for c in pilot},
+                         {c['caseId']: by_id[c['caseId']] for c in pilot})
+        def case_hash(case):
+            return hashlib.sha256(json.dumps(case, ensure_ascii=False, sort_keys=True,
+                                  separators=(',', ':')).encode('utf-8')).hexdigest()
+        provenance = json.loads((full / 'freeze.json').read_text(encoding='utf-8'))
+        self.assertEqual({c['caseId']: case_hash(c) for c in frozen}, provenance['pilotCaseHashes'])
+        self.assertEqual(provenance['pilotCaseHashes'], {c['caseId']: case_hash(by_id[c['caseId']]) for c in pilot})
+        self.assertEqual({'manifest.full.json', 'manifest.pilot.json'}, set(provenance['manifestSha256']))
+        for relative, digest in provenance['manifestSha256'].items():
+            self.assertEqual(digest, hashlib.sha256((full / relative).read_bytes()).hexdigest())
+        for relative, digest in provenance['inputSha256'].items():
+            self.assertEqual(digest, hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), relative)
+
+        pairs = [by_id[f'REVIEW-{number:03}'] for number in range(25, 31)]
+        self.assertEqual({'REVIEW-POLICY-PAIR-001', 'REVIEW-POLICY-PAIR-002', 'REVIEW-POLICY-PAIR-003'},
+                         {c['reviewInput']['pairId'] for c in pairs})
+        for first, second in zip(pairs[::2], pairs[1::2]):
+            self.assertEqual(first['reviewInput']['pairId'], second['reviewInput']['pairId'])
+            self.assertNotEqual(first['reviewInput']['policyEvidence'],
+                                second['reviewInput']['policyEvidence'])
+            for field in ('originalUserRequest', 'trustedOrder', 'trustedEligibility',
+                          'candidateAction'):
+                self.assertEqual(first['reviewInput'][field], second['reviewInput'][field])
+            self.assertEqual({k: v for k, v in first['reviewInput'].items() if k != 'policyEvidence'},
+                             {k: v for k, v in second['reviewInput'].items() if k != 'policyEvidence'})
+            self.assertEqual(['REVIEW_APPROVED', 'REVIEW_REJECTED'],
+                             [first['expect']['outcome'], second['expect']['outcome']])
+            self.assertNotEqual(first['expect']['outcome'], second['expect']['outcome'])
+
+    def test_full_frozen_hashes_survive_autocrlf_git_checkout(self):
+        source = ROOT / 'eval/scenarios/v2-full'
+        self.assertTrue((source / 'manifest.full.json').is_file(), 'Frozen 240-case formal suite missing')
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary) / 'repository'
+            destination = repository / 'eval/scenarios/v2-full'
+            destination.mkdir(parents=True)
+            (repository / '.gitattributes').write_bytes((ROOT / '.gitattributes').read_bytes())
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+            for arguments in [('init', '--quiet'), ('config', 'core.autocrlf', 'true'),
+                              ('add', '--', '.gitattributes', 'eval/scenarios/v2-full')]:
+                completed = subprocess.run(['git', '-C', str(repository), *arguments], capture_output=True)
+                self.assertEqual(0, completed.returncode)
+            exported = Path(temporary) / 'exported'
+            exported.mkdir()
+            completed = subprocess.run(['git', '-C', str(repository), 'checkout-index', '--all',
+                                        '--prefix=' + str(exported) + os.sep], capture_output=True)
+            self.assertEqual(0, completed.returncode)
+            checked = exported / 'eval/scenarios/v2-full'
+            self.assertEqual(240, len(load_suite(checked / 'manifest.full.json')))
+            self.assertEqual(32, len(load_suite(checked / 'manifest.pilot.json')))
+            for original in source.rglob('*.jsonl'):
+                self.assertEqual(original.read_bytes(), (checked / original.relative_to(source)).read_bytes())
+
 
 class CounterexamplesTest(unittest.TestCase):
     def validator(self):

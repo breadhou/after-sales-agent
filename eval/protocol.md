@@ -33,7 +33,7 @@ A control has required fields `{target, components, usesRealModel, point}` and o
 
 | Target and point | Exact payload | Validation |
 |---|---|---|
-| `BACKEND_TRANSACTION` + `BACKEND_PROBE` | `probe` | Probe is `ROLLBACK_AFTER_INSERT`, `CONCURRENT_IDEMPOTENCY`, `LEGACY_PENDING`, or `STALE_POLICY`; BACKEND must be REAL and no model role may be REAL. |
+| `BACKEND_TRANSACTION` + `BACKEND_PROBE` | `probe` | Probe is `ROLLBACK_AFTER_INSERT`, `CONCURRENT_IDEMPOTENCY`, `LEGACY_PENDING`, `STALE_POLICY`, or `POLICY_WINDOW_FIXED_TIME`; BACKEND must be REAL and no model role may be REAL. The fixed-time probe calls the real eligibility evaluator with a substituted test clock and verifies unchanged persisted order/refund facts; it performs no refund submission. |
 | `MCP_CONTRACT` + `NONE` | `toolCalls` | MCP and BACKEND must be REAL; all model roles must be ABSENT and `usesRealModel=false`. Calls exercise the MCP contract directly, without an Agent-chain injection, and use an implemented MCP tool name with its closed argument schema. |
 | `AGENT_CHAIN` + `MODEL_SCRIPT` | `script` | Role-scoped ordered substituted-model responses, as specified below. |
 | `AGENT_CHAIN` + `MCP_BEFORE_REQUEST` | `toolName` | Implemented MCP tool name. |

@@ -1,2 +1,7 @@
 eval/scenarios/v1/*.jsonl text eol=lf
 eval/scenarios/v2/*.jsonl text eol=lf
+eval/scenarios/v2-full/*.jsonl text eol=lf
+eval/scenarios/v2-full/*.json text eol=lf
+eval/scenarios/v2-full/pilot/*.jsonl text eol=lf
+.gitattributes text eol=lf
+scripts/test_evaluation_scenarios.py text eol=lf

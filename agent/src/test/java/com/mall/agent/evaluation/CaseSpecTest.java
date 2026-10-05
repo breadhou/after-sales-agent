@@ -20,6 +20,18 @@ class CaseSpecTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @Test
+    void fixedTimeProbeUsesClosedBackendBoundary() throws IOException {
+        Path root = sharedFixturePath().getParent().getParent().getParent();
+        String line = Files.readString(root.resolve("eval/scenarios/v2/boundary.jsonl")).lines()
+                .filter(value -> value.contains("BOUNDARY-042")).findFirst().orElseThrow();
+        ObjectNode value = (ObjectNode) MAPPER.readTree(line);
+        ((ObjectNode) value.path("control")).put("probe", "POLICY_WINDOW_FIXED_TIME");
+        assertEquals("POLICY_WINDOW_FIXED_TIME", CaseSpec.parse(value).document().path("control").path("probe").asText());
+        ((ObjectNode) value.path("control")).put("probe", "POLICY_WINDOW_FIXED_TIME#arbitrary");
+        assertThrows(IllegalArgumentException.class, () -> CaseSpec.parse(value));
+    }
+
+    @Test
     void sharedCaseFixturesHaveTheSameAcceptRejectDecisionsAsPython() throws IOException {
         JsonNode fixtures = MAPPER.readTree(Files.readString(sharedFixturePath()));
         JsonNode templates = fixtures.path("templates");

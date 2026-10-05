@@ -56,6 +56,14 @@ class EvaluationContractTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         contract.validate_case(case)
 
+    def test_fixed_time_probe_uses_the_closed_backend_boundary(self):
+        case = json.loads((REPOSITORY_ROOT / 'eval/scenarios/v2/boundary.jsonl').read_text(encoding='utf-8').splitlines()[-1])
+        case['control']['probe'] = 'POLICY_WINDOW_FIXED_TIME'
+        self.assertEqual('POLICY_WINDOW_FIXED_TIME', contract.validate_case(case)['control']['probe'])
+        case['control']['probe'] = 'POLICY_WINDOW_FIXED_TIME#arbitrary'
+        with self.assertRaises(ValueError):
+            contract.validate_case(case)
+
     def test_mcp_contract_direct_call_requires_none_and_real_backend_components(self):
         direct = copy.deepcopy(self.shared["templates"]["mcpContract"])
         self.assertEqual(direct, contract.validate_case(direct))
