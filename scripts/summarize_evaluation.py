@@ -250,13 +250,13 @@ def summarize(results: list[dict], manifest: dict) -> dict:
             result = {**result, 'status': 'ERROR'}
         return result, case, data
     review = [observed_review(row) for row in first if row[1]['mode'] == 'REVIEW_ONLY']
-    paired = {i for i, c in cases.items() if c.get('reviewInput', {}).get('pairId')}
+    paired = {i for i, c in cases.items() if c.get('reviewInput', {}).get('pairId') and (phase != 'full' or c.get('reviewInput', {}).get('pairId') != 'REVIEW-PAIR-001')}
     risk = [r for r, c, d in review if c['caseId'] not in paired and c['expect']['outcome'] == 'REVIEW_REJECTED']
     ordinary = [r for r, c, d in review if c['caseId'] not in paired and c['expect']['outcome'] == 'REVIEW_APPROVED']
     pair_groups = {}
     for i, c in cases.items():
         pair_id = c.get('reviewInput', {}).get('pairId')
-        if pair_id: pair_groups.setdefault(pair_id, []).append(i)
+        if pair_id and (phase != 'full' or pair_id != 'REVIEW-PAIR-001'): pair_groups.setdefault(pair_id, []).append(i)
     pair_keys = [tuple(sorted(pair_groups[key])) for key in sorted(pair_groups)]
     if len(pair_keys) > 3 or any(len(pair) != 2 or any(cases[i]['mode'] != 'REVIEW_ONLY' for i in pair) for pair in pair_keys): raise ValueError('Invalid policy pairs')
     pairs = []

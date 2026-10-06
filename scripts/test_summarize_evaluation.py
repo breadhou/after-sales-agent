@@ -465,6 +465,25 @@ class SummaryTest(unittest.TestCase):
             bad=copy.deepcopy(report);bad['latency']['worker']['meanMs']=mean
             self.assertRaises(ValueError,export_report,bad,self.root/'safe-added-fields.json')
 
+    def test_full_policy_pairs_differentiate_synthetic_timing_pair(self):
+        ids = [c['caseId'] for c in self.cases.values() if c['mode'] == 'REVIEW_ONLY']
+        for case_id in ids[:12]:
+            self.cases[case_id]['expect']['outcome'] = 'REVIEW_REJECTED'
+        for case_id in ids[12:24]:
+            self.cases[case_id]['expect']['outcome'] = 'REVIEW_APPROVED'
+        self.cases[ids[0]]['reviewInput']['pairId'] = 'REVIEW-PAIR-001'
+        self.cases[ids[12]]['reviewInput']['pairId'] = 'REVIEW-PAIR-001'
+        for index, case_id in enumerate(ids[24:30]):
+            self.cases[case_id]['reviewInput']['pairId'] = f'REVIEW-POLICY-PAIR-{index // 2 + 1:03d}'
+            self.cases[case_id]['expect']['outcome'] = 'REVIEW_APPROVED' if index % 2 == 0 else 'REVIEW_REJECTED'
+        for case_id in ids: self.add(case_id)
+        report = self.report()
+        self.assertEqual(12, report['reviewGroups']['risk']['planned'])
+        self.assertEqual(12, report['reviewGroups']['normal']['planned'])
+        self.assertEqual(3, len(report['reviewGroups']['policyPairs']))
+        self.assertTrue(all(p['defined'] for p in report['reviewGroups']['policyPairs']))
+
 
 if __name__ == '__main__':
     unittest.main()
+
