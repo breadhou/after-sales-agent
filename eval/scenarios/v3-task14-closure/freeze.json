@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "purpose": "task14-closure-v3",
+  "suiteVersion": "v3-task14-closure",
+  "phase": "closure",
+  "preparationSourceParent": "58c5083a97a39a5eb993a748fafe7beebf64ddb9",
+  "sourceRunId": "phase4-v2-full-formal-20261006",
+  "sourceCaseHashes": {
+    "NORMAL-049": "afb2d1be3c8a4359fcda04d068571915e428a81e91265c9d31bf8f49b6237ba7",
+    "ADVERSARIAL-014": "ffb2cbbbafb1ff9f86a29e2184dfa666ffa2c2ee6b08a43544bae783b81ceec6",
+    "FAULT-028": "d19e748f4d3c2a909efef4b01667c2d349c2ec74e04ba6760b2ac79153839c0d",
+    "BOUNDARY-043": "2c8866ee15cf55c7fd5c6840a1178870316642f229c85369e572c217c69d4713",
+    "BOUNDARY-021": "93a05519cf99578920fd9c5bedb3e940062b90b0cb7d9efe9e0c297df57b41a6"
+  },
+  "caseHashes": {
+    "FAULT-028": "d19e748f4d3c2a909efef4b01667c2d349c2ec74e04ba6760b2ac79153839c0d",
+    "BOUNDARY-043": "2c8866ee15cf55c7fd5c6840a1178870316642f229c85369e572c217c69d4713",
+    "BOUNDARY-021": "ae2c3dd2137311b947f28e2ed001d1f1018ac864a29ddf9c72afc6641bcb6228"
+  },
+  "manifestSha256": "809229c5260f1e35dd1a702e05b3ee96476fa7d0c54564bb7fc34b90046cded0",
+  "caseFileSha256": "0623dd6c8e6a4a535cce8e1ce7f5c8921c0b7f0f3c73bce172d7ece26f49bf0d",
+  "rubricHashes": {
+    "FAULT-028": "c628e1d31290a4c85768ef30e83ac43177c1ea0bedec6431c0bc80e1e6c2e1a7",
+    "BOUNDARY-043": "854805030bde1d6195c57bc1e323ec6655866db457e7220d32bea45bfe98601f",
+    "BOUNDARY-021": "63f64d4503ad0cec00f16ea16d388ac50b8a8b7f47fc883e4b37fda78069e4be"
+  },
+  "executionCaseIds": [
+    "FAULT-028",
+    "BOUNDARY-043",
+    "BOUNDARY-021"
+  ],
+  "offlineCaseIds": [
+    "NORMAL-049",
+    "ADVERSARIAL-014"
+  ],
+  "sourceFullPlannedCases": 240,
+  "sourceTargets": 5,
+  "executionPlanned": 3,
+  "sourceNotTargeted": 235,
+  "omittedFromExecution": 237,
+  "fullSuiteCoverageComplete": false,
+  "formalRuntimeBound": false,
+  "runtimeBindingRule": "Root must bind the gated new source/JAR/config/model/policy/selection before exactly one three-trial execution."
+}

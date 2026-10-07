@@ -8,6 +8,7 @@ import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.exception.ToolExecutionException;
 import dev.langchain4j.mcp.client.McpClient;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
@@ -364,6 +365,29 @@ class TrialExecutorTest {
         assertEquals(1, mcp.closed.get());
     }
 
+    @Test void f3DirectSdkDenialIsAnObservedErrorReplyWithoutModelOrWrite() throws Exception {
+        ObjectNode c = controlled("NONE");
+        ObjectNode ctrl = (ObjectNode)c.path("control");
+        ctrl.put("target", "MCP_CONTRACT").put("usesRealModel", false);
+        ((ObjectNode)ctrl.path("components")).put("DIALOGUE", "ABSENT").put("REVIEW", "ABSENT").put("EXPLANATION", "ABSENT");
+        ctrl.set("toolCalls", JSON.createArrayNode().add(JSON.createObjectNode().put("toolName", "get_order")
+                .set("arguments", JSON.createObjectNode().put("orderId", "{{order-a}}"))));
+        FakeMcp mcp = new FakeMcp();
+        String body = "{\"error\":true,\"code\":50000,\"message\":\"denied\"}";
+        mcp.getOrderError = new ToolExecutionException(body);
+        JsonNode result = execute(c, mcp, new ReplyModel("never-called"), 0);
+        assertTrue(result.path("errorCategory").isNull(), result.toString());
+        assertEquals("NOT_SENT", result.path("terminalEvidence").asText());
+        assertEquals(0, result.path("metering").path("logicalModelRequests").asInt());
+        List<JsonNode> records = privateRecords(result);
+        JsonNode source = records.stream().filter(r -> r.path("kind").asText().equals("SOURCE")).findFirst().orElseThrow();
+        JsonNode last = records.stream().filter(r -> r.path("kind").asText().equals("FINAL_REPLY")).findFirst().orElseThrow();
+        assertEquals(body, source.path("text").asText());
+        assertEquals(body, Files.readString(directory.resolve(last.path("file").asText())));
+        assertEquals(0, mcp.submits());
+        assertEquals(1, mcp.closed.get());
+    }
+
     @Test void workerProtocolUsesConfinedPathsAndOnlySafeStdout() throws Exception {
         Path trial = directory.resolve("run-test/trial-test");
         Files.createDirectories(trial);
@@ -523,7 +547,7 @@ class TrialExecutorTest {
     }
     private static final class FakeMcp {
         final List<ToolExecutionRequest> calls = new ArrayList<>(); final AtomicInteger closed = new AtomicInteger();
-        boolean timeoutOnSubmit; boolean missingTools;
+        boolean timeoutOnSubmit; boolean missingTools; RuntimeException getOrderError;
         final McpClient client = (McpClient)Proxy.newProxyInstance(McpClient.class.getClassLoader(), new Class<?>[]{McpClient.class}, (proxy, method, argv) -> switch (method.getName()) {
             case "listTools" -> missingTools ? List.of() : List.of("get_order", "list_user_orders", "get_logistics").stream().map(name -> ToolSpecification.builder().name(name).description(name).build()).toList();
             case "close" -> { closed.incrementAndGet(); yield null; }
@@ -533,6 +557,7 @@ class TrialExecutorTest {
         int submits() { return (int)calls.stream().filter(c -> c.name().equals("submit_refund")).count(); }
         ToolExecutionResult execute(ToolExecutionRequest request) {
             calls.add(request);
+            if (request.name().equals("get_order") && getOrderError != null) throw getOrderError;
             if (request.name().equals("submit_refund") && timeoutOnSubmit) throw new IllegalStateException("private-transport-sentinel");
             String text = switch (request.name()) {
                 case "get_order" -> "{\"id\":"+ORDER+",\"status\":\"RECEIVED\",\"totalAmount\":39.8}";

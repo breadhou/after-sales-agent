@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.test_evaluation_contract import _build_suite_cases, _write_suite, SHARED_CASES
+from scripts.test_evaluation_contract import _build_suite_cases, _write_suite, _write_closure_suite, SHARED_CASES
 from scripts.test_evaluation_judge import event
 from scripts import test_evaluation_judge as judge_fixtures
 from scripts.evaluation_contract import load_suite
@@ -12,6 +12,22 @@ from scripts.summarize_evaluation import summarize, summary_scope, export_report
 
 
 class SummaryTest(unittest.TestCase):
+    def test_f3_closed_summary_has_three_trials_and_never_full_source_completion(self):
+        path = _write_closure_suite(self.root / 'closure')
+        manifest = json.loads(path.read_text(encoding='utf-8'))
+        cases = {c['caseId']: c for c in load_suite(path)}
+        with summary_scope(cases, {}): report = summarize([], manifest)
+        self.assertEqual([1, 2, 0], [report[k]['planned'] for k in ('liveFirst', 'controlledFirst', 'reviewFirst')])
+        self.assertEqual(dict(sourceFullPlannedCases=240, sourceTargets=5, executionPlanned=3,
+            executionCompleted=0, offlineRecordCount=2, sourceNotTargeted=235, omittedFromExecution=237,
+            fullSuiteCoverageComplete=False, executableCaseIds=['FAULT-028', 'BOUNDARY-043', 'BOUNDARY-021'],
+            offlineCaseIds=['NORMAL-049', 'ADVERSARIAL-014']), report['closureSelection'])
+        export_report(report, self.root / 'closure-report.json')
+        for field, value in (('executionCompleted', 4), ('offlineRecordCount', 3), ('fullSuiteCoverageComplete', True)):
+            altered = copy.deepcopy(report); altered['closureSelection'][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                export_report(altered, self.root / ('invalid-' + field + '.json'))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -486,4 +502,3 @@ class SummaryTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-

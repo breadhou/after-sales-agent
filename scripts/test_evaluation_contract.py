@@ -45,6 +45,24 @@ class EvaluationContractTest(unittest.TestCase):
     def setUpClass(cls):
         cls.shared = json.loads(SHARED_CASES.read_text(encoding="utf-8-sig"))
 
+    def test_f3_closed_three_case_manifest_is_supported_without_pilot_or_full_claim(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cases = contract.load_suite(_write_closure_suite(Path(temp)))
+            self.assertEqual(['FAULT-028', 'BOUNDARY-043', 'BOUNDARY-021'], [c['caseId'] for c in cases])
+
+    def test_f3_closed_manifest_rejects_extra_reordered_repeat_or_wrong_version(self):
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = _write_closure_suite(Path(temp))
+            baseline = json.loads(manifest.read_text(encoding='utf-8'))
+            for mutation in ('extra', 'order', 'repeat', 'version'):
+                data = copy.deepcopy(baseline)
+                if mutation == 'extra': data['caseIds'].append('NORMAL-049')
+                if mutation == 'order': data['caseIds'].reverse()
+                if mutation == 'repeat': data['repeatIds'] = ['BOUNDARY-021']
+                if mutation == 'version': data['suiteVersion'] = 'v2-full'
+                manifest.write_text(json.dumps(data), encoding='utf-8')
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError): contract.load_suite(manifest)
+
     def test_shared_case_fixtures_have_expected_accept_reject_decisions(self):
         for fixture in self.shared["cases"]:
             template = self.shared["templates"][fixture["template"]]
@@ -282,6 +300,22 @@ def _build_suite_cases(shared, phase):
             result.append(case)
             sequence += 1
     return result
+
+
+def _write_closure_suite(directory):
+    directory.mkdir(parents=True, exist_ok=True)
+    source = {c['caseId']: c for c in contract.load_suite(REPOSITORY_ROOT / 'eval/scenarios/v2-full/manifest.full.json')}
+    cases = [copy.deepcopy(source[c]) for c in ('FAULT-028', 'BOUNDARY-043', 'BOUNDARY-021')]
+    cases[-1]['manualRubric']['criteria'].extend([
+        dict(criterionId='REJECTION_FACTS', question='新试验拒绝理由是否与实际已退款事实一致', requiredFacts=[], forbiddenClaims=[]),
+        dict(criterionId='REJECTION_CLAIMS', question='拒绝回复是否不宣称第二次退款或新授权', requiredFacts=[], forbiddenClaims=['再次退款已完成'])])
+    path = directory / 'cases.jsonl'
+    path.write_text(''.join(json.dumps(c, ensure_ascii=False) + '\n' for c in cases), encoding='utf-8')
+    manifest = directory / 'manifest.closure.json'
+    manifest.write_text(json.dumps(dict(schemaVersion=1, phase='closure', suiteVersion='v3-task14-closure',
+        files=[dict(path=path.name, sha256=hashlib.sha256(path.read_bytes()).hexdigest())],
+        caseIds=[c['caseId'] for c in cases], repeatIds=[])), encoding='utf-8')
+    return manifest
 
 
 def _write_suite(directory, phase, cases):

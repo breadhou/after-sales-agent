@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "suiteVersion": "v3-task14-closure",
+  "phase": "closure",
+  "files": [
+    {
+      "path": "cases.jsonl",
+      "sha256": "0623dd6c8e6a4a535cce8e1ce7f5c8921c0b7f0f3c73bce172d7ece26f49bf0d"
+    }
+  ],
+  "caseIds": [
+    "FAULT-028",
+    "BOUNDARY-043",
+    "BOUNDARY-021"
+  ],
+  "repeatIds": []
+}

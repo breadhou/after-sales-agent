@@ -606,6 +606,57 @@ class ObservationTest {
     }
 
     @Test
+    void f3SdkBusinessDenialKeepsThrowableAndBindsActualPrivateBody() throws Exception {
+        PrivateEvidenceStore store = new PrivateEvidenceStore(directory);
+        SafeEventRecorder events = recorder(bindings(), store);
+        String body = "{\"error\":true,\"code\":50000,\"message\":\"denied\"}";
+        ToolExecutionException failure = new ToolExecutionException(body);
+        McpClient wrapped = ObservedMcpClient.wrap(fake(request -> { throw failure; }), bindings(), events);
+        try (AutoCloseable ignored = events.beginTurn("mcp-contract", 0)) {
+            assertSame(failure, assertThrows(ToolExecutionException.class,
+                    () -> wrapped.executeTool(request("get_order", "{\"orderId\":" + A + "}"))));
+        }
+        JsonNode source = store.snapshot().stream().filter(r -> r.path("kind").asText().equals("SOURCE")).findFirst().orElseThrow();
+        assertEquals("MCP_RESULT", source.path("sourceKey").asText());
+        assertEquals(body, source.path("text").asText());
+        assertEquals(FlowObserver.textDigest(body), source.path("sourceDigest").asText());
+        assertEquals(events.snapshot().get(0).path("callId").asText(), source.path("callId").asText());
+        assertEquals("BUSINESS_ERROR", events.snapshot().get(1).path("status").asText());
+        assertEquals(50000, events.snapshot().get(1).path("businessCode").asInt());
+        assertNoPrivateData(events.snapshot());
+    }
+
+    @Test
+    void f3ProtocolTransportMalformedAndUnattachedErrorsCannotBecomeResults() throws Exception {
+        String body = "{\"error\":true,\"code\":50000,\"message\":\"denied\"}";
+        List<RuntimeException> failures = List.of(new ToolExecutionException(body, -32000),
+                new ToolExecutionException(new java.io.IOException("transport")), new RuntimeException(body),
+                new ToolExecutionException(new RuntimeException(body, new RuntimeException("nested"))),
+                new ToolExecutionException("not-json"), new ToolExecutionException(body.replace("true", "false")),
+                new ToolExecutionException(body.replace("50000", "-1")),
+                new ToolExecutionException(body.replace("50000", "1,\"code\":50000")),
+                new ToolExecutionException(body.replace("}", ",\"extra\":1}")));
+        for (int i=0; i<failures.size(); i++) {
+            PrivateEvidenceStore store = new PrivateEvidenceStore(directory.resolve("negative-" + i));
+            SafeEventRecorder recorder = recorder(bindings(), store);
+            RuntimeException failure = failures.get(i);
+            ToolExecutionRequest request = request("get_order", "{\"orderId\":" + A + "}");
+            McpClient wrapped = ObservedMcpClient.wrap(fake(call -> { throw failure; }), bindings(), recorder);
+            try (AutoCloseable ignored = recorder.beginTurn("mcp-contract", 0)) {
+                assertSame(failure, assertThrows(RuntimeException.class, () -> wrapped.executeTool(request)));
+                assertNull(ObservedMcpClient.matchedBusinessError(request, failure, bindings(), recorder, store));
+            }
+            assertTrue(store.snapshot().stream().noneMatch(r -> r.path("kind").asText().equals("SOURCE")));
+        }
+        PrivateEvidenceStore store = new PrivateEvidenceStore(directory.resolve("unattached"));
+        SafeEventRecorder recorder = recorder(bindings(), store);
+        try (AutoCloseable ignored = recorder.beginTurn("mcp-contract", 0)) {
+            assertNull(ObservedMcpClient.matchedBusinessError(request("get_order", "{\"orderId\":" + A + "}"),
+                    new ToolExecutionException(body), bindings(), recorder, store));
+        }
+    }
+
+    @Test
     void confirmationCancellationFlowAndReplyKindsComeFromActualBranches() throws Exception {
         BindingIndex index = bindings();
         PrivateEvidenceStore store = new PrivateEvidenceStore(directory);

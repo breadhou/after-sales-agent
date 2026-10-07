@@ -15,6 +15,8 @@ from pathlib import Path, PurePosixPath
 
 
 SCHEMA_VERSION = 1
+CLOSURE_CASE_IDS = ('FAULT-028', 'BOUNDARY-043', 'BOUNDARY-021')
+CLOSURE_SOURCE_IDS = ('NORMAL-049', 'ADVERSARIAL-014', 'FAULT-028', 'BOUNDARY-043', 'BOUNDARY-021')
 VALIDATION_CASE_IDS = ('NORMAL-008', 'ADVERSARIAL-003', 'INFO-019', 'REVIEW-001', 'REVIEW-013')
 V2_PILOT_CASE_IDS = tuple(
     [f'NORMAL-{n:03}' for n in range(1, 9)]
@@ -104,6 +106,10 @@ CATEGORY_MODE_QUOTAS = {
         ("INDEPENDENT_REVIEW", "REVIEW_ONLY"): 30,
     },
 }
+CATEGORY_QUOTAS['closure'] = dict.fromkeys(CATEGORIES, 0) | {'POLICY_CONFIRMATION': 2, 'ABNORMAL': 1}
+MODE_QUOTAS['closure'] = {'LIVE_E2E': 1, 'CONTROLLED': 2, 'REVIEW_ONLY': 0}
+CATEGORY_MODE_QUOTAS['closure'] = {('POLICY_CONFIRMATION', 'LIVE_E2E'): 1,
+    ('POLICY_CONFIRMATION', 'CONTROLLED'): 1, ('ABNORMAL', 'CONTROLLED'): 1}
 
 
 def _fail(path, message):
@@ -622,8 +628,9 @@ def _validate_manifest(manifest):
             "files", "caseIds", "repeatIds"))
     if type(manifest["schemaVersion"]) is not int or manifest["schemaVersion"] != 1:
         _fail("manifest.schemaVersion", "must be 1")
-    phase = _enum(manifest["phase"], ("pilot", "full"), "manifest.phase")
-    if manifest["suiteVersion"] not in ("v1-" + phase, "v2-" + phase):
+    phase = _enum(manifest["phase"], ("pilot", "full", "closure"), "manifest.phase")
+    versions = ('v3-task14-closure',) if phase == 'closure' else ('v1-' + phase, 'v2-' + phase)
+    if manifest["suiteVersion"] not in versions:
         _fail("manifest.suiteVersion", "does not match the declared phase")
     files = _array(manifest["files"], "manifest.files", minimum=1)
     file_paths = []
@@ -633,15 +640,19 @@ def _validate_manifest(manifest):
         file_paths.append(_relative_path(item["path"], f"{path}.path"))
         _pattern(item["sha256"], SHA256_RE, f"{path}.sha256")
     _unique(file_paths, "manifest.files.path")
+    if phase == 'closure' and file_paths != ['cases.jsonl']:
+        _fail('manifest.files', 'requires the one closed case file')
     case_ids = _array(manifest["caseIds"], "manifest.caseIds", minimum=1)
     for index, case_id in enumerate(case_ids):
         _pattern(case_id, CASE_ID_RE, f"manifest.caseIds[{index}]")
     _unique(case_ids, "manifest.caseIds")
+    if phase == 'closure' and case_ids != list(CLOSURE_CASE_IDS):
+        _fail('manifest.caseIds', 'requires the exact ordered closure targets')
     repeat_ids = _array(manifest["repeatIds"], "manifest.repeatIds")
     for index, case_id in enumerate(repeat_ids):
         _pattern(case_id, CASE_ID_RE, f"manifest.repeatIds[{index}]")
     _unique(repeat_ids, "manifest.repeatIds")
-    if phase == "pilot" and repeat_ids:
+    if phase in ("pilot", "closure") and repeat_ids:
         _fail("manifest.repeatIds", "pilot suites do not declare formal repeats")
     if phase == "full" and len(repeat_ids) != 12:
         _fail("manifest.repeatIds", "full suites require exactly twelve repeat IDs")
@@ -689,6 +700,15 @@ def load_suite(manifest_path: Path) -> list[dict]:
         _fail("manifest.caseIds", "must exactly match referenced case order")
     if len(observed_ids) != len(set(observed_ids)):
         _fail("manifest.caseIds", "suite case IDs must be unique")
+    if phase == 'closure':
+        if (observed_ids != list(CLOSURE_CASE_IDS) or [c['mode'] for c in cases] != ['CONTROLLED', 'CONTROLLED', 'LIVE_E2E']
+                or [c['category'] for c in cases] != ['ABNORMAL', 'POLICY_CONFIRMATION', 'POLICY_CONFIRMATION']):
+            _fail('manifest.caseIds', 'requires exactly the three ordered closure executables')
+        if cases[0].get('control', {}).get('target') != 'MCP_CONTRACT' or cases[1].get('control', {}).get('probe') != 'POLICY_WINDOW_FIXED_TIME':
+            _fail('suite.closure', 'wrong closed mechanism')
+        if {c['criterionId'] for c in cases[2]['manualRubric']['criteria']} != {'FACTS', 'CLAIMS', 'REJECTION_FACTS', 'REJECTION_CLAIMS'}:
+            _fail('suite.closure', 'requires the predeclared four human criteria')
+        return cases
     if len(cases) != sum(CATEGORY_QUOTAS[phase].values()):
         _fail("manifest.caseIds", "case count does not match the exact phase quota")
     categories = {category: 0 for category in CATEGORIES}

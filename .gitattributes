@@ -5,3 +5,5 @@ eval/scenarios/v2-full/*.json text eol=lf
 eval/scenarios/v2-full/pilot/*.jsonl text eol=lf
 .gitattributes text eol=lf
 scripts/test_evaluation_scenarios.py text eol=lf
+eval/scenarios/v3-task14-closure/*.jsonl text eol=lf
+eval/scenarios/v3-task14-closure/*.json text eol=lf

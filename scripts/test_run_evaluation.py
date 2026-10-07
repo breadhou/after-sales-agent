@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.test_evaluation_contract import _build_suite_cases, _write_suite
+from scripts.test_evaluation_contract import _build_suite_cases, _write_suite, _write_closure_suite
 from scripts import test_evaluation_judge as judge_test
 
 try:
@@ -567,6 +567,132 @@ class ArchivedAssessmentTest(unittest.TestCase):
             for sensitive in (judge_test.ORDER, 'secret-sentinel-token', 'PRIVATE-NO', 'refundRows', 'reply-1.txt'):
                 self.assertNotIn(sensitive, report)
         for path, raw in old.items(): self.assertEqual(raw, path.read_bytes(), path)
+
+
+class ClosureSelectionTest(unittest.TestCase):
+    def setUp(self):
+        BatchTest.setUp(self)
+        self.manifest = _write_closure_suite(self.root / 'closed-suite')
+        current = runner.contract.load_suite(self.manifest)
+        old_manifest = runner._read_json(ROOT / 'eval/scenarios/v2-full/manifest.full.json')
+        originals = runner.contract.load_suite(ROOT / 'eval/scenarios/v2-full/manifest.full.json')
+        by_id = {c['caseId']: c for c in originals}
+        self.source = self.root / 'eval/runs' / runner.CLOSURE_SOURCE_RUN; self.source.mkdir(parents=True)
+        trials = [dict(trialId=runner.CLOSURE_UNKNOWN_TRIAL if c['caseId']=='BOUNDARY-043' else 'source-'+c['caseId'],
+                       caseId=c['caseId'],trialKind='FIRST',repeatIndex=0,state='COMPLETE',terminated=True,
+                       terminalEvidence='UNKNOWN' if c['caseId']=='BOUNDARY-043' else 'NOT_SENT') for c in originals]
+        trials.extend(dict(trialId='repeat-'+cid+'-'+str(i),caseId=cid,trialKind='REPEAT',repeatIndex=i,
+                           state='COMPLETE',terminated=True,terminalEvidence='NOT_SENT') for cid in old_manifest['repeatIds'] for i in (1,2))
+        self.source_state=dict(schemaVersion=1,runId=self.source.name,manifestHash=runner._hash(old_manifest),
+            caseHashes={c['caseId']:runner._hash(c) for c in originals},trials=trials,stopReason=None)
+        for name,data in [('manifest.json',old_manifest),('cases.json',dict(cases=originals)),('batch.json',self.source_state)]:
+            runner._exclusive_json(self.source/name,data)
+        failures={'NORMAL-049':['UNBOUND_TARGET'],'ADVERSARIAL-014':['MISSING_EVIDENCE'],
+                  'FAULT-028':['FIXTURE_ERROR','MISSING_EVIDENCE'],'BOUNDARY-043':['UNRESOLVED_WRITE'],'BOUNDARY-021':['MANUAL_REQUIRED']}
+        rows=[]
+        for cid in runner.contract.CLOSURE_SOURCE_IDS:
+            t=next(t for t in trials if t['caseId']==cid and t['trialKind']=='FIRST');d=self.source/t['trialId'];d.mkdir();work=d/'work';work.mkdir()
+            c=by_id[cid];before=dict(terminalEvidence='NOT_SENT',orders={a:dict(orderStatus=o['status'],paidAmount='39.80',refundRows=[],ownerMatches=o['owner']==c['fixture']['activeActor']) for a,o in c['fixture']['orders'].items()})
+            after=copy.deepcopy(before);after['terminalEvidence']=t['terminalEvidence']
+            raw=runner._error_result(self.source.name,t,failures[cid][0]);raw['failedCriteria']=failures[cid]
+            if cid=='BOUNDARY-021':raw.update(status='SKIPPED',automaticStatus='PASS',manualReview='PENDING')
+            worker={} if cid=='BOUNDARY-043' else dict(schemaVersion=1,runId=self.source.name,caseId=cid,trialId=t['trialId'],eventsFile='events.jsonl',privateEvidenceFile='evidence.json',terminalEvidence='NOT_SENT',errorCategory=None,
+                metering=dict(logicalModelRequests=0,promptTokens=0,completionTokens=0,totalTokens=0,usageComplete=True,unknownUsageRequests=0))
+            metadata=dict(caseId=cid,trialKind='FIRST',repeatIndex=0,events=[],worker=worker,before=before,after=after,workerDurationMs=None if not worker else 1,fixtureDurationMs=1)
+            for name,data in [('case.json',c),('result.json',raw),('metadata.json',metadata),('before.json',before),('after.json',after)]:runner._exclusive_json(d/name,data)
+            if worker:
+                runner._exclusive_json(d/'worker.json',worker);runner._exclusive_json(d/'process.json',dict(exitCode=0,terminated=True,durationMs=1))
+                runner._exclusive_json(work/'evidence.json',dict(schemaVersion=1,records=[]));(work/'events.jsonl').write_text('',encoding='utf-8')
+                runner._exclusive_json(work/'case-input.json',c)
+                runner._exclusive_json(work/'binding-input.json',dict(schemaVersion=1,runId=self.source.name,caseId=cid,trialId=t['trialId'],activeActor='actor-a',actors={'actor-a':dict(userId='9007199254740993',userToken='fake')},orders={},products={}))
+            rows.append(dict(caseId=cid,trialId=t['trialId'],sourceCaseHash=runner._hash(c),evidenceHashes={p.relative_to(d).as_posix():runner._file_hash(p) for p in d.rglob('*') if p.is_file()}))
+        self.backend=self.root/'backend';self.backend.mkdir();backend_file=self.backend/'fixed-time.java';backend_file.write_text('fixture readonly clock',encoding='utf-8')
+        probe=self.backend/'probe.json';runner._exclusive_json(probe,dict(probe='POLICY_WINDOW_FIXED_TIME',assertionsPassed=True,receiptClass='NOT_APPLICABLE'))
+        ruling=self.root/'ruling.md';ruling.write_text('trusted fixture no-writing ruling',encoding='utf-8')
+        control={n:runner._file_hash(self.source/n) for n in ('batch.json','cases.json','manifest.json')}
+        boundary=next(r for r in rows if r['caseId']=='BOUNDARY-043')
+        receipt=dict(purpose='task14-boundary043-specific-safety-closure',sourceRunId=self.source.name,caseId='BOUNDARY-043',trialId=runner.CLOSURE_UNKNOWN_TRIAL,safetyClosed=True,sourceTerminalEvidence='UNKNOWN',sourceState='COMPLETE',sourceTerminated=True,originalAutomaticStatus='ERROR',originalFailedCriteria=['UNRESOLVED_WRITE'],workerProcessReceipt='NOT_APPLICABLE_BACKEND_PROBE_NO_PROCESS_JSON',sourceCaseHash=boundary['sourceCaseHash'],sourceControlHashes=control,sourceEvidenceHashes=boundary['evidenceHashes'],previousSafetyRuling=dict(path='ruling.md',sha256=runner._file_hash(ruling)),backendSource=dict(path='fixed-time.java',currentFileSha256=runner._file_hash(backend_file)),independentSavedProbe=dict(path='probe.json',sha256=runner._file_hash(probe)))
+        receipt_path=self.root/runner.CLOSURE_RECEIPT_PATH;receipt_path.parent.mkdir(parents=True);runner._exclusive_json(receipt_path,receipt)
+        self.sha_patch=patch.object(runner,'CLOSURE_RECEIPT_SHA',runner._file_hash(receipt_path));self.sha_patch.start();self.addCleanup(self.sha_patch.stop)
+        freeze=dict(schemaVersion=1,phase='closure',purpose='task14-closure-v3',suiteVersion='v3-task14-closure',sourceRunId=self.source.name,
+            sourceFullPlannedCases=240,sourceTargets=5,executionPlanned=3,sourceNotTargeted=235,omittedFromExecution=237,
+            caseFileSha256=runner._file_hash(self.manifest.parent/'cases.jsonl'),
+            formalRuntimeBound=False,fullSuiteCoverageComplete=False,manifestSha256=runner._file_hash(self.manifest),
+            sourceCaseHashes={cid:runner._hash(by_id[cid]) for cid in runner.contract.CLOSURE_SOURCE_IDS},
+            caseHashes={c['caseId']:runner._hash(c) for c in current},rubricHashes={c['caseId']:runner._hash(c['manualRubric']) for c in current},
+            executionCaseIds=list(runner.contract.CLOSURE_CASE_IDS),offlineCaseIds=list(runner.contract.CLOSURE_SOURCE_IDS[:2]))
+        runner._exclusive_json(self.manifest.parent/'freeze.json',freeze)
+        self.spec=dict(schemaVersion=1,purpose='task14-closure-v3',sourceRunId=self.source.name,sourceControlHashes=control,sources=rows,
+            boundaryClosure=dict(path=runner.CLOSURE_RECEIPT_PATH,sha256=runner.CLOSURE_RECEIPT_SHA),manifestSha256=runner._file_hash(self.manifest),freezeSha256=runner._file_hash(self.manifest.parent/'freeze.json'))
+        self.selection=self.root/'selection.json';runner._exclusive_json(self.selection,self.spec)
+        usage=dict(logicalModelRequests=0,promptTokens=0,completionTokens=0,totalTokens=0,usageComplete=True,unknownUsageRequests=0)
+        runner._exclusive_json(self.root/'eval/runs/budget-ledger.json',dict(schemaVersion=1,trials={self.source.name+'.'+t['trialId']:dict(reservedRequests=0,chargedRequests=0,state='COMPLETE',usage=usage,terminated=True) for t in trials}))
+        self.token=runner._OPTIONS.set(dict(closure_selection=self.selection,supermall_root=self.backend));self.addCleanup(runner._OPTIONS.reset,self.token)
+
+    def test_f3_dry_closed_selection_creates_no_run_or_dispatch_and_preserves_counts(self):
+        with patch.object(runner,'_helper',side_effect=AssertionError('helper')),patch.object(runner,'_run_worker',side_effect=AssertionError('model')):
+            report=runner.run_batch(self.manifest,self.run,False,False)
+        self.assertFalse(self.run.exists());self.assertEqual(3,report['plannedTrials']);self.assertFalse(report['closureSelection']['fullSuiteCoverageComplete'])
+        self.assertEqual((5,2,235,237),tuple(report['closureSelection'][k] for k in ('sourceTargets','offlineRecordCount','sourceNotTargeted','omittedFromExecution')))
+
+    def test_f3_closed_selection_rejects_forged_source_proof_and_mixed_options(self):
+        for mutation in ('extra','source-order','source-missing','hash','ruling'):
+            value=copy.deepcopy(self.spec)
+            if mutation=='extra':value['extra']=True
+            if mutation=='source-order':value['sources'].reverse()
+            if mutation=='source-missing':value['sources'].pop()
+            if mutation=='hash':value['sources'][0]['evidenceHashes']['result.json']='0'*64
+            if mutation=='ruling':value['boundaryClosure']['sha256']='0'*64
+            runner._atomic_json(self.selection,value)
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):runner.run_batch(self.manifest,self.run,False,False)
+        runner._atomic_json(self.selection,self.spec)
+        token=runner._OPTIONS.set(dict(closure_selection=self.selection,validation_selection=self.selection,supermall_root=self.backend))
+        try:
+            with self.assertRaises(ValueError):runner.run_batch(self.manifest,self.run,False,False)
+        finally:runner._OPTIONS.reset(token)
+        with self.assertRaises(ValueError):runner.run_batch(self.manifest,self.run,False,False,'FAULT-028','infrastructure:fixture')
+
+    def test_f3_closure_blocks_current_unknown_inflight_and_reserved_budget(self):
+        for state,terminal,stop in [('INFLIGHT','UNKNOWN',None),('COMPLETE','UNKNOWN',None),('COMPLETE','NOT_SENT','UNRESOLVED_WRITE')]:
+            other=self.root/'eval/runs/other';other.mkdir(exist_ok=True)
+            runner._atomic_json(other/'batch.json',dict(runId='other',stopReason=stop,trials=[dict(trialId='unknown',caseId='FAULT-028',trialKind='FIRST',state=state,terminated=True,terminalEvidence=terminal)]))
+            with self.subTest(state=state,terminal=terminal),self.assertRaises(ValueError):runner.run_batch(self.manifest,self.run,False,False)
+        (other/'batch.json').unlink()
+        ledger=self.root/'eval/runs/budget-ledger.json';data=runner._read_json(ledger);next(iter(data['trials'].values()))['state']='RESERVED';runner._atomic_json(ledger,data)
+        with self.assertRaises(ValueError):runner.run_batch(self.manifest,self.run,False,False)
+
+    def test_f3_resume_preserves_three_trials_two_offline_records_and_rejects_mutation(self):
+        state=runner._initialize_batch(self.manifest,self.run,False)
+        self.assertEqual(list(runner.contract.CLOSURE_CASE_IDS),[t['caseId'] for t in state['trials']])
+        self.assertEqual(2,len(runner._read_json(self.run/'closure-offline.json')))
+        self.assertEqual(state,runner._initialize_batch(self.manifest,self.run,True))
+        row=runner._read_json(self.run/'closure-offline.json');row[0]['originalStatus']='PASS';runner._atomic_json(self.run/'closure-offline.json',row)
+        with self.assertRaises(ValueError):runner._initialize_batch(self.manifest,self.run,True)
+
+    def test_f3_exact_three_dispatch_and_completed_resume_never_replays_or_counts_offline(self):
+        dispatched=[]
+        def fake(case,trial,state,run_dir,client,output,model,url,budget,manual):
+            dispatched.append(case['caseId']);key=state['runId']+'.'+trial['trialId']
+            budget.reserve(key,0);budget.complete(key,dict(logicalModelRequests=0,promptTokens=0,completionTokens=0,totalTokens=0,usageComplete=True,unknownUsageRequests=0),True)
+            directory=run_dir/trial['trialId'];directory.mkdir()
+            runner._exclusive_json(directory/'result.json',runner._error_result(state['runId'],trial,'FIXTURE_ERROR'))
+            runner._exclusive_json(directory/'metadata.json',dict(caseId=case['caseId'],trialKind='FIRST',repeatIndex=0,events=[],worker={},before={},after={},workerDurationMs=None,fixtureDurationMs=0))
+            trial.update(state='COMPLETE',terminated=True,terminalEvidence='NOT_SENT')
+        with patch.object(runner,'_helper',return_value=(BatchTest.fixture_helper(self,[]),self.backend)),patch.object(runner,'_read_env_file',return_value={}),patch.object(runner,'_execute_trial',side_effect=fake):
+            report=runner.run_batch(self.manifest,self.run,True,False)
+        self.assertEqual(list(runner.contract.CLOSURE_CASE_IDS),dispatched)
+        self.assertEqual(3,report['completedTrials']);self.assertEqual(3,report['closureSelection']['executionCompleted'])
+        self.assertEqual(2,report['closureSelection']['offlineRecordCount']);self.assertFalse(report['closureSelection']['fullSuiteCoverageComplete'])
+        with patch.object(runner,'_helper',side_effect=AssertionError('replayed helper')),patch.object(runner,'_execute_trial',side_effect=AssertionError('replayed trial')):
+            runner.run_batch(self.manifest,self.run,True,True)
+
+    def test_f3_legacy_named_closed_unknown_does_not_allow_new_unknown_in_same_run(self):
+        legacy=self.root/'eval/runs/phase4-v1-pilot';legacy.mkdir()
+        state=dict(runId=legacy.name,stopReason=None,trials=[dict(caseId='NORMAL-001',trialKind='FIRST',trialId='trial-18c79ed14c4e4a0bb01b93f6301a66a9',state='COMPLETE',terminated=True,terminalEvidence='UNKNOWN')])
+        runner._atomic_json(legacy/'batch.json',state)
+        self.assertEqual(3,runner.run_batch(self.manifest,self.run,False,False)['plannedTrials'])
+        state['trials'][0]['trialId']='different-unknown';runner._atomic_json(legacy/'batch.json',state)
+        with self.assertRaises(ValueError):runner.run_batch(self.manifest,self.run,False,False)
 
 
 class ValidationSelectionTest(unittest.TestCase):

@@ -19,6 +19,8 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Delegates SDK calls unchanged; only the observation side parses private projections. */
 public final class ObservedMcpClient {
     private static final ObjectMapper JSON = new ObjectMapper().enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    private static final ObjectMapper ERROR_JSON = new ObjectMapper().enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+            .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
     private ObservedMcpClient() { }
 
     public static McpClient wrap(McpClient delegate, BindingIndex index, SafeEventRecorder recorder) {
@@ -175,9 +177,14 @@ public final class ObservedMcpClient {
             if (error instanceof ToolExecutionException toolError && toolError.errorCode() == null) {
                 Throwable cause = toolError.getCause();
                 if (cause != null && cause.getClass() == RuntimeException.class && cause.getCause() == null)
-                    code = businessCode(parse(cause.getMessage()));
+                    code = businessCode(errorBody(cause.getMessage()));
             }
             event(recorder, origin, target, base, code == null ? "TRANSPORT_ERROR" : "BUSINESS_ERROR", elapsed(started), code, error);
+            if (code != null && origin != null && origin.sessionAlias().equals("mcp-contract")
+                    && "get_order".equals(base.get("tool"))) {
+                String raw = businessErrorText(error);
+                recorder.sourceEvidence(origin, (String)base.get("callId"), "MCP_RESULT", raw, FlowObserver.textDigest(raw));
+            }
         } catch (Throwable failure) { recorder.onObservationFailure(failure); }
     }
     private static void event(SafeEventRecorder recorder, SafeEventRecorder.Turn origin, Long target, Map<String, Object> base,
@@ -198,5 +205,38 @@ public final class ObservedMcpClient {
                 && node.path("error").booleanValue() && node.path("code").isIntegralNumber()
                 && node.path("code").canConvertToInt() && node.path("code").intValue() >= 0
                 && node.path("message").isTextual() ? node.path("code").intValue() : null;
+    }
+
+    private static String businessErrorText(Throwable error) {
+        if (!(error instanceof ToolExecutionException sdk) || sdk.errorCode() != null) return null;
+        Throwable cause = sdk.getCause();
+        if (cause == null || cause.getClass() != RuntimeException.class || cause.getCause() != null) return null;
+        return businessCode(errorBody(cause.getMessage())) == null ? null : cause.getMessage();
+    }
+
+    private static JsonNode errorBody(String raw) {
+        try { return raw == null ? null : ERROR_JSON.readTree(raw); }
+        catch (Exception invalid) { return null; }
+    }
+
+    /** Only a body already recorded by this delegated, bound SDK call may become a direct final. */
+    static String matchedBusinessError(ToolExecutionRequest request, Throwable error, BindingIndex index,
+                                      SafeEventRecorder recorder, PrivateEvidenceStore store) {
+        String raw = businessErrorText(error);
+        SafeEventRecorder.Turn origin = recorder.captureTurn();
+        if (raw == null || origin == null || !origin.sessionAlias().equals("mcp-contract")
+                || !request.name().equals("get_order")) return null;
+        String alias = index.orderAlias(actualTarget(request));
+        if (alias.equals("UNBOUND") || alias.equals("GLOBAL")) return null;
+        List<JsonNode> calls = recorder.snapshot().stream().filter(e -> e.path("phase").asText().equals("MCP")
+                && e.path("tool").asText().equals("get_order") && e.path("status").asText().equals("BUSINESS_ERROR")
+                && e.path("target").asText().equals(alias) && e.path("sessionAlias").asText().equals(origin.sessionAlias())
+                && e.path("turnIndex").asInt() == origin.turnIndex()).toList();
+        if (calls.isEmpty()) return null;
+        JsonNode call = calls.get(calls.size() - 1);
+        return store.snapshot().stream().anyMatch(r -> r.path("kind").asText().equals("SOURCE")
+                && r.path("sourceKey").asText().equals("MCP_RESULT") && r.path("callId").asText().equals(call.path("callId").asText())
+                && r.path("sessionAlias").asText().equals(origin.sessionAlias()) && r.path("turnIndex").asInt() == origin.turnIndex()
+                && r.path("text").asText().equals(raw) && r.path("sourceDigest").asText().equals(FlowObserver.textDigest(raw))) ? raw : null;
     }
 }

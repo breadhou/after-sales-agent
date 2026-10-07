@@ -104,10 +104,17 @@ public final class TrialExecutor {
                                 arguments.put(field, Long.parseLong(bindings.path(field.equals("orderId") ? "orders" : "products")
                                         .path(match.group(1)).path(field).textValue()));
                             }
-                            var reply = client.executeTool(ToolExecutionRequest.builder().name(call.path("toolName").textValue())
-                                    .arguments(arguments.toString()).build());
-                            store.writeFinalReply("mcp-contract", step, reply == null || reply.resultText() == null ? "MCP_UNAVAILABLE" : reply.resultText());
-                            if (reply == null) error(recorder, "MISSING_EVIDENCE");
+                            ToolExecutionRequest request = ToolExecutionRequest.builder().name(call.path("toolName").textValue())
+                                    .arguments(arguments.toString()).build();
+                            try {
+                                var reply = client.executeTool(request);
+                                store.writeFinalReply("mcp-contract", step, reply == null || reply.resultText() == null ? "MCP_UNAVAILABLE" : reply.resultText());
+                                if (reply == null) error(recorder, "MISSING_EVIDENCE");
+                            } catch (dev.langchain4j.exception.ToolExecutionException failure) {
+                                String actual = ObservedMcpClient.matchedBusinessError(request, failure, index, recorder, store);
+                                if (actual == null) throw failure;
+                                store.writeFinalReply("mcp-contract", step, actual);
+                            }
                             if (writes.unknown()) break;
                         }
                         step++;

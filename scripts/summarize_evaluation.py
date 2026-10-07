@@ -274,6 +274,11 @@ def summarize(results: list[dict], manifest: dict) -> dict:
     report['latencyByMode'] = {mode: dict(worker=_latency([d['workerDurationMs'] for r, c, d in rows if c['mode'] == mode]), fixture=_latency([d['fixtureDurationMs'] for r, c, d in rows if c['mode'] == mode])) for mode in modes}
     report['evidenceAvailability'] = dict(workerMissingTrials=sum(not d['worker'] and c.get('control', {}).get('target') != 'BACKEND_TRANSACTION' for r, c, d in rows), oracleMissingTrials=sum(not d['before'] or not d['after'] for r, c, d in rows))
     report['failures'] = {k: failure_counts[k] for k in sorted(failure_counts)}
+    if phase == 'closure':
+        report['closureSelection'] = dict(sourceFullPlannedCases=240, sourceTargets=5,
+            executionPlanned=3, executionCompleted=len(first), offlineRecordCount=2,
+            sourceNotTargeted=235, omittedFromExecution=237, fullSuiteCoverageComplete=False,
+            executableCaseIds=list(contract.CLOSURE_CASE_IDS), offlineCaseIds=list(contract.CLOSURE_SOURCE_IDS[:2]))
     _validate_report(report)
     return report
 
@@ -306,13 +311,27 @@ def _validate_report(value):
         for metrics in node['invariants'].values():
             obj(metrics, ('applicable', 'violations'))
             for n in metrics.values(): integer(n)
-    selection_keys = ('validationSelection',) if 'validationSelection' in value else ()
+    selection_keys = tuple(k for k in ('validationSelection', 'closureSelection') if k in value)
     obj(value, ('schemaVersion', 'suiteVersion', 'phase', 'liveFirst', 'controlledFirst', 'reviewFirst', 'categoryFirst', 'categoryByKind', 'repeats', 'repeatByMode', 'supplement', 'supplementByMode', 'repeatSequences', 'normalRefund', 'safety', 'safetyByMode', 'reviewGroups', 'cost', 'costByKind', 'costByMode', 'latency', 'latencyByMode', 'evidenceAvailability', 'failures', *selection_keys))
     if type(value['schemaVersion']) is not int or value['schemaVersion'] != 1: raise ValueError('Invalid report version')
-    enum(value['phase'], ('pilot', 'full')); enum(value['suiteVersion'], ('v1-pilot', 'v1-full', 'v2-pilot', 'v2-full'))
-    if value['suiteVersion'] not in ('v1-' + value['phase'], 'v2-' + value['phase']): raise ValueError('Mixed report phase')
+    enum(value['phase'], ('pilot', 'full', 'closure')); enum(value['suiteVersion'], ('v1-pilot', 'v1-full', 'v2-pilot', 'v2-full', 'v3-task14-closure'))
+    versions = ('v3-task14-closure',) if value['phase'] == 'closure' else ('v1-' + value['phase'], 'v2-' + value['phase'])
+    if value['suiteVersion'] not in versions: raise ValueError('Mixed report phase')
+    if ('closureSelection' in value) != (value['phase'] == 'closure'): raise ValueError('Missing closed coverage')
+    if value['phase'] == 'closure':
+        for key, number in value['closureSelection'].items():
+            if key not in ('fullSuiteCoverageComplete', 'executableCaseIds', 'offlineCaseIds'): integer(number)
+        completed = sum(value[k][s] for k in ('liveFirst', 'controlledFirst', 'reviewFirst') for s in ('passed', 'failed', 'errors', 'skipped'))
+        expected = dict(sourceFullPlannedCases=240, sourceTargets=5, executionPlanned=3,
+            executionCompleted=completed, offlineRecordCount=2, sourceNotTargeted=235,
+            omittedFromExecution=237, fullSuiteCoverageComplete=False,
+            executableCaseIds=list(contract.CLOSURE_CASE_IDS), offlineCaseIds=list(contract.CLOSURE_SOURCE_IDS[:2]))
+        if (value['closureSelection'] != expected or type(value['closureSelection']['fullSuiteCoverageComplete']) is not bool
+                or completed > 3 or 'validationSelection' in value
+                or [value[k]['planned'] for k in ('liveFirst', 'controlledFirst', 'reviewFirst')] != [1, 2, 0]
+                or value['repeats']['planned'] or value['supplement']['planned']): raise ValueError('Invalid closed coverage')
     for key in ('liveFirst', 'controlledFirst', 'reviewFirst', 'repeats', 'supplement'): rate(value[key])
-    if selection_keys:
+    if 'validationSelection' in value:
         selection = value['validationSelection']
         obj(selection, ('selectedPlannedTrials', 'selectedCompletedTrials', 'fullSuitePlannedTrials',
             'fullSuiteCoverageComplete', 'selectedCaseIds', 'undispatchedCaseIds'))
