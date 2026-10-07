@@ -1,0 +1,454 @@
+{
+  "schemaVersion": 1,
+  "freezeSha256": "86c92d522ca39a0c448887f34060d04fd26240abf7dfe3bf138d11158df875f1",
+  "declaredPreparationSourceHead": "1e60a8acbe9eb13976b58bf5a07b38cf3a8741f3",
+  "freezeSourceHead": "cc34cf76f493c2d16ddfaedc0216d2d9b1c93273",
+  "inputs": {
+    "pom.xml": {
+      "gitBlobSha256": "c5ae304c2d08cb09f79c338d756e612a46539b50ca616371322b5e15102d9587",
+      "frozenByteSha256": "5040acb79c73b706f2b4ea60367353c80be2368915620d156bca968811c2d85f",
+      "crlfRanges": [
+        [
+          0,
+          61
+        ]
+      ]
+    },
+    "agent/pom.xml": {
+      "gitBlobSha256": "805c256998c3baed788419dbf6559f59deb938bd913d14776bd0e3b426fd1b27",
+      "frozenByteSha256": "69a765e62cb33b56d321fcccc2b69f190505068cb251465f0df31d0242c8e3e2",
+      "crlfRanges": [
+        [
+          0,
+          95
+        ]
+      ]
+    },
+    "mcp-server/pom.xml": {
+      "gitBlobSha256": "6ecdb9da128d0b50710ce164696ad1e97ed34ff1669ce610536fd7ebcc593f66",
+      "frozenByteSha256": "cbbb61b76efe90941a13523422abb130fb1b01f4f6fb599a24ed6dfbfac925bf",
+      "crlfRanges": [
+        [
+          0,
+          77
+        ]
+      ]
+    },
+    ".gitattributes": {
+      "gitBlobSha256": "12b56a097b7302ec68632e9699fb2fcd7c7259c6eda940bbb3f720370a31f9f6",
+      "frozenByteSha256": "12b56a097b7302ec68632e9699fb2fcd7c7259c6eda940bbb3f720370a31f9f6",
+      "crlfRanges": []
+    },
+    "scripts/test_evaluation_scenarios.py": {
+      "gitBlobSha256": "f7c7e79cc503171d1b806400e22554691ba90c02109ea08256a2b431ec80ca0c",
+      "frozenByteSha256": "f7c7e79cc503171d1b806400e22554691ba90c02109ea08256a2b431ec80ca0c",
+      "crlfRanges": []
+    },
+    "scripts/evaluation_contract.py": {
+      "gitBlobSha256": "4384440d55e70637251cc405892f2f4637f4825838a5bb12c50ecbfff5ee8674",
+      "frozenByteSha256": "0d40fae8def67475472c79aa9faed10acffea85ce6db235655048fa89b96700e",
+      "crlfRanges": [
+        [
+          0,
+          1020
+        ]
+      ]
+    },
+    "scripts/run_evaluation.py": {
+      "gitBlobSha256": "507e4790dac83f4926cf9dbb3e8dd8fc6c3b29fcb850a7adfaf7b49abc220ac8",
+      "frozenByteSha256": "507e4790dac83f4926cf9dbb3e8dd8fc6c3b29fcb850a7adfaf7b49abc220ac8",
+      "crlfRanges": []
+    },
+    "scripts/evaluation_judge.py": {
+      "gitBlobSha256": "640eea417059df68d160767895bde92e2258584459f66bb21d2b49cee14fc823",
+      "frozenByteSha256": "640eea417059df68d160767895bde92e2258584459f66bb21d2b49cee14fc823",
+      "crlfRanges": []
+    },
+    "scripts/evaluation_budget.py": {
+      "gitBlobSha256": "167cf801bcf9eaf6bc8c0b0970afe5b37070a9468b488a2df0a0e0c124fddf43",
+      "frozenByteSha256": "167cf801bcf9eaf6bc8c0b0970afe5b37070a9468b488a2df0a0e0c124fddf43",
+      "crlfRanges": []
+    },
+    "data/demo-products.json": {
+      "gitBlobSha256": "40f377351c945ba59f4c3040b876a68464cf5fb215ce4d4d4478bc1734963dda",
+      "frozenByteSha256": "f33a486ad52ca8a54f4a7f41a6baee446d52fc02f47442cd1540930d30daf88b",
+      "crlfRanges": [
+        [
+          0,
+          22
+        ]
+      ]
+    },
+    "agent/src/main/resources/corpus/faq.json": {
+      "gitBlobSha256": "f8b2bdf0c227c55b811df6e8b7a03bb91b78a793aa61b3ce1333443e9b0ca3a1",
+      "frozenByteSha256": "061d161fc69e2db2dd226e037aa3e63800e54c6f938c1ebf44a7338d6fbcdd66",
+      "crlfRanges": [
+        [
+          0,
+          225
+        ]
+      ]
+    },
+    "agent/src/main/resources/agent.properties": {
+      "gitBlobSha256": "be1eca16e1b28e5a5f5373d77332d8d6e2f654cf3ce4b4ce04a432d033533adf",
+      "frozenByteSha256": "876c355729b4c99fb337c3f16c9516f2a6d7a9efe1642e81eef940c1e147430f",
+      "crlfRanges": [
+        [
+          0,
+          5
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/knowledge/ExplanationService.java": {
+      "gitBlobSha256": "46aa939ac29da1e352ee52bab1bd00664b85e5359c7cd25fd7adeb26392b47fb",
+      "frozenByteSha256": "4aeb0ab56505b1f7e547a35d5c207ff0b95289df041eca7c91d33ee05ac8bb4c",
+      "crlfRanges": [
+        [
+          0,
+          6
+        ],
+        [
+          9,
+          64
+        ],
+        [
+          69,
+          69
+        ],
+        [
+          75,
+          79
+        ],
+        [
+          82,
+          83
+        ],
+        [
+          97,
+          199
+        ],
+        [
+          203,
+          215
+        ],
+        [
+          219,
+          222
+        ],
+        [
+          226,
+          229
+        ],
+        [
+          234,
+          234
+        ],
+        [
+          237,
+          239
+        ],
+        [
+          242,
+          243
+        ],
+        [
+          250,
+          253
+        ],
+        [
+          262,
+          351
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/config/AgentConfig.java": {
+      "gitBlobSha256": "9162ce973fef7093512b24c168f77663c79da0392fea7932b413a83ca55f256b",
+      "frozenByteSha256": "a3f57683dd5e8c9473cedc22f43a5063a5d2331641298e01572f9cd37089cfcf",
+      "crlfRanges": [
+        [
+          0,
+          9
+        ],
+        [
+          13,
+          136
+        ],
+        [
+          144,
+          166
+        ],
+        [
+          171,
+          171
+        ],
+        [
+          176,
+          176
+        ],
+        [
+          181,
+          181
+        ],
+        [
+          196,
+          196
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/evaluation/CaseSpec.java": {
+      "gitBlobSha256": "03d875119aed7fe07cc08067cf1b9885104b95397d152ab9f6c3941d058eaeff",
+      "frozenByteSha256": "6d0c877beacb8a47062c869001b7923d64454d87cfa79cd5454b27e33d7b0bbf",
+      "crlfRanges": [
+        [
+          0,
+          334
+        ]
+      ]
+    },
+    "eval/protocol.md": {
+      "gitBlobSha256": "ae4bb498eb3b719373cc91e6c0683e77726ddfcc10da1a0f89bf811cf4b866ca",
+      "frozenByteSha256": "ebe25a3ad2709adccf154a07d2cbb9d5a152a8c21101e40316ef610812cd26b1",
+      "crlfRanges": [
+        [
+          0,
+          155
+        ]
+      ]
+    },
+    "agent/src/main/resources/prompts/decision-system.txt": {
+      "gitBlobSha256": "a90122e8534edbc2f9c561230f7db4633c0ab582a7d54ae80896ed5e878034ee",
+      "frozenByteSha256": "3f6bac1f3fab76532baf321a9051d44cff3693061c339f5934ee8c67e216097b",
+      "crlfRanges": [
+        [
+          0,
+          18
+        ]
+      ]
+    },
+    "agent/src/main/resources/prompts/review-system.txt": {
+      "gitBlobSha256": "636f418520ecb889ee287fd8967c7fd1fb229d7d73e621b79f55b0bab2992893",
+      "frozenByteSha256": "5dc65611cac115cd59b232e1071f514c61006caa7ead61a71832385158be7730",
+      "crlfRanges": [
+        [
+          0,
+          30
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/knowledge/TermRanker.java": {
+      "gitBlobSha256": "b0fee2398b655f5ea7a253a19236ec3f519bf28e912eafe2a5f48ba5d0a8a5b8",
+      "frozenByteSha256": "92b1d3d2c3d124bba3cb9152d43d32d2392b156c8f1826e061c98100bc773663",
+      "crlfRanges": [
+        [
+          0,
+          63
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/knowledge/FaqCorpus.java": {
+      "gitBlobSha256": "43b3f6d6a3529a82dc820455935ef193721d79b9566245479ff2d00093e7866a",
+      "frozenByteSha256": "f20fb58d564072d743431bbd916e3df6aabd2d0e57cec3cbac4e5b57726f3a6c",
+      "crlfRanges": [
+        [
+          0,
+          75
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/knowledge/ExplanationDraft.java": {
+      "gitBlobSha256": "17916f295290ee52c8967b7a576b26e26df922c4914f66b7be01e57f06978744",
+      "frozenByteSha256": "1b9d5fb67e41b14cf4c2c83e2a2499d2f7997b496c7ff2e3c0c662acbf4a4169",
+      "crlfRanges": [
+        [
+          0,
+          6
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/knowledge/CurrentProductIndex.java": {
+      "gitBlobSha256": "4e221e467b5e1edca6792fd5e8ac92d6e21d08eb54d636e75c1b68cdfb132508",
+      "frozenByteSha256": "cf8e42a5a389a9fde376a2b0678d26f32ff48f9372a2b39060aedefa9737a6e2",
+      "crlfRanges": [
+        [
+          0,
+          364
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/policy/PolicyCatalogConsumer.java": {
+      "gitBlobSha256": "8f98399e00ea6d1746e1d70aac24ab0b8516cfa912aa6a20fc6c3bbdaed25994",
+      "frozenByteSha256": "4e097c4297565688caeaaabc5f6b709bda665ef39d157c638681e36ac9d54f59",
+      "crlfRanges": [
+        [
+          0,
+          143
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java": {
+      "gitBlobSha256": "a542eda0bb2c142a07838bafd31b3539d8e1d5cf440f1895c3f366ef6fe5d3f8",
+      "frozenByteSha256": "29c387409b490d8be414f44213a18c7521618b6ace45d74d439dd5c21001555e",
+      "crlfRanges": [
+        [
+          0,
+          55
+        ],
+        [
+          60,
+          61
+        ],
+        [
+          63,
+          68
+        ],
+        [
+          81,
+          86
+        ],
+        [
+          100,
+          107
+        ],
+        [
+          110,
+          112
+        ],
+        [
+          126,
+          138
+        ],
+        [
+          143,
+          153
+        ],
+        [
+          157,
+          163
+        ],
+        [
+          166,
+          193
+        ],
+        [
+          199,
+          210
+        ],
+        [
+          224,
+          227
+        ],
+        [
+          230,
+          286
+        ],
+        [
+          292,
+          315
+        ],
+        [
+          318,
+          335
+        ],
+        [
+          338,
+          340
+        ],
+        [
+          344,
+          355
+        ],
+        [
+          358,
+          359
+        ],
+        [
+          364,
+          364
+        ],
+        [
+          367,
+          520
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/flow/FlowObserver.java": {
+      "gitBlobSha256": "18788cee1da5a078b19b2dbc7da7cd57e8ae6dd8afe5280b78d92892531c82f1",
+      "frozenByteSha256": "18788cee1da5a078b19b2dbc7da7cd57e8ae6dd8afe5280b78d92892531c82f1",
+      "crlfRanges": []
+    },
+    "agent/src/main/java/com/mall/agent/agent/DecisionAgent.java": {
+      "gitBlobSha256": "b6070e59e6defa47d6c121e239599304ec06c455f4caab87dd7e78595903426a",
+      "frozenByteSha256": "1f2b66a78cc244e4a27b3d9fefd34d2c4ddfdac4788160c13df38f0691bdab18",
+      "crlfRanges": [
+        [
+          0,
+          11
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/policy/PolicyEvidence.java": {
+      "gitBlobSha256": "7ab08d7513d9a48a69cbc8d1d8efff5ba92da81cf94aa2a2757e90a1815b2e9d",
+      "frozenByteSha256": "ef3588b16803f9eac00b4807f3447d9e4afb0f391493489671d82057598f845e",
+      "crlfRanges": [
+        [
+          0,
+          4
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/policy/CatalogSnapshot.java": {
+      "gitBlobSha256": "cac04add6ad610fc03ae4fd4e8db2d8eaa6fc8b01fea9fcc9c2f017efdef7811",
+      "frozenByteSha256": "2ece6628edebe19bc796f5dda5f6628bf3a5dd118345eee8f7e63d897c12a46a",
+      "crlfRanges": [
+        [
+          0,
+          12
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/tools/RefundHandoffTools.java": {
+      "gitBlobSha256": "c3847cdd1b08163035fc97d679d3a7c734c4a918020cf739e714111cbcc47c00",
+      "frozenByteSha256": "55b6e83e0cb2e9e97cdab02bb3fa6456b5cd6dc05396e6fd9681f3eb48acfdf7",
+      "crlfRanges": [
+        [
+          0,
+          58
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/tools/ExplanationRequestTools.java": {
+      "gitBlobSha256": "33ff9cfe343fec67359d5e6ef737835ce394b7c5429a5136005939279dc2af7d",
+      "frozenByteSha256": "b9855a0824d900eaee454950fc50c1f001c991372e2beede715269858c4d88a9",
+      "crlfRanges": [
+        [
+          0,
+          33
+        ]
+      ]
+    },
+    "agent/src/main/java/com/mall/agent/tools/EscalationTools.java": {
+      "gitBlobSha256": "8bb3fc1a57e56484cebc67de0ec96a59b65ca8b285644de96a10c6b0fad300aa",
+      "frozenByteSha256": "14169188408390af66185dcf1d9aaa22328908d40d613f80f1a3e6a281998aa3",
+      "crlfRanges": [
+        [
+          0,
+          53
+        ]
+      ]
+    },
+    "docs/known-issues.md": {
+      "gitBlobSha256": "d71b8d2efc96dbc1e867b23dcd6f7e9565c532996bbbc8bbe6b6d8a56b810bbd",
+      "frozenByteSha256": "ef3ef799c90d4da00a19a6893ddce4dda4347908a14e494bbee765560bf477f9",
+      "crlfRanges": [
+        [
+          0,
+          1152
+        ],
+        [
+          1202,
+          1578
+        ]
+      ]
+    }
+  }
+}

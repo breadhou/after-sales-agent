@@ -178,7 +178,7 @@ def _orders(case, before, after, checks):
             checks.require(normalized(start['refundRows']) == normalized(end['refundRows']), 'REFUND_ROWS')
 
 
-def _public_product_discovery_rows(case, events, records):
+def _public_product_discovery_rows(case, events, records, binding):
     """Admit returned public list rows only inside the observed trusted traversal.
 
     This is discovery evidence, never authorization for detail access or citation.
@@ -198,8 +198,15 @@ def _public_product_discovery_rows(case, events, records):
         if len(calls) != 1 or calls[0]['target'] != 'GLOBAL' or len(primary) != 1 or len(group) != 1 + len(responses): continue
         if not calls[0]['sequence'] < primary[0]['sequence'] or any(e['sequence'] <= primary[0]['sequence'] for e in rows): continue
         if [e['target'] for e in rows] != record['aliases']: continue
+        session, turn = _origin(record)
+        if turn >= len(case['turns']) or case['turns'][turn]['sessionAlias'] != session: continue
+        references = set(re.findall(r'\{\{([a-z][a-z0-9-]{0,63})\}\}', case['turns'][turn]['input']))
+        if not references.issubset(set(binding['orders']) | set(binding['products'])): continue
+        orders = references.intersection(case['fixture']['orders'])
+        if not orders.issubset(binding['orders']) or len(orders) > 1: continue
+        expected_target = next(iter(orders)) if orders else 'GLOBAL'
         prior = [e for e in events if _origin(e) == _origin(record) and e['phase'] == 'EXPLANATION' and e['sequence'] < calls[0]['sequence']]
-        if not prior or prior[-1]['status'] != 'STARTED' or prior[-1]['target'] != 'GLOBAL' or prior[-1]['role'] != 'EXPLANATION': continue
+        if not prior or prior[-1]['status'] != 'STARTED' or prior[-1]['target'] != expected_target or prior[-1]['role'] != 'EXPLANATION': continue
         admitted.update(e['sequence'] for e in rows)
     return admitted
 
@@ -329,7 +336,7 @@ def _chain(case, events, records, binding, checks):
     if outcome == 'ESCALATED': checks.require(any(e['phase'] == 'ESCALATION' and e['status'] == 'COMPLETED' for e in events), 'OUTCOME')
     if outcome in ('REVIEW_APPROVED', 'REVIEW_REJECTED'):
         checks.require(any(v == ('APPROVED' if outcome == 'REVIEW_APPROVED' else 'REJECTED') for _, v in reviews), 'REVIEW')
-    discovery_rows = _public_product_discovery_rows(case, events, records)
+    discovery_rows = _public_product_discovery_rows(case, events, records, binding)
     for e in events:
         if e['target'] == 'UNBOUND' or (e['target'] == 'OUT_OF_ALLOWLIST' and e['sequence'] not in discovery_rows):
             checks.require(False, 'UNBOUND_TARGET', True)

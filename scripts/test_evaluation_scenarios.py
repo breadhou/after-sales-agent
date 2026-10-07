@@ -1,5 +1,6 @@
 """Pilot data and saved, actual-worker counterexample acceptance checks."""
 import hashlib
+import copy
 import importlib
 import json
 import os
@@ -26,6 +27,53 @@ IDS = {
     'KNOWLEDGE': ['INFO-001', 'INFO-009', 'INFO-019', 'INFO-029'],
     'INDEPENDENT_REVIEW': ['REVIEW-001', 'REVIEW-013'],
 }
+
+PREPARATION_SOURCE = 'cc34cf76f493c2d16ddfaedc0216d2d9b1c93273'
+PREPARATION_FREEZE_SHA = '86c92d522ca39a0c448887f34060d04fd26240abf7dfe3bf138d11158df875f1'
+BYTE_PROFILE_SHA = '7e5fd1ca6f0beef00486eb87c16ec5c8fc7b92a5d597f9d27bd1e5eea07ce366'
+
+
+def reconstruct_preparation(freeze_bytes, profile, blob_loader):
+    """Check immutable preparation content and its exact original working bytes."""
+    def require(condition):
+        if not condition: raise ValueError('Invalid historical byte provenance')
+    frozen = json.loads(freeze_bytes)
+    require(hashlib.sha256(freeze_bytes).hexdigest() == PREPARATION_FREEZE_SHA)
+    require(set(profile) == {'schemaVersion', 'freezeSha256', 'declaredPreparationSourceHead',
+                             'freezeSourceHead', 'inputs'})
+    require(type(profile['schemaVersion']) is int and profile['schemaVersion'] == 1)
+    require(profile['freezeSha256'] == PREPARATION_FREEZE_SHA)
+    require(profile['freezeSourceHead'] == PREPARATION_SOURCE)
+    require(profile['declaredPreparationSourceHead'] == frozen['agentPreparationSourceHead'])
+    require(blob_loader('eval/scenarios/v2-full/freeze.json') == freeze_bytes)
+    require(set(profile['inputs']) == set(frozen['inputSha256']))
+    reconstructed = {}
+    for relative, digest in frozen['inputSha256'].items():
+        entry = profile['inputs'][relative]
+        require(set(entry) == {'gitBlobSha256', 'frozenByteSha256', 'crlfRanges'})
+        require(entry['frozenByteSha256'] == digest)
+        blob = blob_loader(relative)
+        require(hashlib.sha256(blob).hexdigest() == entry['gitBlobSha256'])
+        lines = blob.splitlines(keepends=True)
+        require(isinstance(entry['crlfRanges'], list))
+        indices = set(); previous = -2
+        for pair in entry['crlfRanges']:
+            require(isinstance(pair, list) and len(pair) == 2 and all(type(n) is int for n in pair))
+            start, end = pair
+            require(0 <= start <= end < len(lines) and start > previous + 1)
+            require(all(lines[n].endswith(b'\n') and not lines[n].endswith(b'\r\n')
+                        for n in range(start, end + 1)))
+            indices.update(range(start, end + 1)); previous = end
+        original = b''.join(line[:-1] + b'\r\n' if n in indices else line
+                            for n, line in enumerate(lines))
+        require(hashlib.sha256(original).hexdigest() == digest)
+        reconstructed[relative] = original
+    return reconstructed
+
+
+def preparation_blob(relative):
+    return subprocess.run(['git', 'show', PREPARATION_SOURCE + ':' + relative], cwd=ROOT,
+                          capture_output=True, check=True).stdout
 
 
 class PilotScenariosTest(unittest.TestCase):
@@ -289,8 +337,12 @@ class PilotScenariosTest(unittest.TestCase):
         self.assertEqual({'manifest.full.json', 'manifest.pilot.json'}, set(provenance['manifestSha256']))
         for relative, digest in provenance['manifestSha256'].items():
             self.assertEqual(digest, hashlib.sha256((full / relative).read_bytes()).hexdigest())
+        profile_bytes = (full / 'preparation-byte-provenance.json').read_bytes()
+        self.assertEqual(BYTE_PROFILE_SHA, hashlib.sha256(profile_bytes).hexdigest())
+        historical = reconstruct_preparation((full / 'freeze.json').read_bytes(),
+                                             json.loads(profile_bytes), preparation_blob)
         for relative, digest in provenance['inputSha256'].items():
-            self.assertEqual(digest, hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), relative)
+            self.assertEqual(digest, hashlib.sha256(historical[relative]).hexdigest(), relative)
 
         pairs = [by_id[f'REVIEW-{number:03}'] for number in range(25, 31)]
         self.assertEqual({'REVIEW-POLICY-PAIR-001', 'REVIEW-POLICY-PAIR-002', 'REVIEW-POLICY-PAIR-003'},
@@ -307,6 +359,26 @@ class PilotScenariosTest(unittest.TestCase):
             self.assertEqual(['REVIEW_APPROVED', 'REVIEW_REJECTED'],
                              [first['expect']['outcome'], second['expect']['outcome']])
             self.assertNotEqual(first['expect']['outcome'], second['expect']['outcome'])
+
+    def test_f2_historical_provenance_rejects_changed_anchor_profile_blob_and_digest(self):
+        full = ROOT / 'eval/scenarios/v2-full'
+        freeze_bytes = (full / 'freeze.json').read_bytes()
+        baseline = json.loads((full / 'preparation-byte-provenance.json').read_bytes())
+        blobs = {relative: preparation_blob(relative) for relative in baseline['inputs']}
+        blobs['eval/scenarios/v2-full/freeze.json'] = preparation_blob('eval/scenarios/v2-full/freeze.json')
+        self.assertEqual(32, len(reconstruct_preparation(freeze_bytes, baseline, blobs.__getitem__)))
+        relative = next(iter(baseline['inputs']))
+        for mutation in ('anchor', 'extra', 'range', 'blob', 'digest', 'missing', 'freeze'):
+            with self.subTest(mutation=mutation):
+                profile = copy.deepcopy(baseline); source = dict(blobs); frozen = freeze_bytes
+                if mutation == 'anchor': profile['freezeSourceHead'] = '0' * 40
+                if mutation == 'extra': profile['unexpected'] = True
+                if mutation == 'range': profile['inputs'][relative]['crlfRanges'] = [[-1, 0]]
+                if mutation == 'blob': source[relative] += b'changed'
+                if mutation == 'digest': profile['inputs'][relative]['frozenByteSha256'] = '0' * 64
+                if mutation == 'missing': profile['inputs'].pop(relative)
+                if mutation == 'freeze': frozen += b'\n'
+                with self.assertRaises(ValueError): reconstruct_preparation(frozen, profile, source.__getitem__)
 
     def test_full_frozen_hashes_survive_autocrlf_git_checkout(self):
         source = ROOT / 'eval/scenarios/v2-full'
@@ -328,6 +400,8 @@ class PilotScenariosTest(unittest.TestCase):
             self.assertEqual(0, completed.returncode)
             checked = exported / 'eval/scenarios/v2-full'
             self.assertEqual(240, len(load_suite(checked / 'manifest.full.json')))
+            self.assertEqual(BYTE_PROFILE_SHA,
+                             hashlib.sha256((checked / 'preparation-byte-provenance.json').read_bytes()).hexdigest())
             self.assertEqual(32, len(load_suite(checked / 'manifest.pilot.json')))
             for original in source.rglob('*.jsonl'):
                 self.assertEqual(original.read_bytes(), (checked / original.relative_to(source)).read_bytes())

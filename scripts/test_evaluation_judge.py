@@ -537,6 +537,7 @@ class JudgeTest(unittest.TestCase):
 
     def product_discovery(self):
         self.product_source_reply()
+        self.case['turns'][0]['input'] = '查询当前在售商品资料'
         prefix=[event(1,'EXPLANATION','STARTED',turn=0,target='GLOBAL',role='EXPLANATION'),
                 event(2,'MCP','CALLED',turn=0,target='GLOBAL',role='MCP',tool='list_on_shelf_products',callId='mcp-list'),
                 event(3,'MCP','RESPONSE_RECEIVED',turn=0,target='GLOBAL',role='MCP',tool='list_on_shelf_products',callId='mcp-list'),
@@ -552,6 +553,30 @@ class JudgeTest(unittest.TestCase):
     def test_fix4_trusted_public_product_discovery_can_filter_unbound_list_rows(self):
         self.product_discovery()
         self.assertEqual('PASS',self.run_judge()['automaticStatus'])
+
+    def test_f2_bound_order_product_discovery_preserves_global_list_correlation(self):
+        self.product_discovery()
+        self.case['turns'][0]['input'] = '查询订单 {{order-a}} 中的商品当前资料'
+        self.events[0]['target'] = 'order-a'
+        self.assertEqual('PASS', self.run_judge()['automaticStatus'])
+
+    def test_f2_order_discovery_rejects_wrong_unbound_stale_and_other_origin(self):
+        self.product_discovery()
+        self.case['turns'][0]['input'] = '查询订单 {{order-a}} 中的商品当前资料'
+        self.events[0]['target'] = 'order-a'
+        self.case['fixture']['orders']['order-b'] = copy.deepcopy(self.case['fixture']['orders']['order-a'])
+        self.case['expect']['orders']['order-b'] = copy.deepcopy(self.case['expect']['orders']['order-a'])
+        self.bindings['orders']['order-b'] = dict(orderId='9007199254741002', orderNo='OTHER-PRIVATE-NO')
+        self.before['orders']['order-b'] = copy.deepcopy(self.before['orders']['order-a'])
+        self.after['orders']['order-b'] = copy.deepcopy(self.after['orders']['order-a'])
+        baseline = copy.deepcopy(self.events)
+        for mutation in ('GLOBAL', 'order-b', 'product-a', 'UNBOUND', 'OUT_OF_ALLOWLIST', 'stale', 'origin'):
+            with self.subTest(mutation=mutation):
+                self.events = copy.deepcopy(baseline)
+                if mutation == 'stale': self.events[0]['status'] = 'COMPLETED'
+                elif mutation == 'origin': self.events[0]['sessionAlias'] = 'session-b'
+                else: self.events[0]['target'] = mutation
+                self.assertIn('UNBOUND_TARGET', self.run_judge()['failedCriteria'])
 
     def test_fix4_discovery_requires_real_correlated_trusted_list_evidence(self):
         self.product_discovery(); baseline=copy.deepcopy((self.events,self.records))
