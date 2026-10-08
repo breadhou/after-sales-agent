@@ -51,7 +51,7 @@ class AgentMainTest {
                 if (request.toolSpecifications() == null || request.toolSpecifications().isEmpty()) {
                     explanationCalls.incrementAndGet();
                     return ChatResponse.builder().aiMessage(new AiMessage(
-                            "{\"narrative\":\"请以所引资料原文为准。\",\"citedSourceIds\":[\"FAQ-006\"]}")).build();
+                            "{\"narrative\":\"请以所引资料原文为准。\",\"citedSourceIds\":[\"FAQ-008\"]}")).build();
                 }
                 var last = request.messages().get(request.messages().size() - 1);
                 return ChatResponse.builder().aiMessage(last instanceof UserMessage
@@ -67,7 +67,7 @@ class AgentMainTest {
         assertTrue(product.contains("无可靠依据"), product);
         assertEquals(0, explanationCalls.get());
         String faq = runtime.coordinator().handleTurn("session-1", "物流查询失败怎么办？");
-        assertTrue(faq.contains("[FAQ-006]"), faq);
+        assertTrue(faq.contains("[FAQ-008]"), faq);
         assertEquals(1, explanationCalls.get());
     }
 
@@ -83,7 +83,7 @@ class AgentMainTest {
                 assertTrue(request.toolSpecifications() == null
                         || request.toolSpecifications().isEmpty());
                 return ChatResponse.builder().aiMessage(new AiMessage(
-                        "{\"narrative\":\"请以所引资料原文为准。\",\"citedSourceIds\":[\"FAQ-006\"]}"))
+                        "{\"narrative\":\"请以所引资料原文为准。\",\"citedSourceIds\":[\"FAQ-008\"]}"))
                         .build();
             }
         };
@@ -91,7 +91,7 @@ class AgentMainTest {
         String reply = AgentMain.explanationService(mcp, model, Map.of())
                 .answer("物流查询失败怎么办？", null);
 
-        assertTrue(reply.contains("[FAQ-006]"), reply);
+        assertTrue(reply.contains("[FAQ-008]"), reply);
         assertTrue(reply.contains("补充说明：请以所引资料原文为准。"), reply);
     }
 

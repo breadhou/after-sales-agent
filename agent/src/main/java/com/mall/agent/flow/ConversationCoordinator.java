@@ -172,7 +172,8 @@ public final class ConversationCoordinator {
             }
             return respondToHandoff(sessionId, rawInput, signals.handoffs());
         }
-        if (looksLikeEligibilityQuestion(input)) {
+        boolean generalEligibility = isGeneralEligibilityQuestion(input);
+        if (looksLikeEligibilityQuestion(input) && !generalEligibility) {
             return respondToEligibility(rawInput);
         }
         // A mistaken eligibility marker on a logistics turn must not replace its answer.
@@ -184,6 +185,9 @@ public final class ConversationCoordinator {
         if (!signals.handoffs().isEmpty()) {
             return "本次未提交退款。若需要申请退款，请明确告知订单 ID 和理由。";
         }
+        // A general capability question has no selected order. Its answer must come
+        // from trusted sources even when the model omitted or mistook the marker.
+        if (generalEligibility) explanationOrderMarker = 0L;
         if (explanationOrderMarker != null) {
             if (refundStatusQuestion(input)) return verifiedHistoricalStatusReply(rawInput);
             ParsedOrderIds ids = explicitOrderIds(rawInput);
@@ -276,7 +280,7 @@ public final class ConversationCoordinator {
         if (!looksLikeRefundApplication(rawInput) || handoffs.size() != 1) {
             return "本次未提交退款。若需要申请退款，请明确告知订单 ID 和理由。";
         }
-        String reason = groundedReason(rawInput, handoffs.get(0).reason());
+        String reason = groundedReason(rawInput);
         if (reason == null) {
             return "请明确提供不超过 512 字的退款理由；本次未提交退款。";
         }
@@ -398,12 +402,8 @@ public final class ConversationCoordinator {
                 + "。确认请单独输入 /confirm-refund " + orderId + "。本次未提交退款。";
     }
 
-    private static String groundedReason(String rawInput, String candidate) {
-        if (candidate == null || candidate.isBlank() || candidate.length() > 512
-                || candidate.chars().anyMatch(Character::isISOControl)) {
-            return null;
-        }
-        String reason = candidate.trim();
+    private static String groundedReason(String rawInput) {
+        // The model candidate is neither a reason source nor user authorization.
         Matcher cue = REASON_CUE.matcher(rawInput);
         int cueEnd = -1;
         while (cue.find()) {
@@ -415,16 +415,12 @@ public final class ConversationCoordinator {
         String reasonSpan = rawInput.substring(cueEnd);
         Matcher end = REASON_END.matcher(reasonSpan);
         if (end.find()) {
+            if (Character.isISOControl(reasonSpan.charAt(end.start()))) return null;
             reasonSpan = reasonSpan.substring(0, end.start());
         }
-        if (substantiveReason(reason) && reasonSpan.contains(reason)) {
-            return reason;
-        }
-        String firstClause = reason.split("[，,。；;！？!?]", 2)[0].trim();
-        if (substantiveReason(firstClause) && reasonSpan.contains(firstClause)) {
-            return firstClause;
-        }
-        return null;
+        if (reasonSpan.length() > 512 || reasonSpan.chars().anyMatch(Character::isISOControl)) return null;
+        String reason = reasonSpan.trim();
+        return substantiveReason(reason) ? reason : null;
     }
 
     private static boolean substantiveReason(String reason) {
@@ -483,6 +479,19 @@ public final class ConversationCoordinator {
         return text.contains("能退") || text.contains("可以退") || text.contains("可退吗")
                 || text.contains("退款资格") || text.contains("是否可退")
                 || text.contains("能退款吗");
+    }
+
+    private static boolean isGeneralEligibilityQuestion(String text) {
+        ParsedOrderIds ids = explicitOrderIds(text);
+        if (ids.invalid() || !ids.values().isEmpty()
+                || text.contains("我的") || text.contains("我这") || text.contains("这单")
+                || text.contains("这笔") || text.contains("该订单")) return false;
+        boolean query = text.contains("查询") || text.contains("查") || text.contains("只读") || text.contains("核验");
+        boolean topic = text.contains("资格") || text.contains("是否可退") || text.contains("能否退款");
+        boolean explanationQuestion = text.contains("为什么") || text.contains("需要") || text.contains("如何")
+                || text.contains("怎么") || text.contains("原理") || text.contains("会")
+                || text.contains("是否") || text.contains("能否");
+        return query && topic && explanationQuestion;
     }
 
     private static ParsedOrderIds explicitOrderIds(String rawInput) {

@@ -115,6 +115,139 @@ class JudgeTest(unittest.TestCase):
         self.assertNotIn(ORDER, json.dumps(value))
         self.assertNotIn('secret-sentinel', json.dumps(value))
 
+    def second_unselected_order(self):
+        self.case['fixture']['orders']['order-b'] = copy.deepcopy(self.case['fixture']['orders']['order-a'])
+        self.case['expect']['orders']['order-b'] = dict(orderStatus='RECEIVED', newRefundRows=0, refundAmount=None, ownerMatches=True)
+        self.bindings['orders']['order-b'] = dict(orderId='9007199254741002', orderNo='PRIVATE-B')
+        self.before['orders']['order-b'] = copy.deepcopy(self.before['orders']['order-a'])
+        self.after['orders']['order-b'] = copy.deepcopy(self.before['orders']['order-a'])
+
+    def test_completed_refund_checks_only_the_frozen_refund_target(self):
+        self.second_unselected_order()
+        self.assertEqual('PASS', self.run_judge()['status'])
+        self.after['orders']['order-b'].update(orderStatus='REFUNDED', refundRows=[dict(status='REFUNDED', amount='39.80', ownerMatches=True)])
+        self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def selected_refund_chain(self):
+        self.second_unselected_order()
+        self.case['turns'][0]['input'] = '申请退款，理由：买错了'
+        self.case['turns'].insert(1, dict(sessionAlias='session-a', actorAlias='actor-a', input='/select-refund-order {{order-a}}'))
+        for row in self.events + self.records:
+            row['turnIndex'] += 1
+        self.events = [event(1, 'MCP', 'CALLED', turn=0, target='GLOBAL', role='MCP', tool='list_user_orders', callId='list-1'),
+                       event(2, 'MCP', 'RESPONSE_RECEIVED', turn=0, target='GLOBAL', role='MCP', tool='list_user_orders', callId='list-1'),
+                       event(3, 'SESSION', turn=0, target='GLOBAL', callId='selection-reply')] + self.events
+        for i, row in enumerate(self.events): row['sequence'] = i + 1
+        self.records = [record('RETURNED_TARGETS', 0, 'list-1', aliases=['order-a', 'order-b']),
+                        record('REPLY', 0, 'selection-reply', replyKind='TRUSTED_TEMPLATE'),
+                        record('FINAL_REPLY', 0, 'reply-session-a-0', file='reply-0.txt')] + self.records
+        for row in self.records:
+            if row['kind'] == 'FINAL_REPLY': row['file'] = 'reply-' + str(row['turnIndex']) + '.txt'
+            if row['kind'] == 'SOURCE': row['callId'] = 'source-9'
+        self.replies.insert(0, '请先从本会话列出的订单中选择退款目标：\n订单 ' + ORDER + '：/select-refund-order ' + ORDER
+                            + '\n订单 9007199254741002：/select-refund-order 9007199254741002\n候选理由：买错了。选择后仍需确认；本次未提交退款。')
+
+    def test_selected_confirmation_inherits_the_verified_same_session_reason(self):
+        self.selected_refund_chain()
+        self.assertEqual('PASS', self.run_judge()['status'])
+
+    def preserved_selection_chain(self, malformed):
+        self.selected_refund_chain()
+        self.records[0]['aliases'] = ['order-a']
+        self.replies[0] = self.replies[0].replace('\n订单 9007199254741002：/select-refund-order 9007199254741002', '')
+        failed = '/select-refund-order invalid' if malformed else '/select-refund-order {{order-b}}'
+        reply = '请选择本会话列出的订单，格式：/select-refund-order <订单 ID>。' if malformed else '该订单不在本会话列出的清单中；本次未提交退款。'
+        self.case['turns'].insert(1, dict(sessionAlias='session-a', actorAlias='actor-a', input=failed))
+        for row in self.events + self.records:
+            if row['turnIndex'] >= 1: row['turnIndex'] += 1
+        self.events[3:3] = [event(0, 'SESSION', 'STARTED', turn=1, target='GLOBAL', callId='failed-start'),
+                            event(0, 'SESSION', turn=1, target='GLOBAL' if malformed else 'order-b', callId='failed-select')]
+        for i, row in enumerate(self.events): row['sequence'] = i + 1
+        self.records += [record('REPLY', 1, 'failed-select', replyKind='TRUSTED_TEMPLATE'),
+                         record('FINAL_REPLY', 1, 'reply-session-a-1', file='reply-1.txt')]
+        for row in self.records:
+            if row['kind'] == 'FINAL_REPLY': row['file'] = 'reply-' + str(row['turnIndex']) + '.txt'
+            if row['kind'] == 'SOURCE': row['callId'] = 'source-11'
+        self.replies.insert(1, reply)
+
+    def test_selection_reason_survives_evidenced_failed_select_commands(self):
+        baseline = copy.deepcopy((self.case, self.events, self.records, self.replies, self.before, self.after, self.bindings))
+        for malformed in (True, False):
+            with self.subTest(malformed=malformed):
+                self.case, self.events, self.records, self.replies, self.before, self.after, self.bindings = copy.deepcopy(baseline)
+                self.preserved_selection_chain(malformed)
+                self.assertEqual('PASS', self.run_judge()['status'])
+
+    def test_preserved_selection_cannot_cross_reset_or_forged_cli_outcomes(self):
+        self.preserved_selection_chain(False)
+        baseline = copy.deepcopy((self.case, self.events, self.records, self.replies, self.bindings))
+        for mutation in ('topic', 'cancel', 'valid-selected-order', 'actor', 'session', 'reply-kind', 'forged-return', 'forged-transition', 'missing-start'):
+            with self.subTest(mutation=mutation):
+                self.case, self.events, self.records, self.replies, self.bindings = copy.deepcopy(baseline)
+                if mutation == 'topic': self.case['turns'][1]['input'] = '物流在哪里？'
+                if mutation == 'cancel': self.case['turns'][1]['input'] = '/cancel-refund'
+                if mutation == 'valid-selected-order': self.case['turns'][1]['input'] = '/select-refund-order {{order-a}}'
+                if mutation == 'actor': self.case['turns'][1]['actorAlias'] = 'actor-b'
+                if mutation == 'session': self.case['turns'][1]['sessionAlias'] = 'session-b'
+                if mutation == 'reply-kind': next(r for r in self.records if r['kind'] == 'REPLY' and r['turnIndex'] == 1)['replyKind'] = 'FREE_TEXT'
+                if mutation == 'forged-return': self.replies[1] = '请选择本会话列出的订单，格式：/select-refund-order <订单 ID>。'
+                if mutation == 'forged-transition': self.events[3].update(phase='CONFIRMATION', target='order-b')
+                if mutation == 'missing-start': self.events[3].update(status='COMPLETED')
+                if mutation == 'actor':
+                    with self.assertRaisesRegex(ValueError, 'active actor'): self.run_judge()
+                    continue
+                self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def test_selected_confirmation_cannot_inherit_forged_or_unrelated_history(self):
+        self.selected_refund_chain()
+        baseline = copy.deepcopy((self.case, self.events, self.records, self.replies))
+        for mutation in ('reason', 'selection', 'session', 'event', 'unlisted', 'prior-prose', 'new-topic', 'arbitrary-reason', 'no-list-call', 'late-list-response'):
+            with self.subTest(mutation=mutation):
+                self.case, self.events, self.records, self.replies = copy.deepcopy(baseline)
+                if mutation == 'reason': self.replies[1] = self.replies[1].replace('买错了', '包装破损')
+                if mutation == 'selection': self.case['turns'][1]['input'] = '/select-refund-order {{order-b}}'
+                if mutation == 'session': self.case['turns'][0]['sessionAlias'] = 'session-b'
+                if mutation == 'event': self.events[3]['target'] = 'order-b'
+                if mutation == 'unlisted': self.records[0]['aliases'] = ['order-b']
+                if mutation == 'prior-prose': self.records[1]['replyKind'] = 'FREE_TEXT'
+                if mutation == 'new-topic': self.case['turns'][0]['input'] = '物流在哪？'
+                if mutation == 'arbitrary-reason': self.case['turns'][0]['input'] = '买错了。申请退款，理由：尺码不合适'
+                if mutation == 'no-list-call': self.events[0].update(tool='get_logistics')
+                if mutation == 'late-list-response':
+                    self.events[1], self.events[2] = self.events[2], self.events[1]
+                    for i, row in enumerate(self.events): row['sequence'] = i + 1
+                self.assertNotEqual('PASS', self.run_judge()['status'])
+
+    def process_source_reply(self):
+        self.source_reply()
+        body = '明确申请后先选择订单，再确认，确认前不会提交退款。'
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        self.case['turns'][0]['input'] = '如何申请退款？'
+        self.records[0].update(text=body, sourceDigest=digest)
+        for row in self.events[:2]: row['sourceDigest'] = digest
+        self.replies[0] = '[FAQ-001] ' + body + '\n补充说明：请以所引资料原文为准。\n本次未提交退款。'
+
+    def test_process_source_accepts_only_exact_code_owned_no_action_footer(self):
+        self.process_source_reply()
+        self.assertEqual('PASS', self.run_judge()['status'])
+        baseline = copy.deepcopy((self.case, self.events, self.records, self.replies))
+        for mutation in ('missing', 'altered', 'additional', 'duplicate', 'body', 'digest', 'freshness', 'fact', 'forbidden', 'action'):
+            with self.subTest(mutation=mutation):
+                self.case, self.events, self.records, self.replies = copy.deepcopy(baseline)
+                if mutation == 'missing': self.replies[0] = self.replies[0].removesuffix('\n本次未提交退款。')
+                if mutation == 'altered': self.replies[0] = self.replies[0].replace('本次未提交退款。', '本次没有提交退款。')
+                if mutation == 'additional': self.replies[0] += ' 请等待到账。'
+                if mutation == 'duplicate': self.replies[0] += '\n本次未提交退款。'
+                if mutation == 'body': self.replies[0] = self.replies[0].replace('确认前不会', '已经')
+                if mutation == 'digest': self.records[0]['sourceDigest'] = '0' * 64
+                if mutation == 'freshness': self.events[0]['sourceDigest'] = self.events[1]['sourceDigest'] = '0' * 64
+                if mutation == 'fact': self.case['manualRubric']['criteria'][0]['requiredFacts'].append('后台实付39.80')
+                if mutation == 'forbidden': self.case['manualRubric']['criteria'][0]['forbiddenClaims'] = ['本次未提交退款']
+                if mutation == 'action': self.events.append(event(4, 'MCP', 'CALLED', turn=0, tool='submit_refund', callId='forged-submit'))
+                result = self.run_judge()
+                self.assertNotEqual('PASS', result['status'])
+                if mutation == 'action': self.assertIn('FORBIDDEN_CLAIM', result['failedCriteria'])
+
     def test_zero_after_unknown_submit_is_unresolved(self):
         self.worker['terminalEvidence'] = self.after['terminalEvidence'] = 'UNKNOWN'
         self.after['orders']['order-a']['refundRows'] = []

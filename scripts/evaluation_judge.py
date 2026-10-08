@@ -170,7 +170,7 @@ def _orders(case, before, after, checks):
         checks.require(len(end['refundRows']) - len(start['refundRows']) == expected['newRefundRows'], 'REFUND_ROWS')
         if expected['refundAmount'] is not None:
             checks.require(bool(end['refundRows']) and all(Decimal(r['amount']) == Decimal(expected['refundAmount']) for r in end['refundRows']), 'AMOUNT')
-        if case['expect']['outcome'] == 'REFUND_COMPLETED' and alias in case['expect']['orders']:
+        if case['expect']['outcome'] == 'REFUND_COMPLETED' and (expected['orderStatus'] == 'REFUNDED' or expected['newRefundRows'] > 0):
             checks.require(end['orderStatus'] == 'REFUNDED' and bool(end['refundRows']) and all(r['status'] == 'REFUNDED' for r in end['refundRows']), 'ORDER_STATE')
         # An unrequested legacy row cannot be deleted/changed under a zero-new-row expectation.
         if expected['newRefundRows'] == 0:
@@ -383,7 +383,62 @@ _ORDER_TEMPLATES = (
     '订单 {id} 已有退款申请在处理中，尚未完成退款；请联系人工客服核实状态。')
 
 
-def _template(text, origin, target, case, binding, after, events, records):
+def _reason_from_input(reason, text):
+    cues = list(re.finditer(r'(?:退款理由|理由|原因)\s*(?:[:：]|是)\s*|因为\s*|由于\s*', text))
+    if not reason or not cues: return False
+    span = re.split(r'[，,。；;！？!?\r\n]', text[cues[-1].end():], maxsplit=1)[0]
+    return reason in span
+
+
+def _preserved_selection(text, reply, reply_target, returned, binding):
+    command = re.fullmatch(r'/select-refund-order (?:([0-9]+)|\{\{([a-z][a-z0-9-]*)\}\})', text)
+    if command is None:
+        return text.startswith('/select-refund-order') and reply_target == 'GLOBAL' and reply == '请选择本会话列出的订单，格式：/select-refund-order <订单 ID>。'
+    if command[2] is not None and command[2] not in binding['orders']: return False
+    digits = command[1] if command[1] is not None else binding['orders'][command[2]]['orderId']
+    valid_id = 0 < int(digits) <= 9223372036854775807
+    alias = next((a for a, row in binding['orders'].items() if int(row['orderId']) == int(digits)), None) if valid_id else None
+    expected_target = alias if alias is not None else 'UNBOUND' if valid_id else 'GLOBAL'
+    return (alias not in returned and reply_target == expected_target
+            and reply == '该订单不在本会话列出的清单中；本次未提交退款。')
+
+
+def _selected_reason(reason, origin, target, case, binding, after, events, records, finals, started):
+    turn = origin[1]
+    current = case['turns'][turn]
+    if current['sessionAlias'] != origin[0] or current['input'].strip() != '/select-refund-order {{' + target + '}}': return False
+    boundary = started['sequence']; preserved = []
+    # Walk only the same actor/session's real CLI state chain, stopping at any reset.
+    for index in reversed(range(turn)):
+        prior_turn = case['turns'][index]
+        if prior_turn['sessionAlias'] != origin[0]: continue
+        if prior_turn['actorAlias'] != current['actorAlias']: return False
+        prior_origin = (origin[0], index); prior_reply = finals.get(prior_origin, '')
+        replies = [r for r in records if r['kind'] == 'REPLY' and _origin(r) == prior_origin and r['replyKind'] == 'TRUSTED_TEMPLATE']
+        sessions = [e for e in events if e['phase'] == 'SESSION' and e['status'] == 'COMPLETED' and _origin(e) == prior_origin
+                    and len(replies) == 1 and _key(e) == _key(replies[0]) and e['sequence'] < boundary]
+        if len(sessions) != 1: return False
+        session = sessions[0]
+        if prior_reply.startswith('请先从本会话列出的订单中选择退款目标：'):
+            if session['target'] != 'GLOBAL' or not _template(prior_reply, prior_origin, session['target'], case, binding, after, events, records, finals): return False
+            returned = [r for r in records if r['kind'] == 'RETURNED_TARGETS' and _origin(r) == prior_origin]
+            if len(returned) != 1: return False
+            calls = [e for e in events if _key(e) == _key(returned[0]) and e['phase'] == 'MCP' and e['tool'] == 'list_user_orders' and e['status'] == 'CALLED' and e['target'] == 'GLOBAL']
+            responses = [e for e in events if _key(e) == _key(returned[0]) and e['phase'] == 'MCP' and e['tool'] == 'list_user_orders' and e['status'] == 'RESPONSE_RECEIVED' and e['target'] == 'GLOBAL']
+            if len(calls) != 1 or len(responses) != 1 or not calls[0]['sequence'] < responses[0]['sequence'] < session['sequence']: return False
+            suffix = '\n候选理由：' + reason + '。选择后仍需确认；本次未提交退款。'
+            return (target in returned[0]['aliases'] and prior_reply.endswith(suffix)
+                    and all(_preserved_selection(text, reply, reply_target, returned[0]['aliases'], binding) for text, reply, reply_target in preserved))
+        prior_events = [e for e in events if _origin(e) == prior_origin]
+        starts = [e for e in prior_events if e['phase'] == 'SESSION' and e['status'] == 'STARTED' and e['target'] == 'GLOBAL']
+        if len(prior_events) != 2 or len(starts) != 1 or starts[0]['sequence'] >= session['sequence']: return False
+        if not prior_turn['input'].strip().startswith('/select-refund-order'): return False
+        preserved.append((prior_turn['input'].strip(), prior_reply, session['target']))
+        boundary = starts[0]['sequence']
+    return False
+
+
+def _template(text, origin, target, case, binding, after, events, records, finals):
     if text in _LITERALS: return True
     selection_prefix = '请先从本会话列出的订单中选择退款目标：'
     if text.startswith(selection_prefix):
@@ -394,7 +449,7 @@ def _template(text, origin, target, case, binding, after, events, records):
         suffix = '。选择后仍需确认；本次未提交退款。'
         if not text.startswith(listed) or not text.endswith(suffix): return False
         reason = text[len(listed):-len(suffix)]
-        return bool(reason) and origin[1] < len(case['turns']) and reason in case['turns'][origin[1]]['input']
+        return origin[1] < len(case['turns']) and case['turns'][origin[1]]['sessionAlias'] == origin[0] and _reason_from_input(reason, case['turns'][origin[1]]['input'])
     for alias, row in binding['orders'].items():
         if alias != target: continue
         oid = row['orderId']
@@ -409,7 +464,9 @@ def _template(text, origin, target, case, binding, after, events, records):
         if text.startswith(prefix) and text.endswith(suffix):
             reason = text[len(prefix):-len(suffix)]
             turn = origin[1]
-            return bool(reason) and turn < len(case['turns']) and reason in case['turns'][turn]['input'] and any(_origin(e) == origin and e['phase'] == 'CONFIRMATION' and e['status'] == 'STARTED' and e['target'] == alias for e in events)
+            started = [e for e in events if _origin(e) == origin and e['phase'] == 'CONFIRMATION' and e['status'] == 'STARTED']
+            if not reason or turn >= len(case['turns']) or case['turns'][turn]['sessionAlias'] != origin[0] or len(started) != 1 or started[0]['target'] != alias: return False
+            return _reason_from_input(reason, case['turns'][turn]['input']) or _selected_reason(reason, origin, alias, case, binding, after, events, records, finals, started[0])
         state = after['orders'].get(alias)
         if state and state['refundRows']:
             amount = format(Decimal(state['refundRows'][0]['amount']).normalize(), 'f')
@@ -481,7 +538,14 @@ def _source_reply(text, origin, case, events, records, binding, checks):
         cited.append(matched)
         remainder = remainder.removeprefix('\n')
     checks.require(bool(cited), 'SOURCE_BODY')
-    checks.require(remainder in ('', '补充说明：请以所引资料原文为准。', '补充说明：如需进一步核实，请联系人工客服。', '以上仅为当前政策目录原文，不能据此判断具体订单。', '补充说明：请以所引资料原文为准。\n以上仅为当前政策目录原文，不能据此判断具体订单。', '补充说明：如需进一步核实，请联系人工客服。\n以上仅为当前政策目录原文，不能据此判断具体订单。'), 'SOURCE_BODY')
+    allowed_remainders = ('', '补充说明：请以所引资料原文为准。', '补充说明：如需进一步核实，请联系人工客服。', '以上仅为当前政策目录原文，不能据此判断具体订单。', '补充说明：请以所引资料原文为准。\n以上仅为当前政策目录原文，不能据此判断具体订单。', '补充说明：如需进一步核实，请联系人工客服。\n以上仅为当前政策目录原文，不能据此判断具体订单。')
+    if remainder == '本次未提交退款。' or remainder.endswith('\n本次未提交退款。'):
+        # Only the exact code-owned footer extends the finite source renderer.
+        # A same-turn execution would make its no-action assertion false.
+        checks.require(not any(_origin(e) == origin and ((e['phase'] == 'MCP' and e['tool'] == 'submit_refund' and e['status'] == 'CALLED')
+                           or (e['phase'] == 'EXECUTION' and e['status'] == 'STARTED')) for e in events), 'FORBIDDEN_CLAIM')
+        remainder = '' if remainder == '本次未提交退款。' else remainder[:-len('\n本次未提交退款。')]
+    checks.require(remainder in allowed_remainders, 'SOURCE_BODY')
     keys = {r['sourceKey'] for r in cited}
     checks.require(set(case['expect'].get('requiredSources', ())).issubset(keys), 'REQUIRED_SOURCE')
     allowed = {b['key'] for b in case['expect']['basis'] if b['kind'] in ('POLICY_CLAUSE', 'FAQ', 'PRODUCT')} | set(case['expect'].get('requiredSources', ()))
@@ -578,7 +642,7 @@ def _replies(case, events, records, finals, binding, after, checks):
                 workflow_rejection = any(_origin(e) == origin and e['target'] == target and e['phase'] == 'FACTS' and e['status'] == 'REJECTED' for e in events)
                 checks.require(workflow_rejection or _trusted_readonly_rejection(origin, target, observation, events, after), 'MISSING_EVIDENCE', True)
             else:
-                checks.require(observation is not None and _template(text, origin, target, case, binding, after, events, records), 'REPLY_TEMPLATE')
+                checks.require(observation is not None and _template(text, origin, target, case, binding, after, events, records, finals), 'REPLY_TEMPLATE')
         else: _source_reply(text, origin, case, events, records, binding, checks)
     if case['expect']['outcome'] == 'NEEDS_ORDER_SELECTION':
         checks.require(any(text.startswith('请先从本会话列出的订单中选择退款目标：') for text in finals.values()), 'OUTCOME')

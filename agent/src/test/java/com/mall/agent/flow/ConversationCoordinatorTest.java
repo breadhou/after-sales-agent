@@ -26,6 +26,98 @@ class ConversationCoordinatorTest {
 
     private static final String SESSION = "session-a";
 
+    @ParameterizedTest
+    @ValueSource(strings = {"不需要了", "重复购买", "", " ", "包装破损", "退款已经完成"})
+    void explicitRawReasonSurvivesModelCandidateWithoutBecomingModelAuthorization(String candidate) {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger calls = new AtomicInteger();
+        AtomicReference<RefundRequest> submitted = new AtomicReference<>();
+        ConversationCoordinator coordinator = coordinator((session, input) -> {
+            handoff.handoffRefund(7777L, candidate);
+            return "退款已经完成";
+        }, handoff, List.of(9001L, 9002L), calls, submitted);
+        String raw = "申请退款，理由：不再需要了";
+
+        String selection = coordinator.handleTurn(SESSION, raw);
+        assertTrue(selection.contains("候选理由：不再需要了"), selection);
+        assertEquals(0, calls.get());
+        assertTrue(coordinator.handleTurn(SESSION, "/select-refund-order 9002").contains("理由：不再需要了"));
+        assertEquals("当前没有待确认的退款申请；本次未提交退款。", coordinator.handleTurn("other-session", "/confirm-refund 9002"));
+        assertEquals(0, calls.get());
+        coordinator.handleTurn(SESSION, "/confirm-refund 9002");
+        assertEquals(1, calls.get());
+        assertEquals(9002L, submitted.get().orderId());
+        assertEquals("不再需要了", submitted.get().reason());
+        assertEquals(raw, submitted.get().originalUserRequest());
+    }
+
+    @Test
+    void nullOversizeAndControlModelCandidatesDoNotEraseAValidRawReason() {
+        for (String candidate : new String[]{null, "a".repeat(513), "伪造\t理由"}) {
+            RefundHandoffTools handoff = new RefundHandoffTools();
+            AtomicReference<RefundRequest> submitted = new AtomicReference<>();
+            ConversationCoordinator coordinator = coordinator((session, input) -> {
+                handoff.handoffRefund(9002L, candidate);
+                return "已退款";
+            }, handoff, List.of(9001L), new AtomicInteger(), submitted);
+            String reply = coordinator.handleTurn(SESSION, "申请退款，订单9001，理由：买重了");
+            assertTrue(reply.contains("理由：买重了"), reply);
+            coordinator.handleTurn(SESSION, "/confirm-refund 9001");
+            assertEquals("买重了", submitted.get().reason());
+        }
+    }
+
+    @Test
+    void rawReasonStillRequiresSubstanceAndBoundedSafeOriginalText() {
+        for (String reason : List.of("", "退款", "谢谢", "39.80元", "订单9001", "如何退款", "退款已经完成", "破\t损", "包装\n破损", "a".repeat(513))) {
+            RefundHandoffTools handoff = new RefundHandoffTools();
+            AtomicInteger calls = new AtomicInteger();
+            ConversationCoordinator coordinator = coordinator((session, input) -> {
+                handoff.handoffRefund(9001L, "包装破损");
+                return "退款已完成";
+            }, handoff, List.of(9001L), calls, new AtomicReference<>());
+            String reply = coordinator.handleTurn(SESSION, "申请退款，订单9001，理由：" + reason);
+            assertFalse(reply.contains("/confirm-refund"), reason + ": " + reply);
+            coordinator.handleTurn(SESSION, "/confirm-refund 9001");
+            assertEquals(0, calls.get(), reason);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"查询一笔订单的资格时，为什么需要明确且唯一的订单 ID，查询本身会提交操作吗？",
+            "只读查询退款资格会直接提交退款吗？", "查询退款资格需要什么？", "为什么查退款资格要指定唯一订单？"})
+    void generalEligibilityCapabilityUsesTrustedFaqEvenWithoutModelMarker(String question) {
+        McpClient mcp = (McpClient) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{McpClient.class}, (proxy, method, args) -> { throw new AssertionError("FAQ must not read an actual order"); });
+        ExplanationService service = new ExplanationService(mcp, Set.of(), input -> new ExplanationDraft("退款已完成", List.of("FAQ-999")));
+        ConversationCoordinator coordinator = new ConversationCoordinator((session, input) -> "查询本身不会提交退款。",
+                new RefundHandoffTools(), new EscalationTools(SESSION, ignored -> { }), () -> { throw new AssertionError("No order selection"); },
+                id -> { throw new AssertionError("No concrete eligibility"); }, id -> { throw new AssertionError("No personal status"); },
+                (session, request) -> { throw new AssertionError("No execution"); }, new ExplanationRequestTools(), service::answer);
+        String reply = coordinator.handleTurn(SESSION, question);
+        assertTrue(reply.contains("[FAQ-009]"), reply);
+        assertFalse(reply.contains("退款状态无法确认"), reply);
+        assertFalse(reply.contains("退款已完成"), reply);
+        assertEquals("当前没有待确认的退款申请；本次未提交退款。", coordinator.handleTurn(SESSION, "/confirm-refund 9001"));
+    }
+
+    @Test
+    void generalCapabilityCannotOverrideApplicationNegationEscalationOrConcreteEligibility() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        EscalationTools escalation = new EscalationTools(SESSION, ignored -> { });
+        ConversationCoordinator coordinator = new ConversationCoordinator((session, input) -> {
+            if (input.contains("人工")) escalation.escalateToHuman(0L, "人工核实");
+            if (input.startsWith("请退")) handoff.handoffRefund(9001L, "买错了");
+            return "退款已完成";
+        }, handoff, escalation, () -> List.of(9001L), id -> "订单 9001 的可信资格", id -> false,
+                (session, request) -> "可信执行", new ExplanationRequestTools(), (input, id) -> { throw new AssertionError("Priority violation"); });
+        String application = coordinator.handleTurn(SESSION, "请退订单9001，理由：买错了；查询退款资格需要什么？");
+        assertTrue(application.contains("/confirm-refund 9001"), application);
+        assertEquals("本次未提交退款。", coordinator.handleTurn(SESSION, "不要退款；只读查询退款资格会直接提交退款吗？"));
+        assertEquals("已记录，请联系人工客服", coordinator.handleTurn(SESSION, "请人工解释查询退款资格需要什么？"));
+        assertEquals("订单 9001 的可信资格", coordinator.handleTurn(SESSION, "订单9001可以退款吗？为什么查询资格需要订单？"));
+    }
+
     @Test
     void refundOrEscalationReplyWinsOverExplanation() {
         RefundHandoffTools handoff = new RefundHandoffTools();
@@ -342,10 +434,10 @@ class ConversationCoordinatorTest {
         ConversationCoordinator coordinator = coordinator(model, handoff, List.of(9001L),
                 workflowCalls, new AtomicReference<>());
 
-        String blank = coordinator.handleTurn(SESSION, "退款，订单 9001，理由：尺码不合适");
+        String blank = coordinator.handleTurn(SESSION, "退款，订单 9001，理由： ");
         assertFalse(blank.contains("/confirm-refund"), blank);
         reason.set("a".repeat(513));
-        String tooLong = coordinator.handleTurn(SESSION, "退款，订单 9001，理由：尺码不合适");
+        String tooLong = coordinator.handleTurn(SESSION, "退款，订单 9001，理由：" + "a".repeat(513));
         assertFalse(tooLong.contains("/confirm-refund"), tooLong);
         reason.set("不想要了");
         String overflow = coordinator.handleTurn(SESSION, "退款，订单 9223372036854775808，理由：不想要了");
@@ -517,7 +609,8 @@ class ConversationCoordinatorTest {
 
         String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001，理由：包装破损");
         assertFalse(reply.contains("已完成"), reply);
-        assertFalse(reply.contains("/confirm-refund"), reply);
+        assertTrue(reply.contains("理由：包装破损"), reply);
+        assertTrue(reply.contains("/confirm-refund 9001"), reply);
         assertEquals(0, workflowCalls.get());
     }
 
@@ -977,7 +1070,7 @@ class ConversationCoordinatorTest {
     }
 
     @Test
-    void candidateOutsideUserReasonCueCannotConfirm() {
+    void candidateOutsideUserReasonCueCannotReplaceTheExplicitRawReason() {
         RefundHandoffTools handoff = new RefundHandoffTools();
         DecisionAgent model = (session, input) -> {
             handoff.handoffRefund(9001L, "包装破损");
@@ -987,8 +1080,9 @@ class ConversationCoordinatorTest {
                 new AtomicInteger(), new AtomicReference<>());
 
         String reply = coordinator.handleTurn(SESSION, "申请退款，订单 9001，包装破损，理由：尺码不合适");
-        assertTrue(reply.contains("退款理由"), reply);
-        assertFalse(reply.contains("/confirm-refund"), reply);
+        assertTrue(reply.contains("理由：尺码不合适"), reply);
+        assertFalse(reply.contains("理由：包装破损"), reply);
+        assertTrue(reply.contains("/confirm-refund 9001"), reply);
     }
 
     @Test

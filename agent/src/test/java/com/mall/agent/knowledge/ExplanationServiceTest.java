@@ -17,6 +17,64 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class ExplanationServiceTest {
 
+    @Test
+    void faqOffersOnlyTheDeterministicPrimarySourceAndCannotCiteNeighbors() {
+        String[][] examples = {
+                {"查询订单列表具体有哪些规则？", "FAQ-001"},
+                {"订单详情工具会过滤哪些信息，能列出名称或SKU吗？", "FAQ-004"},
+                {"查看订单当前状态具体有哪些规则？", "FAQ-005"},
+                {"查询物流进度具体有哪些规则？", "FAQ-006"},
+                {"物流承运方与运单号具体有哪些规则？", "FAQ-007"},
+                {"物流查询失败的含义具体有哪些规则？", "FAQ-008"}
+        };
+        for (String[] example : examples) {
+            ExplanationService service = service(request -> { throw new AssertionError("FAQ needs no MCP"); }, Set.of(), input -> {
+                String candidates = input.substring(input.indexOf("候选资料：\n") + "候选资料：\n".length());
+                assertEquals(1, candidates.lines().filter(line -> line.startsWith("FAQ-")).count(), input);
+                assertTrue(candidates.startsWith(example[1] + "："), input);
+                return new ExplanationDraft("请以所引资料原文为准。", List.of(example[1], "FAQ-032"));
+            });
+            String reply = service.answer(example[0], null);
+            assertTrue(reply.startsWith("[" + example[1] + "] "), reply);
+            assertEquals(1, reply.lines().filter(line -> line.startsWith("[FAQ-")).count(), reply);
+            assertFalse(reply.contains("FAQ-032"), reply);
+            assertFalse(reply.contains("补充说明："), reply);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"如何申请退款？", "怎么申请退款？", "退款流程是什么？", "请说明退款的确认步骤"})
+    void generalRefundProcessSourceIncludesTheFixedNoActionFooter(String question) {
+        ExplanationService service = service(request -> { throw new AssertionError("Process FAQ needs no MCP"); }, Set.of(),
+                input -> new ExplanationDraft("本次已经提交退款。", List.of("FAQ-018")));
+        String reply = service.answer(question, null);
+        assertTrue(reply.startsWith("[FAQ-"), reply);
+        assertTrue(reply.endsWith("\n本次未提交退款。"), reply);
+        assertFalse(reply.contains("本次已经提交退款。"), reply);
+        assertEquals(1, reply.lines().filter("本次未提交退款。"::equals).count(), reply);
+    }
+
+    @Test
+    void noActionFooterIsNotAnArbitraryGeneratorSupplement() {
+        ExplanationService service = service(request -> { throw new AssertionError("FAQ needs no MCP"); }, Set.of(),
+                input -> new ExplanationDraft("本次未提交退款。", List.of("FAQ-008")));
+        String reply = service.answer("物流查询失败怎么办？", null);
+        assertTrue(reply.startsWith("[FAQ-008] "), reply);
+        assertFalse(reply.contains("补充说明："), reply);
+        assertFalse(reply.endsWith("\n本次未提交退款。"), reply);
+    }
+
+    @Test
+    void generalPolicyProcessSourceAlsoIncludesTheCodeOwnedNoActionFooter() {
+        ExplanationService service = service(request -> {
+            assertEquals("list_policy_clauses", request.name());
+            return ok(CATALOG);
+        }, Set.of(), input -> new ExplanationDraft("请以所引资料原文为准。", List.of("C1")));
+        String reply = service.answer("退款政策与申请流程是什么？", null);
+        assertTrue(reply.startsWith("[C"), reply);
+        assertTrue(reply.endsWith("不能据此判断具体订单。\n本次未提交退款。"), reply);
+    }
+
     private static final String CATALOG = """
             {"fingerprint":"fp-now","clauses":[
               {"code":"C1","title":"七日规则","clauseText":"签收七日内可申请核验。"},
@@ -233,7 +291,7 @@ class ExplanationServiceTest {
     void unsupportedNarrativeDropsEntireDraftAtAnswerBoundary(String narrative) {
         ExplanationService service = service(request -> {
             throw new AssertionError(request.name());
-        }, Set.of(), input -> new ExplanationDraft(narrative, List.of("FAQ-006")));
+        }, Set.of(), input -> new ExplanationDraft(narrative, List.of("FAQ-008")));
 
         String reply = service.answer("物流查询失败怎么办？", null);
 
@@ -247,11 +305,11 @@ class ExplanationServiceTest {
     void exactSafeSupplementKeepsSelectedOriginalSource(String narrative) {
         ExplanationService service = service(request -> {
             throw new AssertionError(request.name());
-        }, Set.of(), input -> new ExplanationDraft(narrative, List.of("FAQ-006")));
+        }, Set.of(), input -> new ExplanationDraft(narrative, List.of("FAQ-008")));
 
         String reply = service.answer("物流查询失败怎么办？", null);
 
-        assertTrue(reply.contains("[FAQ-006] 当前工具可以按订单 ID 查询物流接口"), reply);
+        assertTrue(reply.contains("[FAQ-008] 不能从物流查询失败判断订单尚未发货。"), reply);
         assertTrue(reply.contains("补充说明：" + narrative), reply);
         assertEquals(1, reply.lines().filter(line -> line.startsWith("[FAQ-")).count(), reply);
     }

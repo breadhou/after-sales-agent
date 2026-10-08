@@ -113,7 +113,7 @@ class AgentRuntimeTest {
         DialogueModel dialogue = new DialogueModel();
         ReplyModel review = new ReplyModel(APPROVAL);
         ReplyModel explanation = new ReplyModel("""
-                {"narrative":"请以所引资料原文为准。","citedSourceIds":["FAQ-006"]}
+                {"narrative":"请以所引资料原文为准。","citedSourceIds":["FAQ-008"]}
                 """);
         RecordingObserver observer = new RecordingObserver();
         AgentRuntime runtime = AgentRuntime.create(dialogue, review, explanation, mcp.client,
@@ -122,7 +122,7 @@ class AgentRuntimeTest {
         runtime.coordinator().handleTurn("session-a", CONFIRM);
         String answer = runtime.coordinator().handleTurn("session-a", "物流查询失败怎么办？");
 
-        assertTrue(answer.contains("[FAQ-006]"), answer);
+        assertTrue(answer.contains("[FAQ-008]"), answer);
         Set<String> visible = dialogue.requests.get(0).toolSpecifications().stream()
                 .map(ToolSpecification::name).collect(java.util.stream.Collectors.toSet());
         assertEquals(Set.of("get_order", "list_user_orders", "get_logistics", "handoff_refund",
@@ -138,7 +138,7 @@ class AgentRuntimeTest {
         assertTrue(observer.events.stream().anyMatch(event -> event.phase.equals("EXPLANATION")
                 && "SOURCE_ORIGINAL".equals(event.attributes.get("replyKind"))));
         assertTrue(observer.sources.contains("SEVEN_DAY_NO_REASON"));
-        assertTrue(observer.sources.contains("FAQ-006"));
+        assertTrue(observer.sources.contains("FAQ-008"));
     }
 
     @Test

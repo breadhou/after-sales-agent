@@ -88,6 +88,9 @@ public final class ExplanationService {
         FlowObserver.event(observer, "EXPLANATION", orderId, Map.of("role", "EXPLANATION", "status", "STARTED"));
         try {
             String answer = answerInternal(originalInput, orderId);
+            if ("SOURCE_ORIGINAL".equals(replyKind.get()) && orderId == null && generalRefundProcessQuestion(originalInput)) {
+                answer += "\n本次未提交退款。";
+            }
             FlowObserver.event(observer, "EXPLANATION", orderId, Map.of("role", "EXPLANATION", "status", "COMPLETED",
                     "replyKind", replyKind.get()));
             return answer;
@@ -182,7 +185,7 @@ public final class ExplanationService {
             texts.put(document.id(), document.title() + " " + document.body());
             candidates.put(document.id(), new Source(document.id(), document.body(), null, null));
         }
-        List<Source> sources = ranker.rank(input, texts).stream().limit(3)
+        List<Source> sources = ranker.rank(input, texts).stream().limit(1)
                 .map(candidates::get).toList();
         return render(input, sources, null, "");
     }
@@ -335,6 +338,12 @@ public final class ExplanationService {
     private static boolean policyQuestion(String input) {
         return input.contains("政策") || input.contains("条款") || input.contains("退款规则")
                 || input.contains("退货规则") || input.contains("售后规则");
+    }
+
+    private static boolean generalRefundProcessQuestion(String input) {
+        return (input.contains("退款") || input.contains("退货"))
+                && (input.contains("流程") || input.contains("步骤")
+                || input.contains("如何申请") || input.contains("怎么申请"));
     }
 
     private static boolean productQuestion(String input) {
