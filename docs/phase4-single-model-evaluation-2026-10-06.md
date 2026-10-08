@@ -2,7 +2,7 @@
 
 执行记录日期：2026-10-06；保存审核与汇总日期：2026-10-07；本报告当前更新日期：2026-10-08（Asia/Shanghai）。
 
-**Task1–13已完成；Task14保留原正式评测部分结果，当前闭合交付及整分支验收待完成。** 已保存240条FIRST与24条REPEAT，共264条`COMPLETE`执行记录。FIRST事后评估为214 PASS、21 FAIL、4 ERROR、1 SKIPPED，计划分母通过率89.17%。`COMPLETE`表示试验执行/证据生命周期已结束；BOUNDARY-021仍为SKIPPED/manual PENDING，不能由264条COMPLETE推导出正式评测或阶段4完成。接续CLI实际退出码为1，后续修复只读汇总代码后才得到派生报告。
+**Task1–13已完成；Task14的部分结果工程交付、验证与独立终审已闭环，原正式benchmark保持PARTIAL。** 已保存240条FIRST与24条REPEAT，共264条`COMPLETE`执行记录。FIRST事后评估为214 PASS、21 FAIL、4 ERROR、1 SKIPPED，计划分母通过率89.17%。`COMPLETE`表示试验执行/证据生命周期已结束；原正式批次中的BOUNDARY-021仍为SKIPPED/manual PENDING，不能由264条COMPLETE推导出正式评测或阶段4完成。接续CLI实际退出码为1，后续修复只读汇总代码后才得到派生报告。新v3三条独立派生PASS及评测器修正验收另列，不替换原FIRST。
 
 ## 一、分母、运行中断与当前状态
 
