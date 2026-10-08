@@ -1182,6 +1182,96 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 ---
 
+## K-63 合法超过七天退款集中被独立复核拒绝
+
+| | |
+|---|---|
+| **状态** | **待判断** |
+| **发现于** | 2026-10-09，用户要求分析阶段4未通过原因的只读排查 |
+| **位置** | `agent/src/main/resources/prompts/review-system.txt`；`agent/src/main/java/com/mall/agent/config/AgentConfig.java`；正式批次 NORMAL-027/029–034、BOUNDARY-002、REVIEW-023 |
+| **严重性** | 高——影响后端资格与同源政策进入独立复核后的实际任务完成 |
+
+**证据**：八条 LIVE 场景的 FACTS/POLICY 完成且匹配 QUALITY_ISSUE，随后获得结构有效 REJECTED，没有提交退款。REVIEW-023 的原始最终 verdict 明确以“买错了”和“当前系统没有核验质量问题”为 POLICY_CONFLICT；该合成条款与资格明确允许超过七天退款，现行后端也不依据原因或质量凭证判定。NORMAL-028 和 REVIEW-024 对照通过，不能断言所有该码输入必拒。
+
+**原因边界与后续**：REVIEW-023 确认加入了输入契约不存在的拒绝门槛；八条 LIVE 只保存 APPROVED/REJECTED 等结果，没有完整 faults，不能把其具体拒绝理由都补成质量凭证不足。兼容码 QUALITY_ISSUE 的常识含义与当前执行语义冲突、提示词强调找问题/拿不准拒绝，是优先验证的解释。倾向澄清复核契约并用独立新版本定向验证，不能强制放行、跳过复核或覆盖原 FAIL。
+
+---
+
+## K-64 多订单选择场景的裁判存在两处错误要求
+
+| | |
+|---|---|
+| **状态** | **待判断** |
+| **发现于** | 2026-10-09，正式 BOUNDARY-026 保存证据离线调用当前 judge 并跟踪失败位置 |
+| **位置** | `scripts/evaluation_judge.py` 的 `_orders` 与 `_template` |
+| **严重性** | 高——正确选择并完成一单退款被判为 FAIL，影响评测可信度 |
+
+**证据与原因**：Oracle 显示 order-a 保持 RECEIVED/零行、order-b 为 REFUNDED/新增一行，符合逐订单冻结预期。但 `_orders` 的额外 REFUND_COMPLETED 检查要求 expect.orders 中所有别名均退款，对 order-a 错报 ORDER_STATE。`_template` 要求确认模板的理由出现在同一 turn 的输入；显式选择轮只有 `/select-refund-order {{order-b}}`，理由正确继承先前 pending，仍报 REPLY_TEMPLATE。离线追踪精确定位两处，无模型或业务操作。
+
+**后续**：倾向按每单期望及可信 pending/选择/确认链修裁判，保留错误目标、伪造理由和跨会话否定覆盖；不删除安全检查或要求两单一起退款。旧原始 FAIL 保持，修复版本结果另列。
+
+---
+
+## K-65 FAQ 多来源输出与冻结允许来源集合不一致
+
+| | |
+|---|---|
+| **状态** | **待判断** |
+| **发现于** | 2026-10-09，INFO-010/012–016 的最终引用文本与冻结 basis/requiredSources 对照 |
+| **位置** | `agent/src/main/java/com/mall/agent/knowledge/ExplanationService.java`；`scripts/evaluation_judge.py:_source_reply`；`eval/scenarios/v2-full/information.jsonl` |
+| **严重性** | 中——影响六条资料问答判定，涉及生产检索范围与评测正确答案边界 |
+
+**证据与原因**：六条均引用正确必需 FAQ，同时最终答复引用一至两条邻近的真实 FAQ。生产按词项重合检索最多三条，生成器可引用候选中的多个来源；裁判却以每例单一预标 FAQ 为允许全集。例如 INFO-010 最终 FAQ-001/002，而允许集合只有 FAQ-001。来源候选事件没有被当成最终引用；本次逐条读取最终回复证实集合差异。
+
+**后续边界**：阶段4设计明确要求人工预标允许来源，当前 FAIL 符合冻结规则，不能简单删掉 OUT_OF_ALLOWLIST_SOURCE 或声称这些是幻觉。是否限制生产来源选择，或重新审核合理来源集合，只能在新版本明确决定；旧冻结与通过率不得回填。
+
+---
+
+## K-66 原话已有明确理由仍可能因模型转接候选不匹配而停住
+
+| | |
+|---|---|
+| **状态** | **待判断** |
+| **发现于** | 2026-10-09，NORMAL-004 FIRST、BOUNDARY-006 的保存回复与协调器逐条对照 |
+| **位置** | `agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java:groundedReason` |
+| **严重性** | 中——影响合法申请和多订单澄清路径的可用性 |
+
+**证据与原因**：用户分别已写“理由：不再需要了”/“理由：买重了”，handoff_refund trace 已发生，但最终返回补充理由模板，无 pending/确认事件。代码先依赖模型候选通过严格原文子串校验，再解析/选择订单。当前编译类的离线 Java 反射验证：原词可以通过，“不需要了”/“重复购买”同义改写返回 null。NORMAL-004 两次 REPEAT 能创建 pending，但随后复核拒绝；同为 FAIL 不代表相同失败路径。
+
+**不确定性与后续**：旧 trace 不保存 handoff 参数，无法断言当时用了上述哪一候选，或是空值/别的校验失败。应先补足本地私有候选诊断并明确可信原话与模型候选的职责，不随意允许模型造理由、不让模型候选成为用户授权。
+
+---
+
+## K-67 一般资格 FAQ 落入退款状态兜底，否定句也触发结果词守卫
+
+| | |
+|---|---|
+| **状态** | **待判断** |
+| **发现于** | 2026-10-09，INFO-017 保存调用链与当前编译类离线反射 |
+| **位置** | `agent/src/main/java/com/mall/agent/flow/ConversationCoordinator.java:handleTurnInternal/refundOutcomeClaim` |
+| **严重性** | 中——影响一般资料问答与交易结果守卫的边界 |
+
+**证据与原因**：INFO-017 是问明确订单 ID 与只读查询的原理，没有订单 ID；无 EXPLANATION/SOURCE 事件，最终是退款状态无法确认模板，缺 FAQ-009。当前入口在模型没有解释标记时，可把结果词识别转到历史退款状态查询。实际 Java 反射显示“查询本身不会提交退款。”和“退款尚未提交。”均被 refundOutcomeClaim 识别为 true；该 INFO 输入不匹配资格询问谓词。
+
+**不确定性与后续**：旧数据未保存 modelReply，无法确定当时哪句话触发守卫；能确认最终路径及规则的否定句行为。倾向明确一般能力说明与订单状态查询的边界，并保留虚假完成宣称拦截，不能直接移除守卫。
+
+---
+
+## K-68 场景必备事实被逐条套用于多轮来源原文答复
+
+| | |
+|---|---|
+| **状态** | **待判断** |
+| **发现于** | 2026-10-09，BOUNDARY-033 保存回复与 judge 离线失败追踪 |
+| **位置** | `scripts/evaluation_judge.py:_source_reply`；`eval/scenarios/v2-full/boundary.jsonl` 的 BOUNDARY-033 |
+| **严重性** | 中——影响流程问答/确认链评测的判据作用范围 |
+
+**证据与原因**：一般退款流程问答引用 FAQ-018/019/020，后续无 pending 的确认正确拒绝，Oracle 无写入；第二轮含“本次未提交退款”。裁判对第一轮 SOURCE_ORIGINAL 单独要求场景 rubric 的该逐字短语，尽管原文已说明确认前不会提交，仍报 REQUIRED_FACT。失败位置已离线定位，不是发现了退款写入。
+
+**后续边界**：需要明确该事实必须逐轮逐字出现，还是按预先声明的轮次/阶段核对。现行规则的 FAIL 不能未经审核升级 PASS，不能任意放宽全部 requiredFacts；倾向先决定判据作用范围，再新增版本。
+
+---
+
 ## 已处理（保留供追溯）
 **K-61/K-62 验收追溯**：功能提交 `5d2f66f4e2064c86d581c6f64026de59c5046760` / backend `25e7afb5fbd860bfe10b73ef6a0c09f1f80ac20d` 已获同任务 Spec/Quality APPROVED（`task-14-wb-scoped-task-review-2026-10-08.md` SHA0e1b7d4d5e390ef104729a5e47acff494083298c40f343b6844d16715ae2c314）与同 Astra 定向终审 APPROVED（`task-14-wb-scoped-final-review-2026-10-08.md` SHA88086bd77c2ecafa378dd1f2de96c3743fb152b15c4bb735917c8cc96567a885），两 finding CLOSED、无新问题。原首轮终审报告及失败证据保留；本次后续文档提交不冒称被 Astra 审过。
 
