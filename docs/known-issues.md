@@ -1182,6 +1182,36 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 ---
 
+## K-61 受控错误豁免未证明声明注入实际发生
+
+| | |
+|---|---|
+| **状态** | **修复中**（实现及离线验证完成，等待同任务与整分支的定向复审） |
+| **发现于** | 2026-10-08，阶段4最终整分支审查 WB-I1 |
+| **位置** | `scripts/evaluation_judge.py`；`agent/src/main/java/com/mall/agent/evaluation/ControlledAdapters.java` |
+| **严重性** | 高——会把注入前真实模型/只读工具失败计为受控机制成功，属于当前交付缺陷 |
+
+**原因与修复**：旧通用分支只看预期 outcome 与错误类别。现在要求冻结控制点/role/tool、实际 SCRIPTED 与同一 session/turn/call 的失败证据；真实 MODEL/MCP 异常不能借该分支过关。after-response 必须有真实同工具调用/响应在先，before-submit 原严格证明保留。全局政策目录仅允许在该订单已开始的 POLICY 步骤中、紧邻的真实 PolicyCatalogException 失败传播，不能泛化 GLOBAL/alias。脚本耗尽也由实际生产入口记录注入。
+
+**验证与边界**：真实前置 REVIEW timeout/get_order 失败离线 RED→GREEN，正确/错 role、错误来源及旧 before-send/after-commit 对照保留；新真实 FAULT-028 的 SDK 业务拒绝仍 PASS。只读检查原60受控 FIRST 与新3条；首次过严的 GLOBAL→订单匹配问题及其8个保存样本、32个内存负变体单列证据，原结果与率不改。不以重试模型补 PASS；定向 gate 尚未通过。
+
+---
+
+## K-62 跨 worker 与共享预算丢失混合部分 token 用量
+
+| | |
+|---|---|
+| **状态** | **修复中**（实现及离线验证完成，等待同任务与整分支的定向复审） |
+| **发现于** | 2026-10-08，阶段4最终整分支审查 WB-I2 |
+| **位置** | `TrialBudget.java`；`scripts/evaluation_contract.py`；`scripts/evaluation_budget.py` |
+| **严重性** | 中——可在已知 token 总量达到上限后继续派发，属于当前交付缺陷 |
+
+**原因与修复**：Java 每响应的计量原本正确，但 worker 只导出 raw 聚合，父进程优先 raw total 而漏掉另一响应的部分用量。新增可选 knownReportedTokens 保存精确已知收费，保留 raw/null/unknown。complete100+partial50 在既有1999850之后计150，持久化重载后阻止下一条；缺少精确值的 legacy 多请求 mixed header 用于新派发时 fail closed，不改旧账本。完整、单请求和全未知旧语义保留。
+
+**验证与边界**：Java/Python 有效 RED→GREEN；306条真实共享账本只读检查无这种 ambiguous legacy header，原1093786已知 token 与672 charge不重算或改写。该检查不声称供应商内部重试/未知费用可观测。定向 gate 尚未通过，其他隐患状态不改。
+
+---
+
 ## 已处理（保留供追溯）
 
 ### K-59 补证选择器的时间字段豁免可能掩盖业务事实变化

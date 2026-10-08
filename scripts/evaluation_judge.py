@@ -654,6 +654,52 @@ def _proved_before_send(case, events, records, before, after, worker):
             and _origin(r) == origin and r['sourceKey'] == code and r['sourceDigest'] == policy['sourceDigest'] for r in records))
 
 
+def _proved_controlled_error(case, events, records, worker):
+    control = case.get('control', {})
+    if case['mode'] != 'CONTROLLED' or control.get('target') != 'AGENT_CHAIN': return False
+    category = worker['errorCategory']; errors = [r for r in records if r['kind'] == 'ERROR']
+    if not errors or any(r['errorCategory'] != category for r in errors): return False
+    # Actual provider/transport failures are independent of substitutions above the observers.
+    if any(e['phase'] in ('MODEL', 'MCP') and e['status'] in ('FAILED', 'TRANSPORT_ERROR') for e in events): return False
+    point = control.get('point'); role = control.get('script', {}).get('role')
+    tool = 'get_product_detail' if point == 'SOURCE_BEFORE_FINAL' else control.get('toolName')
+    if point == 'MCP_BEFORE_REQUEST' and tool == 'submit_refund': return False  # strict authority proof only
+    scripts = [e for e in events if e['status'] == 'SCRIPTED' and
+               ((point == 'MODEL_SCRIPT' and e['phase'] == 'MODEL' and e['role'] == role) or
+                (point in ('MCP_BEFORE_REQUEST', 'MCP_AFTER_RESPONSE', 'MCP_RESPONSE', 'SOURCE_BEFORE_FINAL')
+                 and e['phase'] == 'MCP' and e['role'] == 'MCP' and e['tool'] == tool))]
+    if not scripts: return False
+    for error in errors:
+        failure = next((e for e in events if _key(e) == _key(error)), None)
+        if failure is None: return False
+        matching = [s for s in scripts if _origin(s) == _origin(failure) and s['sequence'] < failure['sequence']]
+        if point == 'MCP_AFTER_RESPONSE':
+            matching = [s for s in matching if any(response['phase'] == 'MCP' and response['role'] == 'MCP'
+                        and response['tool'] == tool and response['status'] in ('RESPONSE_RECEIVED', 'BUSINESS_ERROR')
+                        and _origin(response) == _origin(s) and response['target'] == s['target']
+                        and response['sequence'] < s['sequence'] and any(call['phase'] == 'MCP'
+                            and call['role'] == 'MCP' and call['tool'] == tool and call['status'] == 'CALLED'
+                            and _key(call) == _key(response) and call['target'] == response['target']
+                            and call['sequence'] < response['sequence'] for call in events) for response in events)]
+        if point == 'MODEL_SCRIPT':
+            phase = 'SESSION' if role == 'DIALOGUE' else role
+            if failure['phase'] != phase or not matching: return False
+        elif not any(s['target'] == failure['target'] or
+                     (tool == 'list_policy_clauses' and s['target'] == 'GLOBAL'
+                      and failure['phase'] == 'POLICY' and failure['status'] == 'FAILED'
+                      and failure['sequence'] == s['sequence'] + 1
+                      and failure.get('exceptionClass') == 'com.mall.agent.policy.PolicyCatalogConsumer$PolicyCatalogException'
+                      and any(e['phase'] == 'POLICY' and e['status'] == 'STARTED'
+                              and _origin(e) == _origin(failure) and e['target'] == failure['target']
+                              and e['sequence'] < s['sequence'] for e in events)) for s in matching): return False
+    if category == 'UNRESOLVED_WRITE':
+        return (point == 'MCP_AFTER_RESPONSE' and tool == 'submit_refund'
+                and case['expect']['outcome'] == 'UNRESOLVED_WRITE' and worker['terminalEvidence'] == 'COMPLETED'
+                and all(next(e for e in events if _key(e) == _key(r)).get('exceptionClass') ==
+                        'com.mall.agent.evaluation.ControlledAdapters$InjectedFailure' for r in errors))
+    return case['expect']['outcome'] in ('ERROR', 'ESCALATED', 'NOT_SUBMITTED') and category in ('MODEL_ERROR', 'REVIEW_FORMAT_ERROR', 'MISSING_EVIDENCE')
+
+
 def judge(case: dict, events: list[dict], before: dict, after: dict, worker: dict, manual: dict | None) -> dict:
     case = contract.validate_case(case)
     if case.get('control', {}).get('target') == 'BACKEND_TRANSACTION':
@@ -695,9 +741,8 @@ def judge(case: dict, events: list[dict], before: dict, after: dict, worker: dic
         category = worker['errorCategory']
         if category:
             evidence_errors = [r for r in records if r['kind'] == 'ERROR' and r['errorCategory'] == category]
-            known_loss = case['expect']['outcome'] == 'UNRESOLVED_WRITE' and category == 'UNRESOLVED_WRITE' and worker['terminalEvidence'] == after['terminalEvidence'] == 'COMPLETED'
             proved_unsent = _proved_before_send(case, events, records, before, after, worker)
-            controlled = case['mode'] == 'CONTROLLED' and bool(evidence_errors) and (known_loss or proved_unsent or (case['expect']['outcome'] in ('ERROR', 'ESCALATED', 'NOT_SUBMITTED') and category in ('MODEL_ERROR', 'REVIEW_FORMAT_ERROR', 'MISSING_EVIDENCE')))
+            controlled = case['mode'] == 'CONTROLLED' and bool(evidence_errors) and (proved_unsent or _proved_controlled_error(case, events, records, worker))
             checks.require(controlled, category, True)
         elif case['expect']['outcome'] == 'ERROR': checks.require(False, 'OUTCOME')
     except (OSError, UnicodeError, ValueError, KeyError, TypeError, ArithmeticError):

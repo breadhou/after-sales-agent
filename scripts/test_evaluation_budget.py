@@ -16,6 +16,30 @@ def usage(requests=1, tokens=10, complete=True):
 
 
 class BudgetTest(unittest.TestCase):
+    def test_wb_explicit_mixed_charge_stops_next_dispatch_after_reload(self):
+        self.ledger.reserve('prior'); self.ledger.complete('prior', usage(1, 1999850), True)
+        self.ledger.reserve('mixed')
+        mixed = dict(logicalModelRequests=2, promptTokens=110, completionTokens=40, totalTokens=100,
+                     usageComplete=False, unknownUsageRequests=1, knownReportedTokens=150)
+        try: self.ledger.complete('mixed', mixed, True)
+        except ValueError as error: self.fail('Genuine per-response known charge is rejected: ' + str(error))
+        reopened = BudgetLedger(self.path)
+        self.assertEqual(2000000, reopened.snapshot()['reportedTokens'])
+        saved = json.loads(self.path.read_text())['trials']['mixed']['usage']
+        self.assertEqual(100, saved['totalTokens']); self.assertEqual(150, saved['knownReportedTokens'])
+        self.assertFalse(saved['usageComplete']); self.assertEqual(1, saved['unknownUsageRequests'])
+        with self.assertRaises(BudgetStop): reopened.reserve('next')
+
+    def test_wb_ambiguous_legacy_mixed_header_cannot_authorize_new_dispatch(self):
+        self.ledger.reserve('prior'); self.ledger.complete('prior', usage(1, 1999850), True)
+        value = json.loads(self.path.read_text())
+        mixed = dict(logicalModelRequests=2, promptTokens=110, completionTokens=40, totalTokens=100,
+                     usageComplete=False, unknownUsageRequests=1)
+        value['trials']['legacy'] = dict(reservedRequests=12, chargedRequests=12, state='COMPLETE', usage=mixed, terminated=True)
+        self.path.write_text(json.dumps(value), encoding='utf-8'); before = self.path.read_bytes()
+        with self.assertRaises(BudgetStop): BudgetLedger(self.path).reserve('next')
+        self.assertEqual(before, self.path.read_bytes())
+
     def setUp(self):
         self.assertIsNotNone(BudgetLedger, 'Task10 durable budget implementation is missing')
         self.temp = tempfile.TemporaryDirectory()

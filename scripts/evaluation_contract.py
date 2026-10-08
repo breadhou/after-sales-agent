@@ -891,7 +891,7 @@ def _validate_event(value, path="event"):
 
 def _validate_metering(value, path):
     _object(value, path, required=("logicalModelRequests", "promptTokens", "completionTokens",
-            "totalTokens", "usageComplete", "unknownUsageRequests"))
+            "totalTokens", "usageComplete", "unknownUsageRequests"), optional=("knownReportedTokens",))
     request_count = _integer(value["logicalModelRequests"], f"{path}.logicalModelRequests")
     unknown_count = _integer(value["unknownUsageRequests"], f"{path}.unknownUsageRequests")
     if unknown_count > request_count:
@@ -902,6 +902,14 @@ def _validate_metering(value, path):
     for field in ("promptTokens", "completionTokens", "totalTokens"):
         if value[field] is not None:
             _integer(value[field], f"{path}.{field}")
+    if "knownReportedTokens" in value:
+        known = _integer(value["knownReportedTokens"], f"{path}.knownReportedTokens")
+        if value["totalTokens"] is not None and known < value["totalTokens"]:
+            _fail(path, "known charge cannot discard reported totals")
+        if request_count == 0 and known != 0:
+            _fail(path, "zero requests cannot carry a token charge")
+        if value["usageComplete"] and known != (value["totalTokens"] or 0):
+            _fail(path, "complete usage charge must equal reported total")
 
 def validate_wire(kind: str, value: dict) -> dict:
     """Validate and return a detached v1 private or public protocol record."""

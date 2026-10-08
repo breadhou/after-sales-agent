@@ -109,7 +109,7 @@ REPEAT为22 PASS、2 FAIL（22/24=91.67%）；NORMAL-004两次仍FAIL，其余11
 
 原manual-audit.jsonl保留32条trial记录：FACTS/CLAIMS各32 PASS，REJECTION_FACTS/REJECTION_CLAIMS各11 PASS；原派生manualReview为31 PASS、BOUNDARY-021一条PENDING。2026-10-07当前用户明确答复“已亲自逐项核验，全部PASS”，root新可信receipt精确绑定原32条/86判据、原audit及case/binding/metadata/result/worker/全部回复SHA；receipt SHA为3dafa98537f6e51a9a54c3ff75c894fcccba46bb89976b694751713cb632fa73。该来源已闭合，旧audit字节不改，未复制Task12的历史24条判定；它不能补回原BOUNDARY-021缺失的冻结拒绝判据，也不覆盖新v3试验。
 
-BOUNDARY-021仍为**SKIPPED、automaticStatus PASS、manualReview PENDING、MANUAL_REQUIRED**。保存的动态拒绝路径要求冻结声明和审核REJECTION_FACTS/REJECTION_CLAIMS，但该用例只声明FACTS/CLAIMS、现有审核也只有这两项。供给FACTS/CLAIMS PASS不能追溯授权缺失的拒绝判据；本轮不改冻结rubric，不把其改成PASS。现已采用独立v3四判据版本执行；原版本该项仍以部分结果保留，新v3真人结果待确认，不能追溯改写原冻结rubric或FIRST。
+BOUNDARY-021仍为**SKIPPED、automaticStatus PASS、manualReview PENDING、MANUAL_REQUIRED**。保存的动态拒绝路径要求冻结声明和审核REJECTION_FACTS/REJECTION_CLAIMS，但该用例只声明FACTS/CLAIMS、现有审核也只有这两项。供给FACTS/CLAIMS PASS不能追溯授权缺失的拒绝判据；本轮不改冻结rubric，不把其改成PASS。现已采用独立v3四判据版本执行；原版本该项仍以部分结果保留，新v3真人四项已可信确认并另存派生PASS，不能追溯改写原冻结rubric或FIRST。
 
 普通SOURCE_ORIGINAL/TRUSTED_TEMPLATE的资料忠实性由既有自动body/digest/freshness/requiredFacts断言覆盖，不能仅因INFO没有人工行再追加“全部30条必须人工审核”的要求。动态拒绝和FREE_TEXT的人工边界仍按既有协议保留。
 
@@ -194,7 +194,7 @@ F2（58c5083）修复历史输入字节校验及同turn绑定的catalog发现裁
 | --- | --- | --- |
 | FAULT-028 | PASS / automatic PASS | NOT_REQUIRED；真实SDK结构化50000拒绝体/来源回执 |
 | BOUNDARY-043 | PASS / automatic PASS | NOT_REQUIRED；固定时钟真实fixture probe |
-| BOUNDARY-021 | raw SKIPPED / automatic PASS | 四项FACTS/CLAIMS/REJECTION_FACTS/REJECTION_CLAIMS全部PENDING，等本次独立真人确认 |
+| BOUNDARY-021 | raw SKIPPED / automatic PASS | 四项真人PASS；独立派生PASS，原raw SKIPPED不改 |
 
 实际worker/runner及Agent构建来源为6370b0a，Backend25e7；新Agent JAR SHA8d6b959f48bc6d06d5c656458267fccff9e922b68f75461489c167e454da7e68，MCP49b700e保持。复用当前backend43572/profileloadtest/JAR40283c4b7e0bb13d2fba4e797bcb2c1fdd0cb454c67f679579fcbac4fc8437db，旧3042归档保留；两JAR逐项业务.class和依赖.jar字节相同，仅classpath application-loadtest.yml变为SHA9ddf35f5b8b31344352eacde147882cc347c7571cfbe98f32bf61453a2a99d5c。该配置来自另一个任务的外部dirty工作，本轮不改、不执行其脚本、不称后端clean。新runtimeHash c3ad4d5cdd189487b11535e587bcb067f7d6ff539c157e300dceb81328feecb4，configHash仍670c869c；模型凭据仅从既有主工作区的被忽略.env读入进程，temperature0/timeout60/runner300/default SDK retry及政策489160a3同源，供应商身份/内部重试未补成可观测。
 
@@ -202,7 +202,7 @@ F2（58c5083）修复历史输入字节校验及同turn绑定的catalog发现裁
 
 BOUNDARY-043原inner Maven数字退出/PID仍**UNOBSERVABLE**：私有hook整argv比较中的正斜杠路径未匹配Windows反斜杠，调用了原subprocess.run。原probe/assertions/launch/日志保持，不事后制造numeric0或改hook/重跑trial。另由root明确激活一次NEW独立只读Maven fixed-time回归，使用同一个新v3 owned fixture的无凭据ledger投影：真实PID41772/native0，2026-10-07T23:11:27.338120Z→23:11:41.786988Z，assertionsPassed=true/NOT_APPLICABLE、ownedChildrenTerminated=true，原ledger/probe、source/JAR/共享预算前后未变。它是独立验证，不能冒充原inner回执。
 
-人审材料只在本地私有SDD保存完整四条回复/上下文/Oracle及所有绑定SHA：`task14-v3-execute-20261008-boundary021-human-packet/packet.json` SHA43799c4ccdebcd1082771c09c3beec982bcfa6d43e1087945783fb4ccce71b4a，`review.md` SHA81c05871b532884c620c17bd4ccecd56be315e4aab7ec895683a46e0c05ab5be。本次真人未确认前全部PENDING，不由助手填写；原raw SKIPPED保留，未来真人后评估应另存派生结果。
+人审材料只在本地私有SDD保存完整四条回复/上下文/Oracle及所有绑定SHA：`task14-v3-execute-20261008-boundary021-human-packet/packet.json` SHA43799c4ccdebcd1082771c09c3beec982bcfa6d43e1087945783fb4ccce71b4a，`review.md` SHA81c05871b532884c620c17bd4ccecd56be315e4aab7ec895683a46e0c05ab5be。用户在root完整呈现四条原回复/Oracle/四判据后直接答复“全部pass”；可信receipt `task-14-boundary021-human-confirmation-2026-10-08.json` SHA1e4222cdb6a1ab34542937f8fbf6afc83f56472a09b42bd976c6fed34165c2e5独立绑定12组source/copy SHA及原身份。协议审核新增四PASS，NEW独立派生三条均PASS，原raw SKIPPED、旧packet全部PENDING、旧32/86及旧v2 skip保持；不是模型或助手判人审。派生评估明确绑定三条实际执行源码6370与本轮离线裁判源码各自哈希，不把新修复源码冒充旧runtime。
 
 ## 九、原生命令覆盖与待审出口
 
@@ -215,4 +215,4 @@ BOUNDARY-043原inner Maven数字退出/PID仍**UNOBSERVABLE**：私有hook整arg
 - `task14-v3-runtime-20261008-{package-r2,cli}.native.json`、`cli-ownership.json`；`task14-v3-execute-20261008-r2-supervisor.native.json`。
 - `task14-fixedtime-20261008-maven.native.json`及`maven.stdout.log`/`maven.stderr.log`；真实stdout SHA61c2ef16c6a9c3b620d82ec840bf4cdb1324df7667fe7843adde4da09aeb5ef7、stderr SHAc3293de530b189f88e4404c2a5239acad07e5ec23cd6f00c06968284f6e67223。
 
-当前公共增量仅报告/隔离AGENTS，并做出口路径/编码/秘密守卫；不声称它是旧执行源码。公共交付scoped gate及唯一两仓AstraHigh整分支gate均待root完成，BND21本次真人四项仍待确认。原正式评测保持PARTIAL/214–21–4–1，工程闭合证据不能推出完整正式benchmark或阶段4已完成。分支保持隔离，不自动合并/推送；不宣称真实支付渠道、JDK17或普遍安全证明。
+最终两仓AstraHigh整分支审查已完成，提出WB-I1/WB-I2两个Important、无Critical；本轮最小修复及真人admin等待同任务和同Astra的定向复审，未标approved。WB-I1要求声明注入实际发生及因果错误来源，WB-I2通过knownReportedTokens跨worker/父进程/持久化保留每响应已知计量，raw/null/unknown不改、legacy混合歧义不放行。Agent274/default模块与最终Python210/native0真实证据见私有WB报告；原273/202属于6370旧源码，不移作本轮覆盖。旧受控60FIRST和新3条保存证据的有界只读检查、真人四PASS派生与旧地板分别列示。本轮观察到backend target JAR由原v3绑定40283c4b7e0bb13d2fba4e797bcb2c1fdd0cb454c67f679579fcbac4fc8437db变为外部e8b3a98461a8f7ea84b340aac02c2b478536fee6436c83a7c599aacca610c0e8；root只将该一个路径列为外部观察例外。v3运行4028是历史绑定，本轮离线修复未使用新的后端JAR，也未检查其类或运行同一性。原正式评测保持PARTIAL/214–21–4–1，工程闭合证据不能推出完整正式benchmark或阶段4已完成。分支保持隔离，不自动合并/推送；不宣称真实支付渠道、JDK17或普遍安全证明。

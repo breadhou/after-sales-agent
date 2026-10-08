@@ -109,7 +109,9 @@ class BudgetLedger:
             return dict(requestAllowance=granted, reportedTokenAllowance=snapshot['remainingReportedTokens'])
 
     def complete(self, trial_id: str, usage: dict | None, terminated: bool) -> None:
-        if usage is not None: usage = _usage(usage)
+        if usage is not None:
+            usage = _usage(usage)
+            _known_tokens(usage)  # An ambiguous legacy header cannot authorize future dispatch.
         if type(terminated) is not bool: raise ValueError('Invalid termination evidence')
         if usage is None and not terminated: raise ValueError('Missing usage requires confirmed termination')
         with file_lock(self.lock_path):
@@ -133,5 +135,8 @@ def _usage(value):
 
 
 def _known_tokens(value):
+    if 'knownReportedTokens' in value: return value['knownReportedTokens']
+    if value['logicalModelRequests'] > 1 and value['unknownUsageRequests'] and value['totalTokens'] is not None:
+        raise BudgetStop('Ambiguous legacy known-token charge; per-response evidence is required')
     if value['totalTokens'] is not None: return value['totalTokens']
     return sum(value[field] for field in ('promptTokens', 'completionTokens') if value[field] is not None)

@@ -248,6 +248,28 @@ class EvaluationContractTest(unittest.TestCase):
         self.assertEqual(result, validated)
         self.assertIsNone(validated["metering"]["totalTokens"])
 
+    def test_wb_known_charge_preserves_partial_provider_fields_and_legacy_wire(self):
+        legacy = dict(schemaVersion=1, runId='run-001', caseId='NORMAL-001', trialId='trial-001',
+            eventsFile='events.jsonl', privateEvidenceFile='evidence.json', terminalEvidence='NOT_SENT', errorCategory=None,
+            metering=dict(logicalModelRequests=2, promptTokens=110, completionTokens=40, totalTokens=100,
+                usageComplete=False, unknownUsageRequests=1))
+        self.assertEqual(legacy, contract.validate_wire('WorkerResult', legacy))
+        current = copy.deepcopy(legacy); current['metering']['knownReportedTokens'] = 150
+        self.assertEqual(current, contract.validate_wire('WorkerResult', current))
+        current['metering'].update(promptTokens=None, completionTokens=None, totalTokens=None, knownReportedTokens=0, unknownUsageRequests=2)
+        self.assertEqual(current, contract.validate_wire('WorkerResult', current))
+
+    def test_wb_known_charge_rejects_invalid_or_discarded_reported_usage(self):
+        worker = dict(schemaVersion=1, runId='run-001', caseId='NORMAL-001', trialId='trial-001',
+            eventsFile='events.jsonl', privateEvidenceFile='evidence.json', terminalEvidence='NOT_SENT', errorCategory=None,
+            metering=dict(logicalModelRequests=2, promptTokens=110, completionTokens=40, totalTokens=100,
+                usageComplete=False, unknownUsageRequests=1, knownReportedTokens=150))
+        for invalid in (-1, True, 1.5, 99):
+            changed = copy.deepcopy(worker); changed['metering']['knownReportedTokens'] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError): contract.validate_wire('WorkerResult', changed)
+        worker['metering'].update(usageComplete=True, unknownUsageRequests=0)
+        with self.assertRaises(ValueError): contract.validate_wire('WorkerResult', worker)
+
     def test_eval_runs_is_ignored_before_runtime_evidence_is_created(self):
         import subprocess
 

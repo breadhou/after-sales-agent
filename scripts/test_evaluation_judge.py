@@ -32,6 +32,36 @@ def record(kind, turn, call_id, **values):
 
 
 class JudgeTest(unittest.TestCase):
+    def early_real_error(self, review):
+        self.case['mode'] = 'CONTROLLED'
+        components = dict(DIALOGUE='REAL', REVIEW='REAL' if review else 'SUBSTITUTED', EXPLANATION='REAL', MCP='SUBSTITUTED' if review else 'REAL', BACKEND='REAL')
+        self.case['control'] = dict(target='AGENT_CHAIN', point='MCP_BEFORE_REQUEST' if review else 'MODEL_SCRIPT', components=components, usesRealModel=True)
+        if review: self.case['control']['toolName'] = 'submit_refund'
+        else: self.case['control']['script'] = dict(role='REVIEW', responses=[dict(text='malformed review')])
+        self.case['expect']['outcome'] = 'NOT_SUBMITTED' if review else 'ESCALATED'
+        self.case['expect']['orders']['order-a'].update(orderStatus='RECEIVED', newRefundRows=0, refundAmount=None)
+        self.after = copy.deepcopy(self.before); self.worker['terminalEvidence'] = 'NOT_SENT'
+        category = 'MODEL_ERROR' if review else 'MISSING_EVIDENCE'; self.worker['errorCategory'] = category
+        if review:
+            self.events = self.events[:6] + [event(7, 'MODEL', 'FAILED', target='GLOBAL', role='REVIEW', callId='real-review', errorCategory=category), event(8, 'REVIEW', 'FAILED', role='REVIEW', callId='flow-7', errorCategory=category), event(9, 'SESSION', callId='flow-12')]
+            self.records = [r for r in self.records if r['kind'] != 'REVIEW_OUTCOME'] + [record('REVIEW_OUTCOME',1,'flow-7',outcome='ERROR'),record('ERROR',1,'real-review',errorCategory=category)]
+        else:
+            self.events = self.events[:3] + [event(4,'MCP','CALLED',role='MCP',tool='get_order',callId='real-read'),event(5,'MCP','TRANSPORT_ERROR',role='MCP',tool='get_order',callId='real-read',errorCategory=category),event(6,'FACTS','FAILED',errorCategory=category),event(7,'SESSION',callId='flow-12')]
+            self.records = [r for r in self.records if r['kind'] not in ('SOURCE','REVIEW_OUTCOME')] + [record('ERROR',1,'real-read',errorCategory=category)]
+        self.replies[1] = '本轮请求暂时无法确认，请联系人工客服。'
+        for e in self.events: e.pop('errorCategory', None)
+        if not review:
+            self.events.insert(-1, event(7, 'ESCALATION', callId='escalation'))
+            self.events[-1]['sequence'] = 8
+
+    def test_wb_real_review_timeout_before_submit_injection_is_error(self):
+        self.early_real_error(True); result=self.run_judge()
+        self.assertEqual('ERROR', result['status'], result)
+
+    def test_wb_real_get_order_failure_before_review_injection_is_error(self):
+        self.early_real_error(False); result=self.run_judge()
+        self.assertEqual('ERROR', result['status'], result)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -259,11 +289,47 @@ class JudgeTest(unittest.TestCase):
         self.case['control'] = dict(target='AGENT_CHAIN', point='MCP_AFTER_RESPONSE', components=dict(DIALOGUE='REAL', REVIEW='REAL', EXPLANATION='REAL', MCP='SUBSTITUTED', BACKEND='REAL'), usesRealModel=True, toolName='submit_refund', response='injected private loss')
         self.case['expect']['outcome'] = 'UNRESOLVED_WRITE'
         self.events[10]['status'] = 'FAILED'
+        self.events[10]['exceptionClass'] = 'com.mall.agent.evaluation.ControlledAdapters$InjectedFailure'
+        self.events.insert(10, event(11, 'MCP', 'SCRIPTED', role='MCP', tool='submit_refund', callId='scripted-loss'))
+        for i, item in enumerate(self.events): item['sequence'] = i + 1
         self.records.append(record('ERROR', 1, 'flow-11', errorCategory='UNRESOLVED_WRITE'))
         self.worker['errorCategory'] = 'UNRESOLVED_WRITE'
         self.replies[1] = '订单 ' + ORDER + ' 的退款申请提交结果无法确认。请联系人工客服核实退款状态。'
         self.assertEqual('PASS', self.run_judge()['status'])
         self.worker['terminalEvidence'] = self.after['terminalEvidence'] = 'UNKNOWN'
+        self.assertEqual('ERROR', self.run_judge()['status'])
+
+    def test_wb_matching_review_script_is_required_and_real_failure_is_not_waived(self):
+        self.early_real_error(True)
+        self.case['control'] = dict(target='AGENT_CHAIN', point='MODEL_SCRIPT', components=dict(DIALOGUE='REAL', REVIEW='SUBSTITUTED', EXPLANATION='REAL', MCP='REAL', BACKEND='REAL'), usesRealModel=True, script=dict(role='REVIEW', responses=[dict(text='malformed review')]))
+        self.worker['errorCategory'] = 'REVIEW_FORMAT_ERROR'
+        self.events[6].update(status='SCRIPTED', callId='script-review')
+        self.records[-2]['outcome'] = 'INVALID'
+        self.records[-1].update(callId='flow-7', errorCategory='REVIEW_FORMAT_ERROR')
+        self.assertEqual('PASS', self.run_judge()['status'])
+        self.events[6]['role'] = 'DIALOGUE'
+        self.assertEqual('ERROR', self.run_judge()['status'])
+        self.events[6]['role'] = 'REVIEW'
+        self.events.insert(7, event(8, 'MODEL', 'FAILED', role='REVIEW', callId='independent-provider'))
+        for i, item in enumerate(self.events): item['sequence'] = i + 1
+        self.assertEqual('ERROR', self.run_judge()['status'])
+
+    def test_wb_global_policy_injection_is_correlated_to_the_active_policy_failure(self):
+        self.early_real_error(False)
+        self.case['control'] = dict(target='AGENT_CHAIN', point='MCP_RESPONSE', toolName='list_policy_clauses', response='malformed policy catalog', components=dict(DIALOGUE='REAL', REVIEW='REAL', EXPLANATION='REAL', MCP='SUBSTITUTED', BACKEND='REAL'), usesRealModel=True)
+        self.case['expect']['outcome'] = 'ERROR'
+        self.events = self.events[:3] + [event(4,'FACTS'),event(5,'POLICY','STARTED'),event(6,'MCP','SCRIPTED',target='GLOBAL',role='MCP',tool='list_policy_clauses'),event(7,'POLICY','FAILED',exceptionClass='com.mall.agent.policy.PolicyCatalogConsumer$PolicyCatalogException'),event(8,'ESCALATION'),event(9,'SESSION',callId='flow-12')]
+        self.records[-1]['callId'] = 'flow-7'
+        self.assertEqual('PASS', self.run_judge()['status'])
+        self.case['control']['point'] = 'MCP_AFTER_RESPONSE'
+        self.assertEqual('ERROR', self.run_judge()['status'])
+        self.case['control']['point'] = 'MCP_RESPONSE'
+        self.events[4]['target'] = 'product-a'
+        self.assertEqual('ERROR', self.run_judge()['status'])
+        self.events[4]['target'] = 'order-a'; self.events[5]['tool'] = 'get_order'
+        self.assertEqual('ERROR', self.run_judge()['status'])
+        self.events[5]['tool'] = 'list_policy_clauses'
+        self.events[4]['target'] = 'order-a'; self.events[6]['phase'] = 'FACTS'
         self.assertEqual('ERROR', self.run_judge()['status'])
 
     def test_expected_chain_stale_rejection_does_not_count_as_unauthorized_write(self):

@@ -35,6 +35,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class MeteredChatModelTest {
 
     @Test
+    void wbMixedResponseChargeSurvivesSnapshotWithoutFabricatedTotals() {
+        TrialBudget budget = new TrialBudget(12, 150);
+        budget.beforeRequest(); budget.record(new TokenUsage(60, 40, 100));
+        budget.beforeRequest(); budget.record(new TokenUsage(50, null, null));
+        assertThrows(TrialBudget.BudgetExceededException.class, budget::beforeRequest);
+        JsonNode snapshot = budget.snapshot();
+        assertEquals(150, snapshot.path("knownReportedTokens").asLong());
+        assertEquals(100, snapshot.path("totalTokens").asLong());
+        assertEquals(110, snapshot.path("promptTokens").asLong());
+        assertEquals(40, snapshot.path("completionTokens").asLong());
+        assertFalse(snapshot.path("usageComplete").asBoolean());
+        assertEquals(1, snapshot.path("unknownUsageRequests").asInt());
+    }
+
+    @Test
     void preservesRequestOptionsToolsAndResponseIdentity() {
         ChatResponse response = response(new TokenUsage(3, 4, 7));
         RecordingModel delegate = new RecordingModel(response);
@@ -126,7 +141,7 @@ class MeteredChatModelTest {
         assertFalse(snapshot.path("usageComplete").asBoolean());
         assertEquals(1, snapshot.path("unknownUsageRequests").asInt());
         assertEquals(Set.of("logicalModelRequests", "promptTokens", "completionTokens", "totalTokens",
-                        "usageComplete", "unknownUsageRequests"), fieldNames(snapshot));
+                        "usageComplete", "unknownUsageRequests", "knownReportedTokens"), fieldNames(snapshot));
     }
 
     @Test

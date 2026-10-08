@@ -72,6 +72,7 @@ public final class TrialBudget {
         putNullable(result, "totalTokens", totalTokens);
         result.put("usageComplete", unknown == 0);
         result.put("unknownUsageRequests", unknown);
+        result.put("knownReportedTokens", reportedTokens);
         return result;
     }
 

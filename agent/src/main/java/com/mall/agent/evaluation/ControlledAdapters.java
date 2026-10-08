@@ -54,11 +54,11 @@ public final class ControlledAdapters {
         return new ForwardingModel(delegate) {
             private ChatResponse scripted() {
                 int step = next.getAndIncrement();
+                FlowObserver.event(observer, "MODEL", null, Map.of("role", role, "status", "SCRIPTED", "callId", "script-"+role.toLowerCase(java.util.Locale.ROOT)+"-"+step));
                 if (step >= responses.size()) {
                     FlowObserver.event(observer, phase(role), null, Map.of("role", role, "status", "FAILED", "errorCategory", "MODEL_ERROR"));
                     throw new IllegalStateException("MODEL_ERROR");
                 }
-                FlowObserver.event(observer, "MODEL", null, Map.of("role", role, "status", "SCRIPTED", "callId", "script-"+role.toLowerCase(java.util.Locale.ROOT)+"-"+step));
                 JsonNode response = responses.get(step);
                 List<ToolExecutionRequest> calls = new ArrayList<>();
                 int i = 0;

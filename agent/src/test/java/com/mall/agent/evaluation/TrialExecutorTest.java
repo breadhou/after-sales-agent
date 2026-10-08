@@ -405,7 +405,7 @@ class TrialExecutorTest {
                 new PrintStream(publicBytes, true, StandardCharsets.UTF_8));
         JsonNode wire = JSON.readTree(publicBytes.toString(StandardCharsets.UTF_8));
         assertEquals(Set.of("schemaVersion", "runId", "caseId", "trialId", "eventsFile", "privateEvidenceFile", "metering", "terminalEvidence", "errorCategory"), fields(wire));
-        assertEquals(Set.of("logicalModelRequests", "promptTokens", "completionTokens", "totalTokens", "usageComplete", "unknownUsageRequests"), fields(wire.path("metering")));
+        assertEquals(Set.of("logicalModelRequests", "promptTokens", "completionTokens", "totalTokens", "usageComplete", "unknownUsageRequests", "knownReportedTokens"), fields(wire.path("metering")));
         assertFalse(publicBytes.toString(StandardCharsets.UTF_8).contains(Long.toString(ORDER)));
         assertTrue(Files.isRegularFile(trial.resolve("worker").resolve(wire.path("privateEvidenceFile").asText())));
         config.put("caseFile", "../case.json");
