@@ -151,6 +151,38 @@ class JudgeTest(unittest.TestCase):
         self.selected_refund_chain()
         self.assertEqual('PASS', self.run_judge()['status'])
 
+    def test_direct_confirmation_requires_the_complete_original_reason(self):
+        baseline = copy.deepcopy((self.case, self.replies))
+        for original, forged in (('不是买错了', '买错了'), ('包装有点破损', '破损'), ('不再需要了', '需要了')):
+            with self.subTest(original=original):
+                self.case, self.replies = copy.deepcopy(baseline)
+                self.case['turns'][0]['input'] = '申请退款，订单{{order-a}}，理由： ' + original + ' ，如何确认退款？'
+                self.replies[0] = self.replies[0].replace('买错了', original)
+                self.assertEqual('PASS', self.run_judge()['status'])
+                self.replies[0] = self.replies[0].replace(original, forged)
+                result = self.run_judge()
+                self.assertIn('REPLY_TEMPLATE', result['failedCriteria'], result)
+
+    def test_historical_selection_rejects_consistently_forged_reason_polarity(self):
+        self.preserved_selection_chain(False)
+        self.case['turns'][0]['input'] = '申请退款，理由： 不是买错了 ，如何确认退款？'
+        self.replies[0] = self.replies[0].replace('买错了', '不是买错了')
+        self.replies[2] = self.replies[2].replace('买错了', '不是买错了')
+        self.assertEqual('PASS', self.run_judge()['status'])
+        self.replies[0] = self.replies[0].replace('不是买错了', '买错了')
+        self.replies[2] = self.replies[2].replace('不是买错了', '买错了')
+        result = self.run_judge()
+        self.assertIn('REPLY_TEMPLATE', result['failedCriteria'], result)
+
+    def test_question_form_reason_cannot_certify_a_forged_direct_confirmation(self):
+        baseline = copy.deepcopy(self.case)
+        for mark in ('?', '？'):
+            with self.subTest(mark=mark):
+                self.case = copy.deepcopy(baseline)
+                self.case['turns'][0]['input'] = '申请退款，订单{{order-a}}，理由：买错了' + mark
+                result = self.run_judge()
+                self.assertIn('REPLY_TEMPLATE', result['failedCriteria'], result)
+
     def preserved_selection_chain(self, malformed):
         self.selected_refund_chain()
         self.records[0]['aliases'] = ['order-a']

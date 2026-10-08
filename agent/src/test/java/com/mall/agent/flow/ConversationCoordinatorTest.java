@@ -84,6 +84,54 @@ class ConversationCoordinatorTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"买错了?", "买错了？", "不是买错了?", "不是买错了？"})
+    void rawQuestionReasonCannotBeTurnedIntoAnAffirmativeConfirmation(String reason) {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger calls = new AtomicInteger();
+        ConversationCoordinator coordinator = coordinator((session, input) -> {
+            handoff.handoffRefund(9001L, "买错了");
+            return "退款已完成";
+        }, handoff, List.of(9001L), calls, new AtomicReference<>());
+        String reply = coordinator.handleTurn(SESSION, "申请退款，订单9001，理由：" + reason);
+        assertFalse(reply.contains("/confirm-refund"), reply);
+        coordinator.handleTurn(SESSION, "/confirm-refund 9001");
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    void completeReasonPolaritySurvivesASeparateInformationalQuestion() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger calls = new AtomicInteger();
+        AtomicReference<RefundRequest> submitted = new AtomicReference<>();
+        ConversationCoordinator coordinator = coordinator((session, input) -> {
+            handoff.handoffRefund(9001L, "买错了");
+            return "退款已完成";
+        }, handoff, List.of(9001L), calls, submitted);
+        String raw = "申请退款，订单9001，理由： 不是买错了 ，如何确认退款？";
+        String reply = coordinator.handleTurn(SESSION, raw);
+        assertTrue(reply.contains("理由：不是买错了。确认请"), reply);
+        assertTrue(reply.contains("/confirm-refund 9001"), reply);
+        assertEquals(0, calls.get());
+        coordinator.handleTurn(SESSION, "/confirm-refund 9001");
+        assertEquals(1, calls.get());
+        assertEquals("不是买错了", submitted.get().reason());
+        assertEquals(raw, submitted.get().originalUserRequest());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"查询会员资格需要什么？", "如何查询会员资格？", "核验优惠资格需要哪些信息？"})
+    void unrelatedEligibilityQueryKeepsOrdinaryDialogue(String question) {
+        AtomicInteger explanations = new AtomicInteger();
+        ConversationCoordinator coordinator = new ConversationCoordinator((session, input) -> "会员查询答复",
+                new RefundHandoffTools(), new EscalationTools(SESSION, ignored -> { }), () -> List.of(),
+                id -> { throw new AssertionError("Not a refund eligibility request"); }, id -> false,
+                (session, request) -> { throw new AssertionError("No refund execution"); }, new ExplanationRequestTools(),
+                (input, id) -> { explanations.incrementAndGet(); return "TRUSTED_REFUND_FAQ_ROUTE"; });
+        assertEquals("会员查询答复", coordinator.handleTurn(SESSION, question));
+        assertEquals(0, explanations.get());
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"查询一笔订单的资格时，为什么需要明确且唯一的订单 ID，查询本身会提交操作吗？",
             "只读查询退款资格会直接提交退款吗？", "查询退款资格需要什么？", "为什么查退款资格要指定唯一订单？"})
     void generalEligibilityCapabilityUsesTrustedFaqEvenWithoutModelMarker(String question) {

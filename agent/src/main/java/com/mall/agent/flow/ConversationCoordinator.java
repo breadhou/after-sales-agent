@@ -415,7 +415,8 @@ public final class ConversationCoordinator {
         String reasonSpan = rawInput.substring(cueEnd);
         Matcher end = REASON_END.matcher(reasonSpan);
         if (end.find()) {
-            if (Character.isISOControl(reasonSpan.charAt(end.start()))) return null;
+            char boundary = reasonSpan.charAt(end.start());
+            if (boundary == '?' || boundary == '？' || Character.isISOControl(boundary)) return null;
             reasonSpan = reasonSpan.substring(0, end.start());
         }
         if (reasonSpan.length() > 512 || reasonSpan.chars().anyMatch(Character::isISOControl)) return null;
@@ -487,7 +488,8 @@ public final class ConversationCoordinator {
                 || text.contains("我的") || text.contains("我这") || text.contains("这单")
                 || text.contains("这笔") || text.contains("该订单")) return false;
         boolean query = text.contains("查询") || text.contains("查") || text.contains("只读") || text.contains("核验");
-        boolean topic = text.contains("资格") || text.contains("是否可退") || text.contains("能否退款");
+        boolean context = text.contains("订单") || text.contains("退款") || text.contains("退货");
+        boolean topic = context && (text.contains("资格") || text.contains("是否可退") || text.contains("能否退款"));
         boolean explanationQuestion = text.contains("为什么") || text.contains("需要") || text.contains("如何")
                 || text.contains("怎么") || text.contains("原理") || text.contains("会")
                 || text.contains("是否") || text.contains("能否");

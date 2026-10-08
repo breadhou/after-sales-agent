@@ -384,10 +384,17 @@ _ORDER_TEMPLATES = (
 
 
 def _reason_from_input(reason, text):
-    cues = list(re.finditer(r'(?:退款理由|理由|原因)\s*(?:[:：]|是)\s*|因为\s*|由于\s*', text))
+    cues = list(re.finditer(r'(?:退款理由|理由|原因)\s*(?:[:：]|是)\s*|因为\s*|由于\s*', text, re.ASCII))
     if not reason or not cues: return False
-    span = re.split(r'[，,。；;！？!?\r\n]', text[cues[-1].end():], maxsplit=1)[0]
-    return reason in span
+    span = text[cues[-1].end():]
+    end = re.search(r'[，,。；;！？!?\r\n]', span)
+    if end:
+        if end[0] in '?？\r\n': return False
+        span = span[:end.start()]
+    if len(span.encode('utf-16-le')) // 2 > 512 or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in span): return False
+    # Java trim removes <= U+0020; controls have already been refused above.
+    # Substrings can change polarity even when both forged templates agree.
+    return reason == span.strip(' ')
 
 
 def _preserved_selection(text, reply, reply_target, returned, binding):
