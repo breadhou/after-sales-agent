@@ -218,3 +218,8 @@ BOUNDARY-043原inner Maven数字退出/PID仍**UNOBSERVABLE**：私有hook整arg
 最终两仓AstraHigh整分支审查已完成，提出WB-I1/WB-I2两个Important、无Critical；本轮最小修复及真人admin已获同任务Spec/Quality与同Astra定向终审APPROVED、WB-I1/WB-I2 CLOSED，无新问题，部分结果工程交付已闭环。WB-I1要求声明注入实际发生及因果错误来源，WB-I2通过knownReportedTokens跨worker/父进程/持久化保留每响应已知计量，raw/null/unknown不改、legacy混合歧义不放行。Agent274/default模块与最终Python210/native0真实证据见私有WB报告；原273/202属于6370旧源码，不移作本轮覆盖。旧受控60FIRST和新3条保存证据的有界只读检查、真人四PASS派生与旧地板分别列示。本轮观察到backend target JAR由原v3绑定40283c4b7e0bb13d2fba4e797bcb2c1fdd0cb454c67f679579fcbac4fc8437db变为外部e8b3a98461a8f7ea84b340aac02c2b478536fee6436c83a7c599aacca610c0e8；root只将该一个路径列为外部观察例外。v3运行4028是历史绑定，本轮离线修复未使用新的后端JAR，也未检查其类或运行同一性。原正式评测保持PARTIAL/214–21–4–1，工程闭合证据不能推出完整正式benchmark或阶段4已完成。分支保持隔离，不自动合并/推送；不宣称真实支付渠道、JDK17或普遍安全证明。
 
 工程验收精确绑定功能HEAD `5d2f66f4e2064c86d581c6f64026de59c5046760` / backendHEAD `25e7afb5fbd860bfe10b73ef6a0c09f1f80ac20d`：同任务报告 `task-14-wb-scoped-task-review-2026-10-08.md` SHA0e1b7d4d5e390ef104729a5e47acff494083298c40f343b6844d16715ae2c314；同Astra定向终审 `task-14-wb-scoped-final-review-2026-10-08.md` SHA88086bd77c2ecafa378dd1f2de96c3743fb152b15c4bb735917c8cc96567a885。旧首轮8237... CHANGES_REQUESTED报告不覆盖。本次后续三文档admin提交未被Astra审过，root通过完整三文档diff和其余11个indexed源文件SHA不变核实继承功能gate；新文档HEAD与已审功能HEAD单独记录。当前闭环是COMPLETED_PARTIAL_ENGINEERING_DELIVERY，不代表重写原正式失败/skip或完成新的240覆盖。用户选择保留两个隔离分支/工作树、不合并推送，不清忽略的私有证据；automation继续paused。
+
+
+## 十、主线集成（2026-10-09）
+
+用户随后明确授权合并main并提交远程。两仓已快进集成并通过主工作区回归：Agent/MCP320、Agent Python210、Backend244、Backend Python71。前文2026-10-08的保留分支决定属于当时历史，当前集成及原失败记录的时间边界见[主线集成验证](phase4-main-integration-2026-10-09.md)。本次仅发布既有已验收源码及文档，没有新增模型试验或改写原正式部分结果。
