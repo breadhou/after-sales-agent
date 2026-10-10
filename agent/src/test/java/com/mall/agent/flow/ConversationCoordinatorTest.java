@@ -118,6 +118,29 @@ class ConversationCoordinatorTest {
         assertEquals(raw, submitted.get().originalUserRequest());
     }
 
+    @Test
+    void prematureConfirmationDoesNotConsumeThePendingOrderSelection() {
+        RefundHandoffTools handoff = new RefundHandoffTools();
+        AtomicInteger calls = new AtomicInteger();
+        AtomicReference<RefundRequest> submitted = new AtomicReference<>();
+        ConversationCoordinator coordinator = coordinator((session, input) -> {
+            handoff.handoffRefund(0L, "买错了");
+            return "模型候选";
+        }, handoff, List.of(9001L, 9002L), calls, submitted);
+        String raw = "申请退款，理由：不是买错了";
+        assertTrue(coordinator.handleTurn(SESSION, raw).contains("候选理由：不是买错了"));
+        assertEquals("当前没有待确认的退款申请；本次未提交退款。", coordinator.handleTurn(SESSION, "/confirm-refund 9001"));
+        assertEquals("当前没有待确认的退款申请；本次未提交退款。", coordinator.handleTurn(SESSION, "/confirm-refund malformed"));
+        assertEquals(0, calls.get());
+        String selected = coordinator.handleTurn(SESSION, "/select-refund-order 9001");
+        assertTrue(selected.contains("理由：不是买错了。确认请"), selected);
+        coordinator.handleTurn(SESSION, "/confirm-refund 9001");
+        assertEquals(1, calls.get());
+        assertEquals(9001L, submitted.get().orderId());
+        assertEquals("不是买错了", submitted.get().reason());
+        assertEquals(raw, submitted.get().originalUserRequest());
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"查询会员资格需要什么？", "如何查询会员资格？", "核验优惠资格需要哪些信息？"})
     void unrelatedEligibilityQueryKeepsOrdinaryDialogue(String question) {

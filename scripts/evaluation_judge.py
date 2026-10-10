@@ -398,6 +398,8 @@ def _reason_from_input(reason, text):
 
 
 def _preserved_selection(text, reply, reply_target, returned, binding):
+    if text.startswith('/confirm-refund'):
+        return reply_target == 'GLOBAL' and reply == '当前没有待确认的退款申请；本次未提交退款。'
     command = re.fullmatch(r'/select-refund-order (?:([0-9]+)|\{\{([a-z][a-z0-9-]*)\}\})', text)
     if command is None:
         return text.startswith('/select-refund-order') and reply_target == 'GLOBAL' and reply == '请选择本会话列出的订单，格式：/select-refund-order <订单 ID>。'
@@ -439,7 +441,7 @@ def _selected_reason(reason, origin, target, case, binding, after, events, recor
         prior_events = [e for e in events if _origin(e) == prior_origin]
         starts = [e for e in prior_events if e['phase'] == 'SESSION' and e['status'] == 'STARTED' and e['target'] == 'GLOBAL']
         if len(prior_events) != 2 or len(starts) != 1 or starts[0]['sequence'] >= session['sequence']: return False
-        if not prior_turn['input'].strip().startswith('/select-refund-order'): return False
+        if not prior_turn['input'].strip().startswith(('/select-refund-order', '/confirm-refund')): return False
         preserved.append((prior_turn['input'].strip(), prior_reply, session['target']))
         boundary = starts[0]['sequence']
     return False

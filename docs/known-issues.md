@@ -1216,6 +1216,8 @@ public Result<Void> handleValidation(MethodArgumentNotValidException e) {
 
 **Task15 fix1（独立审阅T15-I1）**：原裁判仍用子串判断理由，导致“不是买错了”被一致伪造为“买错了”的选择/确认模板可获认可。已改成完整原话第一理由片段的精确trim后相等，并按生产cue、长度、控制字符及问号边界核对；直接和跨保留pending链的限定词/否定反例已补。原同会话/actor、列表与状态链防线保留，待同一审阅者定向复审。
 
+**Task15最终审阅修复（2026-10-10，T15-WB-I1）**：提前确认在SELECT_ORDER阶段会返回固定无待确认模板且保留选单状态，裁判此前却只跨过失败select。现只额外认证该producer明确保留状态的confirm前缀、GLOBAL目标、精确回复、同actor/会话及有序SESSION start/completion；原列表/理由/目标证据不变。完整继续退款正例与伪造返回/目标/动作事件、取消/换题/无关命令等反例已补，并由实际协调器测试绑定生产行为。CaseSpec不支持空输入，本轮没有扩展该契约或假称评测空轮次；待同Astra定向复审。
+
 ---
 
 ## K-65 FAQ 多来源输出与冻结允许来源集合不一致

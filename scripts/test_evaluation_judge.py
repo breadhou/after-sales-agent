@@ -210,6 +210,43 @@ class JudgeTest(unittest.TestCase):
                 self.preserved_selection_chain(malformed)
                 self.assertEqual('PASS', self.run_judge()['status'])
 
+    def premature_confirmation_chain(self, command='/confirm-refund {{order-a}}'):
+        self.preserved_selection_chain(False)
+        self.case['turns'][1]['input'] = command
+        self.replies[1] = '当前没有待确认的退款申请；本次未提交退款。'
+        self.events[4]['target'] = 'GLOBAL'
+
+    def test_premature_confirm_in_selection_preserves_the_complete_refund_chain(self):
+        baseline = copy.deepcopy((self.case, self.events, self.records, self.replies, self.before, self.after, self.bindings))
+        for command in ('/confirm-refund {{order-a}}', '/confirm-refund malformed'):
+            with self.subTest(command=command):
+                self.case, self.events, self.records, self.replies, self.before, self.after, self.bindings = copy.deepcopy(baseline)
+                self.premature_confirmation_chain(command)
+                self.assertEqual('PASS', self.run_judge()['status'])
+
+    def test_premature_confirm_provenance_cannot_skip_forgery_or_resets(self):
+        self.premature_confirmation_chain()
+        baseline = copy.deepcopy((self.case, self.events, self.records, self.replies))
+        for mutation in ('reply', 'target', 'transition', 'model', 'tool', 'cancel', 'topic', 'unrelated-command', 'kind', 'session', 'actor'):
+            with self.subTest(mutation=mutation):
+                self.case, self.events, self.records, self.replies = copy.deepcopy(baseline)
+                if mutation == 'reply': self.replies[1] = '当前没有待选择的退款订单；本次未提交退款。'
+                if mutation == 'target': self.events[4]['target'] = 'order-a'
+                if mutation == 'transition': self.events[3].update(phase='CONFIRMATION', target='order-a')
+                if mutation == 'model': self.events[3].update(phase='MODEL', role='DIALOGUE')
+                if mutation == 'tool': self.events[3].update(phase='MCP', role='MCP', tool='get_order', status='CALLED')
+                if mutation == 'cancel': self.case['turns'][1]['input'] = '/cancel-refund'
+                if mutation == 'topic': self.case['turns'][1]['input'] = '订单物流在哪？'
+                if mutation == 'unrelated-command': self.case['turns'][1]['input'] = '/confirmrefund {{order-a}}'
+                if mutation == 'kind': next(r for r in self.records if r['kind'] == 'REPLY' and r['turnIndex'] == 1)['replyKind'] = 'FREE_TEXT'
+                if mutation == 'session': self.case['turns'][1]['sessionAlias'] = 'session-b'
+                if mutation == 'actor':
+                    self.case['turns'][1]['actorAlias'] = 'actor-b'
+                    with self.assertRaisesRegex(ValueError, 'active actor'): self.run_judge()
+                    continue
+                result = self.run_judge()
+                self.assertNotEqual('PASS', result['status'], result)
+
     def test_preserved_selection_cannot_cross_reset_or_forged_cli_outcomes(self):
         self.preserved_selection_chain(False)
         baseline = copy.deepcopy((self.case, self.events, self.records, self.replies, self.bindings))
